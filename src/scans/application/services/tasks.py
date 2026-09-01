@@ -1,0 +1,486 @@
+from src.core.celery_app import celery_app
+from src.scans.adapters.outbound.gvm_adapter import GVMAdapter
+import logging
+from lxml import etree
+from celery.exceptions import Retry
+from sqlalchemy.orm import Session
+from src.core.database import SessionLocal
+from src.scans.domain.entities import ScanEntity, ScanStatus
+from src.assets.domain.entities import AssetEntity
+from src.companies.domain.entities import CompanyEntity
+
+logger = logging.getLogger(__name__)
+
+# Standard OpenVAS Default Scanner ID
+DEFAULT_SCANNER_ID = "08b69003-5fc2-4037-a479-93b440211c73"
+
+# Fast GVM "Host Discovery" Config ID (purely host up/down detection)
+DISCOVERY_CONFIG_ID = "2d3f051c-55ba-11e3-bf43-406186ea4fc5"
+
+@celery_app.task(bind=True, name="run_discovery_scan")
+def run_discovery_scan(self, scan_id: int, target: str, network_zone: str, company_id: int):
+    logger.info(f"Starting OpenVAS discovery scan {scan_id} on target {target}")
+    db: Session = SessionLocal()
+    try:
+        scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
+        if not scan:
+            return
+            
+        scan.status = ScanStatus.IN_PROGRESS
+        db.commit()
+    finally:
+        db.close()
+
+    from src.scans.domain.entities import ScannerEngine
+    
+    if scan.scanner_engine == ScannerEngine.NMAP:
+        try:
+            from src.scans.adapters.outbound.nmap_adapter import NmapAdapter
+            hosts = NmapAdapter.run_discovery_scan(target)
+            db = SessionLocal()
+            try:
+                for host_data in hosts:
+                    existing = db.query(AssetEntity).filter(
+                        AssetEntity.ip_address == host_data["ip"],
+                        AssetEntity.company_id == company_id
+                    ).first()
+                    
+                    if not existing:
+                        new_asset = AssetEntity(
+                            company_id=company_id,
+                            name=host_data["hostname"],
+                            ip_address=host_data["ip"],
+                            asset_type="Unknown",
+                            network_zone=network_zone,
+                            operating_system=host_data["os"],
+                            ports=host_data["ports"]
+                        )
+                        db.add(new_asset)
+                
+                scan_update = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
+                if scan_update:
+                    scan_update.status = ScanStatus.COMPLETED
+                    from src.audit.domain.models import AuditLog
+                    db.add(AuditLog(user_id="system", username="celery_worker", action="SCAN_COMPLETED", resource_type="SCAN", resource_id=str(scan_id), details={"status": "COMPLETED"}))
+                    scan_update.progress = 100
+                db.commit()
+                logger.info(f"Nmap discovery scan {scan_id} completed. Found {len(hosts)} hosts.")
+                return True
+            finally:
+                db.close()
+        except Exception as e:
+            logger.error(f"Nmap discovery failed: {str(e)}")
+            db = SessionLocal()
+            try:
+                scan_fail = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
+                if scan_fail:
+                    scan_fail.status = ScanStatus.FAILED
+                    from src.audit.domain.models import AuditLog
+                    db.add(AuditLog(user_id="system", username="celery_worker", action="SCAN_FAILED", resource_type="SCAN", resource_id=str(scan_id), details={"status": "FAILED"}))
+                    db.commit()
+            finally:
+                db.close()
+            raise e
+            
+    # Default to OpenVAS
+    adapter = GVMAdapter()
+    if not adapter.connect():
+        logger.error("Failed to connect to GVM")
+        self.retry(countdown=60)
+        return
+        
+    try:
+        # Create a target for the discovery scan (e.g., using a CIDR block)
+        target_id = adapter.create_target(f"Discovery_Target_{scan_id}", [target])
+        
+        # Create task using the Discovery config
+        task_id = adapter.create_task(
+            name=f"Discovery_Task_{scan_id}", 
+            target_id=target_id, 
+            scanner_id=DEFAULT_SCANNER_ID, 
+            config_id=DISCOVERY_CONFIG_ID
+        )
+        report_id = adapter.start_task(task_id)
+        
+        adapter.disconnect()
+        
+        # Poll the status asynchronously
+        poll_discovery_scan_status.apply_async(args=[scan_id, task_id, report_id, network_zone, company_id], countdown=60)
+        return True
+        
+    except Exception as e:
+        logger.error(f"Discovery scan initialization failed: {str(e)}")
+        adapter.disconnect()
+        
+        db = SessionLocal()
+        try:
+            scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
+            if scan:
+                scan.status = ScanStatus.FAILED
+                from src.audit.domain.models import AuditLog
+                db.add(AuditLog(user_id="system", username="celery_worker", action="SCAN_FAILED", resource_type="SCAN", resource_id=str(scan_id), details={"status": "FAILED"}))
+                db.commit()
+        finally:
+            db.close()
+        raise e
+
+@celery_app.task(bind=True, max_retries=None)
+def poll_discovery_scan_status(self, scan_id: int, task_id: str, report_id: str, network_zone: str, company_id: int):
+    adapter = GVMAdapter()
+    if not adapter.connect():
+        self.retry(countdown=60)
+        return
+        
+    try:
+        status, progress = adapter.get_task_status_and_progress(task_id)
+        
+        db = SessionLocal()
+        try:
+            scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
+            if scan:
+                scan.progress = progress
+                db.commit()
+        finally:
+            db.close()
+
+        if status == "Done":
+            report_xml = adapter.get_report(report_id)
+            adapter.disconnect()
+            
+            # Send to discovery parser
+            parse_discovery_report.delay(report_xml, scan_id, network_zone, company_id)
+            return True
+            
+        elif status in ["Stopped", "Interrupted"]:
+            adapter.disconnect()
+            
+            db = SessionLocal()
+            try:
+                scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
+                if scan:
+                    scan.status = ScanStatus.FAILED
+                    from src.audit.domain.models import AuditLog
+                    db.add(AuditLog(user_id="system", username="celery_worker", action="SCAN_FAILED", resource_type="SCAN", resource_id=str(scan_id), details={"status": "FAILED"}))
+                    db.commit()
+            finally:
+                db.close()
+            return False
+            
+        else:
+            adapter.disconnect()
+            self.retry(countdown=10)
+            
+    except Exception as e:
+        if isinstance(e, Retry):
+            raise
+        logger.error(f"Discovery polling failed: {str(e)}")
+        adapter.disconnect()
+        self.retry(countdown=60)
+
+@celery_app.task
+def parse_discovery_report(report_xml: str, scan_id: int, network_zone: str, company_id: int):
+    logger.info(f"Parsing discovery report for Scan {scan_id}")
+    db: Session = SessionLocal()
+    
+    try:
+        root = etree.fromstring(report_xml.encode('utf-8'))
+        hosts_added = 0
+        
+        # Use XPath to find all <host> elements within the report
+        hosts = root.xpath("//report/report/host")
+        
+        for host in hosts:
+            ip_elem = host.find('ip')
+            if ip_elem is not None and ip_elem.text:
+                ip_address = ip_elem.text.strip()
+                
+                # Check if asset already exists
+                existing = db.query(AssetEntity).filter(
+                    AssetEntity.ip_address == ip_address,
+                    AssetEntity.company_id == company_id
+                ).first()
+                
+                if not existing:
+                    # Attempt to get hostname from details
+                    hostname = f"Discovered Host ({ip_address})"
+                    
+                    # Sometimes GVM provides hostname in a detail tag
+                    hostname_details = host.xpath(".//detail[name='hostname']/value/text()")
+                    if hostname_details:
+                        hostname = hostname_details[0].strip()
+                        
+                    # Extract OS
+                    os_val = "Unknown"
+                    os_details = host.xpath(".//detail[name='Best OS']/value/text()")
+                    if not os_details:
+                        os_details = host.xpath(".//detail[name='OS']/value/text()")
+                    if os_details:
+                        os_val = os_details[0].strip()
+
+                    # Extract Ports (From GVM report, usually in <port> tags inside results, or host ports)
+                    # We can find all ports under //report/report/ports/port
+                    # But those are global, we need to match by IP.
+                    # Actually, GVM reports results per host. Let's find results for this host:
+                    # //result[host='192.168.1.1']/port
+                    host_ports = []
+                    results_for_host = root.xpath(f"//result[host='{ip_address}']")
+                    for r in results_for_host:
+                        port_elem = r.find('port')
+                        if port_elem is not None and port_elem.text:
+                            p_text = port_elem.text.strip()
+                            if p_text != "general/tcp" and p_text != "general/udp" and p_text not in host_ports:
+                                host_ports.append(p_text)
+                    
+                    ports_str = ", ".join(host_ports) if host_ports else None
+                        
+                    new_asset = AssetEntity(
+                        company_id=company_id,
+                        name=hostname,
+                        ip_address=ip_address,
+                        asset_type="Unknown",
+                        network_zone=network_zone,
+                        operating_system=os_val,
+                        ports=ports_str
+                    )
+                    db.add(new_asset)
+                    hosts_added += 1
+                    
+        scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
+        if scan:
+            scan.status = ScanStatus.COMPLETED
+            from src.audit.domain.models import AuditLog
+            db.add(AuditLog(user_id="system", username="celery_worker", action="SCAN_COMPLETED", resource_type="SCAN", resource_id=str(scan_id), details={"status": "COMPLETED"}))
+            scan.progress = 100
+        db.commit()
+        
+        logger.info(f"Discovery scan {scan_id} completed. Added {hosts_added} hosts.")
+        
+    except Exception as e:
+        logger.error(f"Error parsing discovery report: {str(e)}")
+        db.rollback()
+        scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
+        if scan:
+            scan.status = ScanStatus.FAILED
+            from src.audit.domain.models import AuditLog
+            db.add(AuditLog(user_id="system", username="celery_worker", action="SCAN_FAILED", resource_type="SCAN", resource_id=str(scan_id), details={"status": "FAILED"}))
+            db.commit()
+    finally:
+        db.close()
+
+
+@celery_app.task(bind=True, max_retries=3, name="run_vulnerability_scan")
+def run_vulnerability_scan(self, scan_id: int, asset_ip: str, asset_name: str, config_id: str):
+    logger.info(f"Starting vulnerability scan for {asset_name} ({asset_ip})")
+    
+    db: Session = SessionLocal()
+    from src.scans.domain.entities import ScannerEngine
+    scan_engine = ScannerEngine.OPENVAS
+    try:
+        scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
+        if scan:
+            scan.status = ScanStatus.IN_PROGRESS
+            scan_engine = scan.scanner_engine
+            db.commit()
+    finally:
+        db.close()
+
+    if scan_engine == ScannerEngine.NMAP:
+        try:
+            from src.scans.adapters.outbound.nmap_adapter import NmapAdapter
+            hosts = NmapAdapter.run_vulnerability_scan(asset_ip)
+            
+            db = SessionLocal()
+            try:
+                scan_update = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
+                if scan_update:
+                    scan_update.status = ScanStatus.COMPLETED
+                    from src.audit.domain.models import AuditLog
+                    db.add(AuditLog(user_id="system", username="celery_worker", action="SCAN_COMPLETED", resource_type="SCAN", resource_id=str(scan_id), details={"status": "COMPLETED"}))
+                    scan_update.progress = 100
+                db.commit()
+            finally:
+                db.close()
+                
+            if hosts:
+                from src.vulnerabilities.application.services.tasks import parse_nmap_report
+                parse_nmap_report.delay(hosts[0], asset_ip, scan_id)
+            return True
+        except Exception as e:
+            logger.error(f"Nmap scan failed: {str(e)}")
+            db = SessionLocal()
+            try:
+                scan_fail = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
+                if scan_fail:
+                    scan_fail.status = ScanStatus.FAILED
+                    from src.audit.domain.models import AuditLog
+                    db.add(AuditLog(user_id="system", username="celery_worker", action="SCAN_FAILED", resource_type="SCAN", resource_id=str(scan_id), details={"status": "FAILED"}))
+                    db.commit()
+            finally:
+                db.close()
+            raise e
+
+    if scan_engine == ScannerEngine.NUCLEI:
+        try:
+            from src.scans.adapters.outbound.nuclei_adapter import NucleiAdapter
+            vulns = NucleiAdapter.run_scan(asset_ip)
+            
+            db = SessionLocal()
+            try:
+                scan_update = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
+                if scan_update:
+                    scan_update.status = ScanStatus.COMPLETED
+                    from src.audit.domain.models import AuditLog
+                    db.add(AuditLog(user_id="system", username="celery_worker", action="SCAN_COMPLETED", resource_type="SCAN", resource_id=str(scan_id), details={"status": "COMPLETED"}))
+                    scan_update.progress = 100
+                db.commit()
+            finally:
+                db.close()
+                
+            from src.vulnerabilities.application.services.tasks import parse_nuclei_report
+            parse_nuclei_report.delay(vulns, asset_ip, scan_id)
+            return True
+        except Exception as e:
+            logger.error(f"Nuclei scan failed: {str(e)}")
+            db = SessionLocal()
+            try:
+                scan_fail = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
+                if scan_fail:
+                    scan_fail.status = ScanStatus.FAILED
+                    from src.audit.domain.models import AuditLog
+                    db.add(AuditLog(user_id="system", username="celery_worker", action="SCAN_FAILED", resource_type="SCAN", resource_id=str(scan_id), details={"status": "FAILED"}))
+                    db.commit()
+            finally:
+                db.close()
+            raise e
+
+    if scan_engine == ScannerEngine.NESSUS:
+        try:
+            from src.scans.adapters.outbound.nessus_adapter import NessusAdapter
+            adapter = NessusAdapter()
+            vulns = adapter.run_scan(asset_ip)
+            
+            db = SessionLocal()
+            try:
+                scan_update = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
+                if scan_update:
+                    scan_update.status = ScanStatus.COMPLETED
+                    from src.audit.domain.models import AuditLog
+                    db.add(AuditLog(user_id="system", username="celery_worker", action="SCAN_COMPLETED", resource_type="SCAN", resource_id=str(scan_id), details={"status": "COMPLETED"}))
+                    scan_update.progress = 100
+                db.commit()
+            finally:
+                db.close()
+            
+            logger.info("Nessus integration is currently in stub mode. Scan completed.")
+            return True
+        except Exception as e:
+            logger.error(f"Nessus scan failed: {str(e)}")
+            db = SessionLocal()
+            try:
+                scan_fail = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
+                if scan_fail:
+                    scan_fail.status = ScanStatus.FAILED
+                    from src.audit.domain.models import AuditLog
+                    db.add(AuditLog(user_id="system", username="celery_worker", action="SCAN_FAILED", resource_type="SCAN", resource_id=str(scan_id), details={"status": "FAILED"}))
+                    db.commit()
+            finally:
+                db.close()
+            raise e
+
+    adapter = GVMAdapter()
+    if not adapter.connect():
+        logger.error("Failed to connect to GVM")
+        self.retry(countdown=60)
+        return
+        
+    try:
+        target_id = adapter.create_target(f"Target_{asset_name}", [asset_ip])
+        task_id = adapter.create_task(f"Task_{asset_name}", target_id, DEFAULT_SCANNER_ID, config_id)
+        report_id = adapter.start_task(task_id)
+        
+        adapter.disconnect()
+        
+        poll_scan_status.apply_async(args=[scan_id, task_id, report_id, asset_ip], countdown=60)
+        return True
+    except Exception as e:
+        logger.error(f"Scan initialization failed: {str(e)}")
+        adapter.disconnect()
+        
+        db = SessionLocal()
+        try:
+            scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
+            if scan:
+                scan.status = ScanStatus.FAILED
+                from src.audit.domain.models import AuditLog
+                db.add(AuditLog(user_id="system", username="celery_worker", action="SCAN_FAILED", resource_type="SCAN", resource_id=str(scan_id), details={"status": "FAILED"}))
+                db.commit()
+        finally:
+            db.close()
+        raise e
+
+@celery_app.task(bind=True, max_retries=None)
+def poll_scan_status(self, scan_id: int, task_id: str, report_id: str, asset_ip: str):
+    adapter = GVMAdapter()
+    if not adapter.connect():
+        self.retry(countdown=60)
+        return
+        
+    try:
+        status, progress = adapter.get_task_status_and_progress(task_id)
+        
+        db = SessionLocal()
+        try:
+            scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
+            if scan:
+                scan.progress = progress
+                db.commit()
+        finally:
+            db.close()
+
+        if status == "Done":
+            report_xml = adapter.get_report(report_id)
+            adapter.disconnect()
+            
+            # Mark scan complete
+            db = SessionLocal()
+            try:
+                scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
+                if scan:
+                    scan.status = ScanStatus.COMPLETED
+                    from src.audit.domain.models import AuditLog
+                    db.add(AuditLog(user_id="system", username="celery_worker", action="SCAN_COMPLETED", resource_type="SCAN", resource_id=str(scan_id), details={"status": "COMPLETED"}))
+                    scan.progress = 100
+                    db.commit()
+            finally:
+                db.close()
+            
+            # Send to vulnerability parser
+            from src.vulnerabilities.application.services.tasks import parse_scan_report
+            parse_scan_report.delay(report_xml, asset_ip, scan_id)
+            return True
+            
+        elif status in ["Stopped", "Interrupted"]:
+            adapter.disconnect()
+            
+            db = SessionLocal()
+            try:
+                scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
+                if scan:
+                    scan.status = ScanStatus.FAILED
+                    from src.audit.domain.models import AuditLog
+                    db.add(AuditLog(user_id="system", username="celery_worker", action="SCAN_FAILED", resource_type="SCAN", resource_id=str(scan_id), details={"status": "FAILED"}))
+                    db.commit()
+            finally:
+                db.close()
+            return False
+            
+        else:
+            adapter.disconnect()
+            self.retry(countdown=10)
+            
+    except Exception as e:
+        if isinstance(e, Retry):
+            raise
+        logger.error(f"Polling failed: {str(e)}")
+        adapter.disconnect()
+        self.retry(countdown=60)

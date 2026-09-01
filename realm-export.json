@@ -1,0 +1,118 @@
+{
+  "realm": "kimia",
+  "loginTheme": "keycloakify-starter",
+  "enabled": true,
+  "registrationAllowed": false,
+  "resetPasswordAllowed": false,
+  "accessTokenLifespan": 36000,
+  "ssoSessionIdleTimeout": 36000,
+  "ssoSessionMaxLifespan": 36000,
+  "offlineSessionIdleTimeout": 2592000,
+  "requiredActions": [
+    {
+      "alias": "CONFIGURE_TOTP",
+      "name": "Configure OTP",
+      "providerId": "CONFIGURE_TOTP",
+      "enabled": true,
+      "defaultAction": true,
+      "priority": 10,
+      "config": {}
+    }
+  ],
+  "clients": [
+    {
+      "clientId": "kimia-backend",
+      "enabled": true,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "kimia-backend-secret",
+      "serviceAccountsEnabled": true,
+      "directAccessGrantsEnabled": true,
+      "standardFlowEnabled": true,
+      "publicClient": false,
+      "protocol": "openid-connect"
+    },
+    {
+      "clientId": "kerubiscan-web",
+      "enabled": true,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "kerubiscan-web-secret",
+      "publicClient": false,
+      "directAccessGrantsEnabled": true,
+      "standardFlowEnabled": true,
+      "redirectUris": [
+        "http://localhost:3000/*"
+      ],
+      "webOrigins": [
+        "*"
+      ],
+      "protocol": "openid-connect"
+    }
+  ],
+  "roles": {
+    "realm": [
+      {
+        "name": "Platform Administrator",
+        "description": "Administrator of the platform"
+      },
+      {
+        "name": "Security Analyst",
+        "description": "Security operations role"
+      },
+      {
+        "name": "System Administrator",
+        "description": "IT operations role"
+      },
+      {
+        "name": "Reader",
+        "description": "Read only role"
+      }
+    ]
+  },
+  "users": [
+    {
+      "username": "admin",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Platform",
+      "lastName": "Administrator",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "admin",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "Platform Administrator"
+      ],
+      "clientRoles": {
+        "realm-management": [
+          "realm-admin",
+          "manage-users",
+          "view-users",
+          "manage-clients"
+        ]
+      }
+    },
+    {
+      "username": "service-account-kimia-backend",
+      "enabled": true,
+      "totp": false,
+      "emailVerified": false,
+      "serviceAccountClientId": "kimia-backend",
+      "credentials": [],
+      "disableableCredentialTypes": [],
+      "requiredActions": [],
+      "realmRoles": [
+        "default-roles-kimia"
+      ],
+      "clientRoles": {
+        "realm-management": [
+          "manage-users",
+          "view-users",
+          "query-users"
+        ]
+      }
+    }
+  ]
+}

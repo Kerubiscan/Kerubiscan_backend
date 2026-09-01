@@ -1,0 +1,15 @@
+fastapi[standard]==0.112.2
+uvicorn==0.30.6
+pydantic==2.8.2
+pydantic-settings==2.4.0
+psycopg2-binary==2.9.9
+sqlalchemy==2.0.32
+redis==5.0.8
+celery==5.4.0
+python-keycloak==4.5.1
+httpx==0.25.0
+hvac==2.3.0
+python-gvm==24.3.0
+slowapi==0.1.9
+alembic==1.13.2
+reportlab==4.1.0
