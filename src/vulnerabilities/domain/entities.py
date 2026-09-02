@@ -1,13 +1,14 @@
 from sqlalchemy import Column, Integer, String, Float, ForeignKey, DateTime, Text, Enum as SQLEnum
 from sqlalchemy.sql import func
+import uuid
 from src.core.database import Base
 from src.vulnerabilities.domain.models import VulnSeverity, VulnStatus
 
 class VulnerabilityEntity(Base):
     __tablename__ = "vulnerabilities"
 
-    id = Column(Integer, primary_key=True, index=True)
-    asset_id = Column(Integer, ForeignKey("assets.id", ondelete="CASCADE"), nullable=False, index=True)
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()), index=True)
+    asset_id = Column(String(36), ForeignKey("assets.id", ondelete="CASCADE"), nullable=False, index=True)
     cve_id = Column(String, index=True, nullable=True)
     title = Column(String, nullable=False)
     description = Column(Text, nullable=True)
@@ -29,8 +30,8 @@ class VulnerabilityEntity(Base):
 class VulnerabilityHistoryEntity(Base):
     __tablename__ = "vulnerability_history"
 
-    id = Column(Integer, primary_key=True, index=True)
-    vulnerability_id = Column(Integer, ForeignKey("vulnerabilities.id", ondelete="CASCADE"), nullable=False, index=True)
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()), index=True)
+    vulnerability_id = Column(String(36), ForeignKey("vulnerabilities.id", ondelete="CASCADE"), nullable=False, index=True)
     previous_status = Column(SQLEnum(VulnStatus), nullable=False)
     new_status = Column(SQLEnum(VulnStatus), nullable=False)
     changed_by = Column(String, nullable=False)

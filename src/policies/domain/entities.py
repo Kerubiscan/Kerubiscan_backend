@@ -1,11 +1,12 @@
 from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Boolean
 from sqlalchemy.sql import func
+import uuid
 from src.core.database import Base
 
 class PolicyEntity(Base):
     __tablename__ = "policies"
-    id = Column(Integer, primary_key=True, index=True)
-    company_id = Column(Integer, ForeignKey("companies.id"), nullable=True)
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()), index=True)
+    company_id = Column(String(36), ForeignKey("companies.id"), nullable=True)
     name = Column(String, nullable=False)
     scan_type = Column(String, nullable=False)
     author = Column(String, nullable=True)

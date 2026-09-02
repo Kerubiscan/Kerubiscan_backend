@@ -33,7 +33,7 @@ def calculate_contextual_risk(base_score: float, criticality) -> float:
     return round(base_score * multiplier, 1)
 
 @celery_app.task
-def parse_scan_report(report_xml: str, target_ip: str, scan_id: int = None):
+def parse_scan_report(report_xml: str, target_ip: str, scan_id: str = None):
     logger.info(f"Parsing scan report for {target_ip} (Scan {scan_id})")
     db: Session = SessionLocal()
     
@@ -93,6 +93,13 @@ def parse_scan_report(report_xml: str, target_ip: str, scan_id: int = None):
         results = root.xpath("//report/report/results/result")
         logger.info(f"Found {len(results)} raw results in report.")
         
+        # 1. Load existing vulnerabilities into memory
+        existing_vulns_list = db.query(VulnerabilityEntity).filter(VulnerabilityEntity.asset_id == asset.id).all()
+        existing_by_cve = {v.cve_id: v for v in existing_vulns_list if v.cve_id}
+        existing_by_title = {v.title: v for v in existing_vulns_list if not v.cve_id}
+        
+        new_vulns_to_insert = []
+        
         for result in results:
             threat = result.findtext("threat")
             if threat in ["Log", "False Positive"]:
@@ -106,6 +113,7 @@ def parse_scan_report(report_xml: str, target_ip: str, scan_id: int = None):
             
             title = nvt.findtext("name")
             if not title: continue
+            title = title[:250]
             
             cvss_str = nvt.findtext("cvss_base")
             cvss_base_score = float(cvss_str) if cvss_str else 0.0
@@ -116,30 +124,12 @@ def parse_scan_report(report_xml: str, target_ip: str, scan_id: int = None):
             severity = map_threat_to_severity(threat)
             contextual_risk = calculate_contextual_risk(cvss_base_score, asset.criticality)
             
-            # AI Prioritization for High/Critical
-            if cvss_base_score >= 7.0:
-                try:
-                    from src.ai.application.services.nlp import refine_risk_score_sync
-                    ai_multiplier = refine_risk_score_sync(title, description)
-                    if ai_multiplier > 1.0:
-                        logger.info(f"AI bumped risk score for {title} by {ai_multiplier}x")
-                        contextual_risk = round(contextual_risk * ai_multiplier, 1)
-                except Exception as e:
-                    logger.error(f"Failed to apply AI multiplier: {str(e)}")
-            
-            # Deduplication: CVE + Asset
+            # 2. In-memory deduplication
             existing_vuln = None
-            if cve_id:
-                existing_vuln = db.query(VulnerabilityEntity).filter(
-                    VulnerabilityEntity.asset_id == asset.id,
-                    VulnerabilityEntity.cve_id == cve_id
-                ).first()
-            else:
-                # Fallback to Title + Asset deduplication for non-CVE findings
-                existing_vuln = db.query(VulnerabilityEntity).filter(
-                    VulnerabilityEntity.asset_id == asset.id,
-                    VulnerabilityEntity.title == title[:250]
-                ).first()
+            if cve_id and cve_id in existing_by_cve:
+                existing_vuln = existing_by_cve[cve_id]
+            elif title in existing_by_title:
+                existing_vuln = existing_by_title[title]
                 
             if existing_vuln:
                 # Update last seen and check for regression
@@ -149,14 +139,13 @@ def parse_scan_report(report_xml: str, target_ip: str, scan_id: int = None):
                     logger.warning(f"Regression detected for {title} on {target_ip}")
                     existing_vuln.status = VulnStatus.NEW
                     if severity in [VulnSeverity.CRITICAL, VulnSeverity.HIGH]:
-                        new_alerts.append(f"[{severity.name}] {title[:250]}")
-                db.commit()
+                        new_alerts.append(f"[{severity.name}] {title}")
             else:
-                # Create new vulnerability
+                # Create new vulnerability in memory
                 new_vuln = VulnerabilityEntity(
                     asset_id=asset.id,
                     cve_id=cve_id,
-                    title=title[:250],
+                    title=title,
                     description=description,
                     remediation=remediation,
                     cvss_base_score=cvss_base_score,
@@ -164,10 +153,22 @@ def parse_scan_report(report_xml: str, target_ip: str, scan_id: int = None):
                     severity=severity,
                     status=VulnStatus.NEW
                 )
-                db.add(new_vuln)
-                db.commit()
+                new_vulns_to_insert.append(new_vuln)
+                
+                # Update our memory dictionary so we don't add duplicates if the XML contains the same finding twice
+                if cve_id:
+                    existing_by_cve[cve_id] = new_vuln
+                else:
+                    existing_by_title[title] = new_vuln
+                    
                 if severity in [VulnSeverity.CRITICAL, VulnSeverity.HIGH]:
-                    new_alerts.append(f"[{severity.name}] {title[:250]}")
+                    new_alerts.append(f"[{severity.name}] {title}")
+                    
+        # 3. Bulk insert and single commit
+        if new_vulns_to_insert:
+            db.add_all(new_vulns_to_insert)
+            
+        db.commit()
                 
         logger.info("Finished parsing report.")
         
@@ -200,7 +201,7 @@ def parse_scan_report(report_xml: str, target_ip: str, scan_id: int = None):
 
 
 @celery_app.task
-def parse_nmap_report(host_data: dict, target_ip: str, scan_id: int = None):
+def parse_nmap_report(host_data: dict, target_ip: str, scan_id: str = None):
     logger.info(f"Parsing Nmap report for {target_ip} (Scan {scan_id})")
     db: Session = SessionLocal()
     new_alerts = []
@@ -236,8 +237,15 @@ def parse_nmap_report(host_data: dict, target_ip: str, scan_id: int = None):
         db.commit()
 
         vulns = host_data.get("vulns", [])
+        
+        # 1. Load existing vulnerabilities into memory
+        existing_vulns_list = db.query(VulnerabilityEntity).filter(VulnerabilityEntity.asset_id == asset.id).all()
+        existing_by_title = {v.title: v for v in existing_vulns_list}
+        
+        new_vulns_to_insert = []
+        
         for v in vulns:
-            title = v.get("id", "Nmap Vuln")
+            title = v.get("id", "Nmap Vuln")[:250]
             output = v.get("output", "")
             
             # Simple Nmap deduction
@@ -245,31 +253,35 @@ def parse_nmap_report(host_data: dict, target_ip: str, scan_id: int = None):
             if "VULNERABLE" in output or "State: VULNERABLE" in output:
                 severity = VulnSeverity.HIGH
             
-            existing_vuln = db.query(VulnerabilityEntity).filter(
-                VulnerabilityEntity.asset_id == asset.id,
-                VulnerabilityEntity.title == title[:250]
-            ).first()
+            # 2. In-memory deduplication
+            existing_vuln = existing_by_title.get(title)
             
             if existing_vuln:
                 existing_vuln.last_seen_at = func.now()
                 if existing_vuln.status == VulnStatus.FIXED:
                     existing_vuln.status = VulnStatus.NEW
                     if severity in [VulnSeverity.CRITICAL, VulnSeverity.HIGH]:
-                        new_alerts.append(f"[{severity.name}] {title[:250]}")
-                db.commit()
+                        new_alerts.append(f"[{severity.name}] {title}")
             else:
                 new_vuln = VulnerabilityEntity(
                     asset_id=asset.id,
-                    title=title[:250],
+                    title=title,
                     description=output,
                     severity=severity,
                     source_engine="NMAP",
                     status=VulnStatus.NEW
                 )
-                db.add(new_vuln)
-                db.commit()
+                new_vulns_to_insert.append(new_vuln)
+                existing_by_title[title] = new_vuln
+                
                 if severity in [VulnSeverity.CRITICAL, VulnSeverity.HIGH]:
-                    new_alerts.append(f"[{severity.name}] {title[:250]}")
+                    new_alerts.append(f"[{severity.name}] {title}")
+
+        # 3. Bulk insert and single commit
+        if new_vulns_to_insert:
+            db.add_all(new_vulns_to_insert)
+            
+        db.commit()
 
         logger.info(f"Finished parsing Nmap report. Found {len(vulns)} scripts output.")
 
@@ -302,7 +314,7 @@ def parse_nmap_report(host_data: dict, target_ip: str, scan_id: int = None):
 
 
 @celery_app.task
-def parse_nuclei_report(vuln_data_list: list, target_ip: str, scan_id: int = None):
+def parse_nuclei_report(vuln_data_list: list, target_ip: str, scan_id: str = None):
     logger.info(f"Parsing Nuclei report for {target_ip} (Scan {scan_id})")
     db: Session = SessionLocal()
     new_alerts = []
@@ -331,8 +343,14 @@ def parse_nuclei_report(vuln_data_list: list, target_ip: str, scan_id: int = Non
         asset.last_scan_raw_output = json.dumps(vuln_data_list, indent=2)
         db.commit()
 
+        # 1. Load existing vulnerabilities into memory
+        existing_vulns_list = db.query(VulnerabilityEntity).filter(VulnerabilityEntity.asset_id == asset.id).all()
+        existing_by_title = {v.title: v for v in existing_vulns_list}
+        
+        new_vulns_to_insert = []
+
         for v in vuln_data_list:
-            title = v.get("name", "Nuclei Vuln")
+            title = v.get("name", "Nuclei Vuln")[:250]
             cve_id = v.get("cve_id")
             
             # Map severity
@@ -354,23 +372,20 @@ def parse_nuclei_report(vuln_data_list: list, target_ip: str, scan_id: int = Non
             
             contextual_risk = calculate_contextual_risk(cvss_score, asset.criticality)
 
-            existing_vuln = db.query(VulnerabilityEntity).filter(
-                VulnerabilityEntity.asset_id == asset.id,
-                VulnerabilityEntity.title == title[:250]
-            ).first()
+            # 2. In-memory deduplication
+            existing_vuln = existing_by_title.get(title)
             
             if existing_vuln:
                 existing_vuln.last_seen_at = func.now()
                 if existing_vuln.status == VulnStatus.FIXED:
                     existing_vuln.status = VulnStatus.NEW
                     if severity in [VulnSeverity.CRITICAL, VulnSeverity.HIGH]:
-                        new_alerts.append(f"[{severity.name}] {title[:250]}")
-                db.commit()
+                        new_alerts.append(f"[{severity.name}] {title}")
             else:
                 new_vuln = VulnerabilityEntity(
                     asset_id=asset.id,
                     cve_id=cve_id,
-                    title=title[:250],
+                    title=title,
                     description=description,
                     remediation=remediation,
                     cvss_base_score=cvss_score,
@@ -379,10 +394,17 @@ def parse_nuclei_report(vuln_data_list: list, target_ip: str, scan_id: int = Non
                     source_engine="NUCLEI",
                     status=VulnStatus.NEW
                 )
-                db.add(new_vuln)
-                db.commit()
+                new_vulns_to_insert.append(new_vuln)
+                existing_by_title[title] = new_vuln
+                
                 if severity in [VulnSeverity.CRITICAL, VulnSeverity.HIGH]:
-                    new_alerts.append(f"[{severity.name}] {title[:250]}")
+                    new_alerts.append(f"[{severity.name}] {title}")
+
+        # 3. Bulk insert and single commit
+        if new_vulns_to_insert:
+            db.add_all(new_vulns_to_insert)
+            
+        db.commit()
 
         logger.info(f"Finished parsing Nuclei report. Processed {len(vuln_data_list)} findings.")
 

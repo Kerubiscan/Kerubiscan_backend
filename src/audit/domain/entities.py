@@ -13,7 +13,7 @@ class AuditLogCreate(BaseModel):
     details: Optional[dict] = None
 
 class AuditLogResponse(AuditLogCreate):
-    id: int
+    id: str
     timestamp: datetime.datetime
 
     class Config:

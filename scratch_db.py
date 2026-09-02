@@ -13,7 +13,7 @@ def _compile_drop_table(element, compiler, **kwargs):
 from src.companies.domain.entities import CompanyEntity
 from src.assets.domain.entities import AssetEntity
 from src.scans.domain.entities import ScanEntity
-from src.vulnerabilities.domain.entities import VulnerabilityEntity, VulnerabilityHistoryEntity
+from src.vulnerabilities.domain.entities import VulnerabilityEntity, VulnerabilityHistory
 from src.audit.domain.models import AuditLog
 from src.scheduling.domain.entities import ScheduleEntity
 

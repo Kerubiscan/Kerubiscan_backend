@@ -16,7 +16,7 @@ class PolicyCreate(PolicyBase):
     pass
 
 class PolicyResponse(PolicyBase):
-    id: int
+    id: str
     created_at: datetime
     updated_at: datetime
 

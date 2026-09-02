@@ -1,6 +1,7 @@
 from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Enum as SQLEnum, Boolean
 from sqlalchemy.sql import func
 import enum
+import uuid
 from src.core.database import Base
 
 class ScanType(enum.Enum):
@@ -22,8 +23,8 @@ class ScanStatus(enum.Enum):
 class ScanEntity(Base):
     __tablename__ = "scans"
 
-    id = Column(Integer, primary_key=True, index=True)
-    company_id = Column(Integer, ForeignKey("companies.id"), index=True, nullable=False)
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()), index=True)
+    company_id = Column(String(36), ForeignKey("companies.id"), index=True, nullable=False)
     name = Column(String, nullable=False)
     target = Column(String, nullable=False)
     network_zone = Column(String, nullable=True)

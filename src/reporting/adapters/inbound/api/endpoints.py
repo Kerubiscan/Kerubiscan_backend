@@ -40,7 +40,7 @@ async def get_reports(
 
 @router.post("/{asset_id}/pdf", response_class=Response)
 async def generate_executive_report(
-    asset_id: int, 
+    asset_id: str, 
     request_data: ReportGenerationRequest,
     db: Session = Depends(get_db)
 ):

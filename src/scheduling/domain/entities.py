@@ -1,11 +1,12 @@
 from sqlalchemy import Column, Integer, String, DateTime, ForeignKey
 from sqlalchemy.sql import func
+import uuid
 from src.core.database import Base
 
 class ScheduleEntity(Base):
     __tablename__ = "schedules"
-    id = Column(Integer, primary_key=True, index=True)
-    company_id = Column(Integer, ForeignKey("companies.id"), nullable=True)
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()), index=True)
+    company_id = Column(String(36), ForeignKey("companies.id"), nullable=True)
     name = Column(String, nullable=False)
     target = Column(String, nullable=False)
     frequency = Column(String, nullable=False)

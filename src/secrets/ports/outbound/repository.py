@@ -3,14 +3,14 @@ from src.secrets.domain.entities import CredentialEntity
 from src.secrets.domain.models import CredentialType
 
 class CredentialRepositoryPort(Protocol):
-    def get_by_id(self, credential_id: int) -> Optional[CredentialEntity]:
+    def get_by_id(self, credential_id: str) -> Optional[CredentialEntity]:
         ...
         
-    def get_by_asset(self, asset_id: int) -> List[CredentialEntity]:
+    def get_by_asset(self, asset_id: str) -> List[CredentialEntity]:
         ...
         
-    def create(self, name: str, asset_id: int, credential_type: CredentialType, vault_path: str) -> CredentialEntity:
+    def create(self, name: str, asset_id: str, credential_type: CredentialType, vault_path: str) -> CredentialEntity:
         ...
         
-    def delete(self, credential_id: int) -> bool:
+    def delete(self, credential_id: str) -> bool:
         ...

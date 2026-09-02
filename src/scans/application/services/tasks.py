@@ -18,44 +18,39 @@ DEFAULT_SCANNER_ID = "08b69003-5fc2-4037-a479-93b440211c73"
 DISCOVERY_CONFIG_ID = "2d3f051c-55ba-11e3-bf43-406186ea4fc5"
 
 @celery_app.task(bind=True, name="run_discovery_scan")
-def run_discovery_scan(self, scan_id: int, target: str, network_zone: str, company_id: int):
+def run_discovery_scan(self, scan_id: str, target: str, network_zone: str, company_id: str):
     logger.info(f"Starting OpenVAS discovery scan {scan_id} on target {target}")
     db: Session = SessionLocal()
+    from src.scans.domain.entities import ScannerEngine
+    scan_engine = ScannerEngine.NMAP # default
     try:
         scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
         if not scan:
             return
             
         scan.status = ScanStatus.IN_PROGRESS
+        scan_engine = scan.scanner_engine
         db.commit()
     finally:
         db.close()
-
-    from src.scans.domain.entities import ScannerEngine
     
-    if scan.scanner_engine == ScannerEngine.NMAP:
+    if scan_engine == ScannerEngine.NMAP:
         try:
             from src.scans.adapters.outbound.nmap_adapter import NmapAdapter
             hosts = NmapAdapter.run_discovery_scan(target)
             db = SessionLocal()
             try:
                 for host_data in hosts:
-                    existing = db.query(AssetEntity).filter(
-                        AssetEntity.ip_address == host_data["ip"],
-                        AssetEntity.company_id == company_id
-                    ).first()
-                    
-                    if not existing:
-                        new_asset = AssetEntity(
-                            company_id=company_id,
-                            name=host_data["hostname"],
-                            ip_address=host_data["ip"],
-                            asset_type="Unknown",
-                            network_zone=network_zone,
-                            operating_system=host_data["os"],
-                            ports=host_data["ports"]
-                        )
-                        db.add(new_asset)
+                    new_asset = AssetEntity(
+                        company_id=company_id,
+                        name=host_data["hostname"],
+                        ip_address=host_data["ip"],
+                        asset_type="Unknown",
+                        network_zone=network_zone,
+                        operating_system=host_data["os"],
+                        ports=host_data["ports"]
+                    )
+                    db.add(new_asset)
                 
                 scan_update = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
                 if scan_update:
@@ -125,7 +120,7 @@ def run_discovery_scan(self, scan_id: int, target: str, network_zone: str, compa
         raise e
 
 @celery_app.task(bind=True, max_retries=None)
-def poll_discovery_scan_status(self, scan_id: int, task_id: str, report_id: str, network_zone: str, company_id: int):
+def poll_discovery_scan_status(self, scan_id: str, task_id: str, report_id: str, network_zone: str, company_id: str):
     adapter = GVMAdapter()
     if not adapter.connect():
         self.retry(countdown=60)
@@ -178,7 +173,7 @@ def poll_discovery_scan_status(self, scan_id: int, task_id: str, report_id: str,
         self.retry(countdown=60)
 
 @celery_app.task
-def parse_discovery_report(report_xml: str, scan_id: int, network_zone: str, company_id: int):
+def parse_discovery_report(report_xml: str, scan_id: str, network_zone: str, company_id: str):
     logger.info(f"Parsing discovery report for Scan {scan_id}")
     db: Session = SessionLocal()
     
@@ -194,56 +189,45 @@ def parse_discovery_report(report_xml: str, scan_id: int, network_zone: str, com
             if ip_elem is not None and ip_elem.text:
                 ip_address = ip_elem.text.strip()
                 
-                # Check if asset already exists
-                existing = db.query(AssetEntity).filter(
-                    AssetEntity.ip_address == ip_address,
-                    AssetEntity.company_id == company_id
-                ).first()
+                # Attempt to get hostname from details
+                hostname = f"Discovered Host ({ip_address})"
                 
-                if not existing:
-                    # Attempt to get hostname from details
-                    hostname = f"Discovered Host ({ip_address})"
+                # Sometimes GVM provides hostname in a detail tag
+                hostname_details = host.xpath(".//detail[name='hostname']/value/text()")
+                if hostname_details:
+                    hostname = hostname_details[0].strip()
                     
-                    # Sometimes GVM provides hostname in a detail tag
-                    hostname_details = host.xpath(".//detail[name='hostname']/value/text()")
-                    if hostname_details:
-                        hostname = hostname_details[0].strip()
-                        
-                    # Extract OS
-                    os_val = "Unknown"
-                    os_details = host.xpath(".//detail[name='Best OS']/value/text()")
-                    if not os_details:
-                        os_details = host.xpath(".//detail[name='OS']/value/text()")
-                    if os_details:
-                        os_val = os_details[0].strip()
+                # Extract OS
+                os_val = "Unknown"
+                os_details = host.xpath(".//detail[name='Best OS']/value/text()")
+                if not os_details:
+                    os_details = host.xpath(".//detail[name='OS']/value/text()")
+                if os_details:
+                    os_val = os_details[0].strip()
 
-                    # Extract Ports (From GVM report, usually in <port> tags inside results, or host ports)
-                    # We can find all ports under //report/report/ports/port
-                    # But those are global, we need to match by IP.
-                    # Actually, GVM reports results per host. Let's find results for this host:
-                    # //result[host='192.168.1.1']/port
-                    host_ports = []
-                    results_for_host = root.xpath(f"//result[host='{ip_address}']")
-                    for r in results_for_host:
-                        port_elem = r.find('port')
-                        if port_elem is not None and port_elem.text:
-                            p_text = port_elem.text.strip()
-                            if p_text != "general/tcp" and p_text != "general/udp" and p_text not in host_ports:
-                                host_ports.append(p_text)
+                # Extract Ports
+                host_ports = []
+                results_for_host = root.xpath(f"//result[host='{ip_address}']")
+                for r in results_for_host:
+                    port_elem = r.find('port')
+                    if port_elem is not None and port_elem.text:
+                        p_text = port_elem.text.strip()
+                        if p_text != "general/tcp" and p_text != "general/udp" and p_text not in host_ports:
+                            host_ports.append(p_text)
+                
+                ports_str = ", ".join(host_ports) if host_ports else None
                     
-                    ports_str = ", ".join(host_ports) if host_ports else None
-                        
-                    new_asset = AssetEntity(
-                        company_id=company_id,
-                        name=hostname,
-                        ip_address=ip_address,
-                        asset_type="Unknown",
-                        network_zone=network_zone,
-                        operating_system=os_val,
-                        ports=ports_str
-                    )
-                    db.add(new_asset)
-                    hosts_added += 1
+                new_asset = AssetEntity(
+                    company_id=company_id,
+                    name=hostname,
+                    ip_address=ip_address,
+                    asset_type="Unknown",
+                    network_zone=network_zone,
+                    operating_system=os_val,
+                    ports=ports_str
+                )
+                db.add(new_asset)
+                hosts_added += 1
                     
         scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
         if scan:
@@ -269,7 +253,7 @@ def parse_discovery_report(report_xml: str, scan_id: int, network_zone: str, com
 
 
 @celery_app.task(bind=True, max_retries=3, name="run_vulnerability_scan")
-def run_vulnerability_scan(self, scan_id: int, asset_ip: str, asset_name: str, config_id: str):
+def run_vulnerability_scan(self, scan_id: str, asset_ip: str, asset_name: str, config_id: str):
     logger.info(f"Starting vulnerability scan for {asset_name} ({asset_ip})")
     
     db: Session = SessionLocal()
@@ -394,8 +378,8 @@ def run_vulnerability_scan(self, scan_id: int, asset_ip: str, asset_name: str, c
         return
         
     try:
-        target_id = adapter.create_target(f"Target_{asset_name}", [asset_ip])
-        task_id = adapter.create_task(f"Task_{asset_name}", target_id, DEFAULT_SCANNER_ID, config_id)
+        target_id = adapter.create_target(f"Target_{asset_name}_{scan_id}", [asset_ip])
+        task_id = adapter.create_task(f"Task_{asset_name}_{scan_id}", target_id, DEFAULT_SCANNER_ID, config_id)
         report_id = adapter.start_task(task_id)
         
         adapter.disconnect()
@@ -419,7 +403,7 @@ def run_vulnerability_scan(self, scan_id: int, asset_ip: str, asset_name: str, c
         raise e
 
 @celery_app.task(bind=True, max_retries=None)
-def poll_scan_status(self, scan_id: int, task_id: str, report_id: str, asset_ip: str):
+def poll_scan_status(self, scan_id: str, task_id: str, report_id: str, asset_ip: str):
     adapter = GVMAdapter()
     if not adapter.connect():
         self.retry(countdown=60)
@@ -437,7 +421,7 @@ def poll_scan_status(self, scan_id: int, task_id: str, report_id: str, asset_ip:
         finally:
             db.close()
 
-        if status == "Done":
+        if status in ["Done", "Stopped", "Interrupted"]:
             report_xml = adapter.get_report(report_id)
             adapter.disconnect()
             
@@ -446,34 +430,20 @@ def poll_scan_status(self, scan_id: int, task_id: str, report_id: str, asset_ip:
             try:
                 scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
                 if scan:
-                    scan.status = ScanStatus.COMPLETED
+                    # If it was stopped/interrupted, we might want to mark it as PARTIAL or just COMPLETED. We'll use COMPLETED to see results.
+                    scan.status = ScanStatus.COMPLETED if status == "Done" else ScanStatus.FAILED
                     from src.audit.domain.models import AuditLog
-                    db.add(AuditLog(user_id="system", username="celery_worker", action="SCAN_COMPLETED", resource_type="SCAN", resource_id=str(scan_id), details={"status": "COMPLETED"}))
-                    scan.progress = 100
+                    db.add(AuditLog(user_id="system", username="celery_worker", action="SCAN_COMPLETED", resource_type="SCAN", resource_id=str(scan_id), details={"status": status}))
+                    scan.progress = 100 if status == "Done" else progress
                     db.commit()
             finally:
                 db.close()
             
-            # Send to vulnerability parser
+            # Send to vulnerability parser to extract whatever it found
             from src.vulnerabilities.application.services.tasks import parse_scan_report
             parse_scan_report.delay(report_xml, asset_ip, scan_id)
             return True
-            
-        elif status in ["Stopped", "Interrupted"]:
-            adapter.disconnect()
-            
-            db = SessionLocal()
-            try:
-                scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
-                if scan:
-                    scan.status = ScanStatus.FAILED
-                    from src.audit.domain.models import AuditLog
-                    db.add(AuditLog(user_id="system", username="celery_worker", action="SCAN_FAILED", resource_type="SCAN", resource_id=str(scan_id), details={"status": "FAILED"}))
-                    db.commit()
-            finally:
-                db.close()
-            return False
-            
+
         else:
             adapter.disconnect()
             self.retry(countdown=10)

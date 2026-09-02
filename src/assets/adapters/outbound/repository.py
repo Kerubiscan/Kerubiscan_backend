@@ -26,7 +26,7 @@ class AssetRepository(AssetRepositoryPort):
         results = self.db.execute(query).scalars().all()
         return list(results), total
 
-    def get_by_id(self, asset_id: int, include_deleted: bool = False, lock: bool = False) -> Optional[AssetEntity]:
+    def get_by_id(self, asset_id: str, include_deleted: bool = False, lock: bool = False) -> Optional[AssetEntity]:
         query = select(AssetEntity).where(AssetEntity.id == asset_id)
         if not include_deleted:
             query = query.where(AssetEntity.is_deleted == False)
@@ -54,7 +54,7 @@ class AssetRepository(AssetRepositoryPort):
         self.db.refresh(db_asset)
         return db_asset
 
-    def update(self, asset_id: int, asset_in: AssetUpdate) -> Optional[AssetEntity]:
+    def update(self, asset_id: str, asset_in: AssetUpdate) -> Optional[AssetEntity]:
         db_asset = self.get_by_id(asset_id, lock=True)
         if not db_asset:
             return None
@@ -70,7 +70,7 @@ class AssetRepository(AssetRepositoryPort):
         self.db.refresh(db_asset)
         return db_asset
 
-    def delete(self, asset_id: int) -> bool:
+    def delete(self, asset_id: str) -> bool:
         db_asset = self.get_by_id(asset_id, lock=True)
         if not db_asset:
             return False

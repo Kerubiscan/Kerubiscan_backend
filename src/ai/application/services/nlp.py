@@ -11,9 +11,15 @@ AI_API_KEY = os.getenv("AI_API_KEY", "")
 AI_ENDPOINT = os.getenv("AI_ENDPOINT", "http://host.docker.internal:11434/api/chat")
 
 async def generate_executive_summary(vuln_data: List[Dict], language: str = "French", extra_instructions: str = "") -> str:
-    prompt = f"Générez un résumé exécutif en {language} pour le RSSI concernant ces vulnérabilités : {vuln_data}."
+    prompt = (
+        f"Générez un résumé exécutif détaillé en {language} pour le management concernant ces vulnérabilités : {vuln_data}.\n"
+        "Votre réponse DOIT inclure :\n"
+        "1. Une synthèse non technique de la posture de sécurité.\n"
+        "2. Une analyse des risques réels et l'identification des potentiels faux positifs parmi ces vulnérabilités.\n"
+        "3. Un plan de remédiation stratégique priorisé (ex: ce qu'il faut corriger en premier).\n"
+    )
     if extra_instructions:
-        prompt += f" Instructions supplémentaires: {extra_instructions}"
+        prompt += f"\nInstructions supplémentaires du client: {extra_instructions}"
     
     try:
         async with httpx.AsyncClient() as client:

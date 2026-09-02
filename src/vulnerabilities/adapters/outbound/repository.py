@@ -28,7 +28,7 @@ class VulnerabilityRepository:
         results = self.db.execute(query).scalars().all()
         return list(results), total
 
-    def update_status(self, vuln_id: int, status: str, changed_by: str) -> Optional[VulnerabilityEntity]:
+    def update_status(self, vuln_id: str, status: str, changed_by: str) -> Optional[VulnerabilityEntity]:
         vuln = self.db.query(VulnerabilityEntity).filter(VulnerabilityEntity.id == vuln_id).first()
         if vuln:
             previous_status = vuln.status
@@ -48,7 +48,7 @@ class VulnerabilityRepository:
                 self.db.refresh(vuln)
         return vuln
 
-    def get_history(self, vuln_id: int) -> List[VulnerabilityHistoryEntity]:
+    def get_history(self, vuln_id: str) -> List[VulnerabilityHistoryEntity]:
         return self.db.query(VulnerabilityHistoryEntity)\
             .filter(VulnerabilityHistoryEntity.vulnerability_id == vuln_id)\
             .order_by(VulnerabilityHistoryEntity.changed_at.desc())\

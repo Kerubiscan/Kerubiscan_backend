@@ -18,7 +18,7 @@ class ScannerStatus(BaseModel):
     last_scan_time: str
 
 class CompanyResponse(BaseModel):
-    id: int
+    id: str
     name: str
     class Config:
         from_attributes = True
@@ -39,8 +39,8 @@ class ScanUpdateRequest(BaseModel):
     scanner_engine: Optional[str] = None
 
 class ScanResponse(BaseModel):
-    id: int
-    company_id: int
+    id: str
+    company_id: str
     name: str
     target: str
     network_zone: Optional[str] = None
@@ -51,6 +51,7 @@ class ScanResponse(BaseModel):
     executive_summary: Optional[str] = None
     recurrence_rule: Optional[str] = None
     next_run_at: Optional[str] = None
+    created_at: Optional[str] = None
     class Config:
         from_attributes = True
 
@@ -142,7 +143,8 @@ def create_scan(req: ScanCreateRequest, db: Session = Depends(get_db), current_u
         progress=scan.progress,
         executive_summary=scan.executive_summary,
         recurrence_rule=scan.recurrence_rule,
-        next_run_at=scan.next_run_at.isoformat() if scan.next_run_at else None
+        next_run_at=scan.next_run_at.isoformat() if scan.next_run_at else None,
+        created_at=scan.created_at.isoformat() if scan.created_at else None
     )
 
 @router.get("", response_model=List[ScanResponse])
@@ -168,12 +170,13 @@ def get_scans(company_id: Optional[int] = None, network_zone: Optional[str] = No
             progress=s.progress,
             executive_summary=s.executive_summary,
             recurrence_rule=s.recurrence_rule,
-            next_run_at=s.next_run_at.isoformat() if s.next_run_at else None
+            next_run_at=s.next_run_at.isoformat() if s.next_run_at else None,
+            created_at=s.created_at.isoformat() if s.created_at else None
         ) for s in scans
     ]
 
 @router.delete("/{scan_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_scan(scan_id: int, db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)):
+def delete_scan(scan_id: str, db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)):
     scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
     if not scan:
         raise HTTPException(status_code=404, detail="Scan not found")
@@ -193,7 +196,7 @@ def delete_scan(scan_id: int, db: Session = Depends(get_db), current_user: dict 
     return None
 
 @router.put("/{scan_id}", response_model=ScanResponse)
-def update_scan(scan_id: int, req: ScanUpdateRequest, db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)):
+def update_scan(scan_id: str, req: ScanUpdateRequest, db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)):
     scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
     if not scan or scan.is_deleted:
         raise HTTPException(status_code=404, detail="Scan not found")
@@ -234,7 +237,8 @@ def update_scan(scan_id: int, req: ScanUpdateRequest, db: Session = Depends(get_
         progress=scan.progress,
         executive_summary=scan.executive_summary,
         recurrence_rule=scan.recurrence_rule,
-        next_run_at=scan.next_run_at.isoformat() if scan.next_run_at else None
+        next_run_at=scan.next_run_at.isoformat() if scan.next_run_at else None,
+        created_at=scan.created_at.isoformat() if scan.created_at else None
     )
 
 
@@ -247,7 +251,7 @@ class SummaryUpdateRequest(BaseModel):
     summary: str
 
 @router.post("/{scan_id}/generate-summary", response_model=ScanResponse)
-async def generate_scan_summary(scan_id: int, req: SummaryGenerateRequest, db: Session = Depends(get_db)):
+async def generate_scan_summary(scan_id: str, req: SummaryGenerateRequest, db: Session = Depends(get_db)):
     scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
     if not scan:
         raise HTTPException(status_code=404, detail="Scan not found")
@@ -274,7 +278,7 @@ async def generate_scan_summary(scan_id: int, req: SummaryGenerateRequest, db: S
     return scan
 
 @router.put("/{scan_id}/summary", response_model=ScanResponse)
-def update_scan_summary(scan_id: int, req: SummaryUpdateRequest, db: Session = Depends(get_db)):
+def update_scan_summary(scan_id: str, req: SummaryUpdateRequest, db: Session = Depends(get_db)):
     scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
     if not scan:
         raise HTTPException(status_code=404, detail="Scan not found")
@@ -289,7 +293,7 @@ import io
 
 @router.get("/{scan_id}/report/pdf")
 def download_scan_report(
-    scan_id: int, 
+    scan_id: str, 
     scanner_company: str = "Kerubiscan Security", 
     target_company: str = "Client Company", 
     db: Session = Depends(get_db)

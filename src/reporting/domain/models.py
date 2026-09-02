@@ -12,8 +12,8 @@ class ReportCreate(ReportBase):
     pass
 
 class ReportResponse(BaseModel):
-    id: int
-    asset_id: int
+    id: str
+    asset_id: str
     asset_name: str
     company_id: Optional[int]
     status: str

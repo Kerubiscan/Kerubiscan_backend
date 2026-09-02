@@ -9,7 +9,7 @@ class CredentialRepository(CredentialRepositoryPort):
     def __init__(self, db: Session):
         self.db = db
 
-    def get_by_id(self, credential_id: int) -> Optional[CredentialEntity]:
+    def get_by_id(self, credential_id: str) -> Optional[CredentialEntity]:
         query = select(CredentialEntity).where(CredentialEntity.id == credential_id)
         return self.db.execute(query).scalar_one_or_none()
 
@@ -20,11 +20,11 @@ class CredentialRepository(CredentialRepositoryPort):
         results = self.db.execute(query).scalars().all()
         return list(results), total
         
-    def get_by_asset(self, asset_id: int) -> List[CredentialEntity]:
+    def get_by_asset(self, asset_id: str) -> List[CredentialEntity]:
         query = select(CredentialEntity).where(CredentialEntity.asset_id == asset_id)
         return list(self.db.execute(query).scalars().all())
 
-    def create(self, name: str, asset_id: int, credential_type: CredentialType, vault_path: str) -> CredentialEntity:
+    def create(self, name: str, asset_id: str, credential_type: CredentialType, vault_path: str) -> CredentialEntity:
         db_credential = CredentialEntity(
             name=name,
             asset_id=asset_id,
@@ -36,7 +36,7 @@ class CredentialRepository(CredentialRepositoryPort):
         self.db.refresh(db_credential)
         return db_credential
 
-    def delete(self, credential_id: int) -> bool:
+    def delete(self, credential_id: str) -> bool:
         db_credential = self.get_by_id(credential_id)
         if not db_credential:
             return False

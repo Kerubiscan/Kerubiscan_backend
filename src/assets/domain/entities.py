@@ -1,15 +1,16 @@
 from sqlalchemy import Column, Integer, String, Boolean, Enum as SQLEnum, Text, DateTime, ForeignKey
 from sqlalchemy.sql import func
+import uuid
 from src.core.database import Base
 from src.assets.domain.models import CriticalityLevel
 
 class AssetEntity(Base):
     __tablename__ = "assets"
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()), index=True)
     name = Column(String, index=True, nullable=False)
     ip_address = Column(String, index=True, nullable=False)
-    company_id = Column(Integer, ForeignKey("companies.id"), index=True, nullable=True)
+    company_id = Column(String(36), ForeignKey("companies.id"), index=True, nullable=True)
     criticality = Column(SQLEnum(CriticalityLevel), default=CriticalityLevel.UNASSIGNED, nullable=False)
     environment = Column(String, nullable=True)
     asset_type = Column(String, nullable=True)

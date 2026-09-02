@@ -17,7 +17,7 @@ class ScheduleCreate(ScheduleBase):
     pass
 
 class ScheduleResponse(ScheduleBase):
-    id: int
+    id: str
     created_at: datetime
     updated_at: datetime
 

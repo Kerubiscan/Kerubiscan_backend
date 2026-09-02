@@ -14,7 +14,7 @@ class CredentialType(str, Enum):
 
 class CredentialBase(BaseModel):
     name: str = Field(..., max_length=255, description="A friendly name for this credential")
-    asset_id: int = Field(..., description="The ID of the asset this credential belongs to")
+    asset_id: str = Field(..., description="The ID of the asset this credential belongs to")
     credential_type: CredentialType
 
 # ----- CREATION SCHEMAS (These accept plain-text secrets, but never return them) -----
@@ -64,9 +64,9 @@ class AWSCredentialCreate(CredentialBase):
 
 
 class CredentialResponse(BaseModel):
-    id: int
+    id: str
     name: str
-    asset_id: int
+    asset_id: str
     credential_type: CredentialType
     vault_path: str
     created_at: datetime

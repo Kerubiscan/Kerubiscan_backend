@@ -9,8 +9,14 @@ from src.auth.domain.entities import Permission
 from src.audit.adapters.outbound.audit_adapter import AuditService
 from src.core.rate_limit import limiter
 
-from src.assets.domain.models import AssetResponse, AssetCreate, AssetUpdate
+from src.assets.domain.models import AssetResponse, AssetCreate, AssetUpdate, AssetSummaryGenerateRequest, AssetReportRequest
 from src.assets.adapters.outbound.repository import AssetRepository
+from src.vulnerabilities.domain.entities import VulnerabilityEntity
+from src.vulnerabilities.domain.models import VulnStatus
+from src.ai.application.services.nlp import generate_executive_summary
+from src.reporting.application.services.pdf_generator import generate_vulnerability_pdf
+from fastapi.responses import StreamingResponse
+import io
 
 router = APIRouter()
 
@@ -47,7 +53,7 @@ async def get_assets(
 @limiter.limit("50/minute")
 async def get_asset(
     request: Request,
-    asset_id: int,
+    asset_id: str,
     repo: AssetRepository = Depends(get_asset_repository),
     current_user: dict = Depends(require_permissions([Permission.ASSET_READ]))
 ):
@@ -60,7 +66,7 @@ async def get_asset(
 @limiter.limit("50/minute")
 async def get_asset_exposure(
     request: Request,
-    asset_id: int,
+    asset_id: str,
     db: Session = Depends(get_db),
     repo: AssetRepository = Depends(get_asset_repository),
     current_user: dict = Depends(require_permissions([Permission.ASSET_READ]))
@@ -116,7 +122,7 @@ async def create_asset(
 @limiter.limit("20/minute")
 async def update_asset(
     request: Request,
-    asset_id: int,
+    asset_id: str,
     asset_in: AssetUpdate,
     repo: AssetRepository = Depends(get_asset_repository),
     audit: AuditService = Depends(get_audit_service),
@@ -142,7 +148,7 @@ async def update_asset(
 @limiter.limit("20/minute")
 async def delete_asset(
     request: Request,
-    asset_id: int,
+    asset_id: str,
     repo: AssetRepository = Depends(get_asset_repository),
     audit: AuditService = Depends(get_audit_service),
     current_user: dict = Depends(require_permissions([Permission.ASSET_DELETE]))
@@ -161,3 +167,62 @@ async def delete_asset(
     )
     
     return None
+
+@router.post("/{asset_id}/generate-summary", response_model=dict)
+@limiter.limit("10/minute")
+async def generate_asset_summary(
+    request: Request,
+    asset_id: str,
+    req: AssetSummaryGenerateRequest,
+    db: Session = Depends(get_db),
+    repo: AssetRepository = Depends(get_asset_repository),
+    current_user: dict = Depends(require_permissions([Permission.ASSET_READ]))
+):
+    asset = repo.get_by_id(asset_id)
+    if not asset:
+        raise HTTPException(status_code=404, detail="Asset not found")
+        
+    # Top 5 unresolved vulns
+    vulns = db.query(VulnerabilityEntity).filter(
+        VulnerabilityEntity.asset_id == asset_id,
+        VulnerabilityEntity.status != VulnStatus.FIXED
+    ).order_by(VulnerabilityEntity.contextual_risk_score.desc()).limit(5).all()
+    
+    vuln_data = [{"title": v.title, "cvss": v.cvss_base_score, "severity": getattr(v.severity, "name", str(v.severity))} for v in vulns]
+    
+    summary = await generate_executive_summary(vuln_data, language=req.language, extra_instructions=req.instructions)
+    return {"executive_summary": summary}
+
+@router.post("/{asset_id}/report/pdf")
+@limiter.limit("5/minute")
+async def download_asset_report(
+    request: Request,
+    asset_id: str,
+    req: AssetReportRequest,
+    db: Session = Depends(get_db),
+    repo: AssetRepository = Depends(get_asset_repository),
+    current_user: dict = Depends(require_permissions([Permission.ASSET_READ]))
+):
+    asset = repo.get_by_id(asset_id)
+    if not asset:
+        raise HTTPException(status_code=404, detail="Asset not found")
+        
+    # Get all unresolved vulns
+    vulns = db.query(VulnerabilityEntity).filter(
+        VulnerabilityEntity.asset_id == asset_id,
+        VulnerabilityEntity.status != VulnStatus.FIXED
+    ).all()
+    
+    pdf_bytes = generate_vulnerability_pdf(
+        asset=asset,
+        vulnerabilities=vulns,
+        executive_summary=req.executive_summary,
+        scanner_company_name=req.scanner_company,
+        target_company_name=req.target_company
+    )
+    
+    return StreamingResponse(
+        io.BytesIO(pdf_bytes), 
+        media_type="application/pdf", 
+        headers={"Content-Disposition": f"attachment; filename=rapport_{asset.name}.pdf"}
+    )

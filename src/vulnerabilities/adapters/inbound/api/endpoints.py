@@ -49,7 +49,7 @@ async def get_vulnerabilities(
 @limiter.limit("20/minute")
 async def update_vulnerability_status(
     request: Request,
-    vuln_id: int,
+    vuln_id: str,
     status_update: VulnStatusUpdate,
     repo: VulnerabilityRepository = Depends(get_vuln_repository),
     audit: AuditService = Depends(get_audit_service),
@@ -77,7 +77,7 @@ async def update_vulnerability_status(
 @limiter.limit("20/minute")
 async def get_vulnerability_history(
     request: Request,
-    vuln_id: int,
+    vuln_id: str,
     repo: VulnerabilityRepository = Depends(get_vuln_repository),
     current_user: dict = Depends(require_permissions([Permission.ASSET_READ]))
 ):

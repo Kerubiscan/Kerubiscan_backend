@@ -18,7 +18,7 @@ class VulnStatus(str, Enum):
     RISK_ACCEPTED = "Risk Accepted"
 
 class VulnerabilityBase(BaseModel):
-    asset_id: int
+    asset_id: str
     cve_id: Optional[str] = None
     title: str
     description: Optional[str] = None
@@ -31,7 +31,7 @@ class VulnerabilityBase(BaseModel):
     status: VulnStatus = VulnStatus.NEW
 
 class VulnerabilityResponse(VulnerabilityBase):
-    id: int
+    id: str
     first_detected_at: datetime
     last_seen_at: datetime
 
@@ -42,8 +42,8 @@ class VulnStatusUpdate(BaseModel):
     status: VulnStatus
 
 class VulnerabilityHistoryResponse(BaseModel):
-    id: int
-    vulnerability_id: int
+    id: str
+    vulnerability_id: str
     previous_status: VulnStatus
     new_status: VulnStatus
     changed_by: str

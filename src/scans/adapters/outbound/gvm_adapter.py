@@ -51,7 +51,8 @@ class GVMAdapter(ScanEnginePort):
             # Join list of hosts into a comma-separated string
             hosts_str = ",".join(hosts)
             
-            kwargs = {"name": name, "hosts": [hosts_str]}
+            from gvm.protocols.gmpv225 import AliveTest
+            kwargs = {"name": name, "hosts": [hosts_str], "alive_test": AliveTest.CONSIDER_ALIVE}
             if port_list_id:
                 kwargs["port_list_id"] = port_list_id
             else:

@@ -345,7 +345,7 @@ async def create_aws_credential(
 @limiter.limit("20/minute")
 async def delete_credential(
     request: Request,
-    credential_id: int,
+    credential_id: str,
     repo: CredentialRepository = Depends(get_credential_repository),
     vault: VaultAdapter = Depends(get_vault_adapter),
     audit: AuditService = Depends(get_audit_service),
