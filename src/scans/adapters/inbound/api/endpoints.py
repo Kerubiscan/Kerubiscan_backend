@@ -275,7 +275,21 @@ async def generate_scan_summary(scan_id: str, req: SummaryGenerateRequest, db: S
     db.commit()
     db.refresh(scan)
     
-    return scan
+    return ScanResponse(
+        id=scan.id,
+        company_id=scan.company_id,
+        name=scan.name,
+        target=scan.target,
+        network_zone=scan.network_zone,
+        scan_type=scan.scan_type.name,
+        scanner_engine=scan.scanner_engine.name,
+        status=scan.status.name,
+        progress=scan.progress,
+        executive_summary=scan.executive_summary,
+        recurrence_rule=scan.recurrence_rule,
+        next_run_at=scan.next_run_at.isoformat() if scan.next_run_at else None,
+        created_at=scan.created_at.isoformat() if scan.created_at else None
+    )
 
 @router.put("/{scan_id}/summary", response_model=ScanResponse)
 def update_scan_summary(scan_id: str, req: SummaryUpdateRequest, db: Session = Depends(get_db)):
@@ -286,7 +300,21 @@ def update_scan_summary(scan_id: str, req: SummaryUpdateRequest, db: Session = D
     scan.executive_summary = req.summary
     db.commit()
     db.refresh(scan)
-    return scan
+    return ScanResponse(
+        id=scan.id,
+        company_id=scan.company_id,
+        name=scan.name,
+        target=scan.target,
+        network_zone=scan.network_zone,
+        scan_type=scan.scan_type.name,
+        scanner_engine=scan.scanner_engine.name,
+        status=scan.status.name,
+        progress=scan.progress,
+        executive_summary=scan.executive_summary,
+        recurrence_rule=scan.recurrence_rule,
+        next_run_at=scan.next_run_at.isoformat() if scan.next_run_at else None,
+        created_at=scan.created_at.isoformat() if scan.created_at else None
+    )
 
 from fastapi.responses import StreamingResponse
 import io
