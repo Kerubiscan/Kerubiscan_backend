@@ -30,7 +30,7 @@ def get_audit_service(db: Session = Depends(get_db)) -> AuditService:
 @limiter.limit("50/minute")
 async def get_assets(
     request: Request,
-    company_id: Optional[int] = Query(None, description="Filter by company ID"),
+    company_id: Optional[str] = Query(None, description="Filter by company ID"),
     network_zone: Optional[str] = Query(None, description="Filter by network zone"),
     pagination: PaginationParams = Depends(),
     repo: AssetRepository = Depends(get_asset_repository),

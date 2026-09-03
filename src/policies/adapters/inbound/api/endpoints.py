@@ -20,7 +20,7 @@ def get_policy_repository(db: Session = Depends(get_db)) -> PolicyRepository:
 @limiter.limit("50/minute")
 async def get_policies(
     request: Request,
-    company_id: Optional[int] = Query(None, description="Filter by company ID"),
+    company_id: Optional[str] = Query(None, description="Filter by company ID"),
     pagination: PaginationParams = Depends(),
     repo: PolicyRepository = Depends(get_policy_repository),
     current_user: dict = Depends(require_permissions([Permission.ASSET_READ]))

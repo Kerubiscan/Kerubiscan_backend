@@ -8,7 +8,7 @@ class VulnerabilityRepository:
     def __init__(self, db: Session):
         self.db = db
 
-    def get_all(self, skip: int = 0, limit: int = 100, company_id: Optional[int] = None, network_zone: Optional[str] = None, asset_id: Optional[int] = None) -> Tuple[List[VulnerabilityEntity], int]:
+    def get_all(self, skip: int = 0, limit: int = 100, company_id: Optional[str] = None, network_zone: Optional[str] = None, asset_id: Optional[str] = None) -> Tuple[List[VulnerabilityEntity], int]:
         query = select(VulnerabilityEntity)
         
         if asset_id is not None:

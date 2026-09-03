@@ -8,7 +8,7 @@ class ScheduleBase(BaseModel):
     frequency: str
     next_run: str
     status: str = "Active"
-    company_id: Optional[int] = None
+    company_id: Optional[str] = None
     scan_type: str = "VULNERABILITY"
     network_zone: Optional[str] = None
     scanner_engine: str = "OPENVAS"

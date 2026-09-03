@@ -11,6 +11,13 @@ replacements = [
     (r'vuln_id:\s*int', 'vuln_id: str'),
     (r'vulnerability_id:\s*int', 'vulnerability_id: str'),
     (r'id:\s*int', 'id: str'),
+    (r'asset_id:\s*Optional\[int\]', 'asset_id: Optional[str]'),
+    (r'scan_id:\s*Optional\[int\]', 'scan_id: Optional[str]'),
+    (r'company_id:\s*Optional\[int\]', 'company_id: Optional[str]'),
+    (r'credential_id:\s*Optional\[int\]', 'credential_id: Optional[str]'),
+    (r'vuln_id:\s*Optional\[int\]', 'vuln_id: Optional[str]'),
+    (r'vulnerability_id:\s*Optional\[int\]', 'vulnerability_id: Optional[str]'),
+    (r'id:\s*Optional\[int\]', 'id: Optional[str]'),
 ]
 
 for root_dir in directories:

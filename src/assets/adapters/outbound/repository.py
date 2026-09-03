@@ -9,7 +9,7 @@ class AssetRepository(AssetRepositoryPort):
     def __init__(self, db: Session):
         self.db = db
 
-    def get_all(self, skip: int = 0, limit: int = 100, include_deleted: bool = False, company_id: Optional[int] = None, network_zone: Optional[str] = None) -> Tuple[List[AssetEntity], int]:
+    def get_all(self, skip: int = 0, limit: int = 100, include_deleted: bool = False, company_id: Optional[str] = None, network_zone: Optional[str] = None) -> Tuple[List[AssetEntity], int]:
         query = select(AssetEntity)
         if not include_deleted:
             query = query.where(AssetEntity.is_deleted == False)

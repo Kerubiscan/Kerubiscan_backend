@@ -6,7 +6,7 @@ class ReportBase(BaseModel):
     name: str
     type: str
     status: str = "Completed"
-    company_id: Optional[int] = None
+    company_id: Optional[str] = None
 
 class ReportCreate(ReportBase):
     pass
@@ -15,7 +15,7 @@ class ReportResponse(BaseModel):
     id: str
     asset_id: str
     asset_name: str
-    company_id: Optional[int]
+    company_id: Optional[str]
     status: str
     created_at: datetime
     

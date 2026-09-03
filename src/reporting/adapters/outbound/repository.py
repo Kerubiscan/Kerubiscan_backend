@@ -7,7 +7,7 @@ class ReportRepository:
     def __init__(self, db: Session):
         self.db = db
 
-    def get_all(self, skip: int = 0, limit: int = 100, company_id: Optional[int] = None) -> Tuple[List[ReportEntity], int]:
+    def get_all(self, skip: int = 0, limit: int = 100, company_id: Optional[str] = None) -> Tuple[List[ReportEntity], int]:
         query = select(ReportEntity)
         if company_id is not None:
             query = query.where(ReportEntity.company_id == company_id)

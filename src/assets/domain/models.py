@@ -13,7 +13,7 @@ class CriticalityLevel(str, Enum):
 class AssetBase(BaseModel):
     name: str = Field(..., min_length=1, max_length=255)
     ip_address: str = Field(..., description="IP Address or Hostname")
-    company_id: Optional[int] = None
+    company_id: Optional[str] = None
     criticality: CriticalityLevel = CriticalityLevel.UNASSIGNED
     environment: Optional[str] = Field(None, max_length=100)
     asset_type: Optional[str] = Field(None, max_length=100)

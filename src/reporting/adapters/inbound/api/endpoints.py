@@ -21,7 +21,7 @@ def get_report_repository(db: Session = Depends(get_db)) -> ReportRepository:
 @limiter.limit("50/minute")
 async def get_reports(
     request: Request,
-    company_id: Optional[int] = Query(None, description="Filter by company ID"),
+    company_id: Optional[str] = Query(None, description="Filter by company ID"),
     pagination: PaginationParams = Depends(),
     repo: ReportRepository = Depends(get_report_repository),
     current_user: dict = Depends(require_permissions([Permission.ASSET_READ]))

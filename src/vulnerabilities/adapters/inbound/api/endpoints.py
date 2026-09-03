@@ -25,9 +25,9 @@ def get_audit_service(db: Session = Depends(get_db)) -> AuditService:
 @limiter.limit("50/minute")
 async def get_vulnerabilities(
     request: Request,
-    company_id: Optional[int] = Query(None, description="Filter by company ID"),
+    company_id: Optional[str] = Query(None, description="Filter by company ID"),
     network_zone: Optional[str] = Query(None, description="Filter by network zone"),
-    asset_id: Optional[int] = Query(None, description="Filter by asset ID"),
+    asset_id: Optional[str] = Query(None, description="Filter by asset ID"),
     pagination: PaginationParams = Depends(),
     repo: VulnerabilityRepository = Depends(get_vuln_repository),
     current_user: dict = Depends(require_permissions([Permission.ASSET_READ]))

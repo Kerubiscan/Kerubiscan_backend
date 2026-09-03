@@ -6,7 +6,7 @@ class PolicyBase(BaseModel):
     name: str
     scan_type: str
     author: Optional[str] = None
-    company_id: Optional[int] = None
+    company_id: Optional[str] = None
     port_scanning_range: str = "1-65535"
     safe_checks: bool = True
     concurrent_hosts: int = 20
