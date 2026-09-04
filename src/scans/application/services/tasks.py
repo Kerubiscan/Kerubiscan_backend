@@ -14,6 +14,27 @@ logger = logging.getLogger(__name__)
 # Standard OpenVAS Default Scanner ID
 DEFAULT_SCANNER_ID = "08b69003-5fc2-4037-a479-93b440211c73"
 
+def update_scan_progress(scan_id: str, ip: str, target_status: str):
+    db: Session = SessionLocal()
+    try:
+        scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
+        if scan and scan.target_states:
+            states = dict(scan.target_states)
+            states[ip] = target_status
+            scan.target_states = states
+            
+            total = len(states)
+            completed = sum(1 for s in states.values() if s in ["COMPLETED", "FAILED"])
+            scan.progress = int((completed / total) * 100) if total > 0 else 100
+            
+            if completed == total:
+                scan.status = ScanStatus.COMPLETED
+                from src.audit.domain.models import AuditLog
+                db.add(AuditLog(user_id="system", username="celery_worker", action="SCAN_COMPLETED", resource_type="SCAN", resource_id=str(scan_id), details={"status": "COMPLETED"}))
+            db.commit()
+    finally:
+        db.close()
+
 # Fast GVM "Host Discovery" Config ID (purely host up/down detection)
 DISCOVERY_CONFIG_ID = "2d3f051c-55ba-11e3-bf43-406186ea4fc5"
 
@@ -60,6 +81,7 @@ def run_discovery_scan(self, scan_id: str, target: str, network_zone: str, compa
                             ip_address=ip,
                             asset_type="Unknown",
                             network_zone=network_zone,
+                            mac_address=host_data.get("mac_address"),
                             operating_system=host_data["os"],
                             ports=host_data["ports"]
                         )
@@ -84,6 +106,8 @@ def run_discovery_scan(self, scan_id: str, target: str, network_zone: str, compa
                         if asset_to_update:
                             if d_host.get("hostname"):
                                 asset_to_update.name = d_host["hostname"]
+                            if d_host.get("mac_address"):
+                                asset_to_update.mac_address = d_host["mac_address"]
                             if d_host.get("os") and d_host.get("os") != "Unknown":
                                 asset_to_update.operating_system = d_host["os"]
                             if d_host.get("ports"):
@@ -286,20 +310,28 @@ def parse_discovery_report(report_xml: str, scan_id: str, network_zone: str, com
             db.add(AuditLog(user_id="system", username="celery_worker", action="SCAN_FAILED", resource_type="SCAN", resource_id=str(scan_id), details={"status": "FAILED"}))
             db.commit()
     finally:
-        db.close()
+                    db.close()
 
 
 @celery_app.task(bind=True, max_retries=3, name="run_vulnerability_scan")
 def run_vulnerability_scan(self, scan_id: str, asset_ip: str, asset_name: str, config_id: str):
-    logger.info(f"Starting vulnerability scan for {asset_name} ({asset_ip})")
-    
+    logger.info(f"Starting vulnerability scan for scan_id: {scan_id}, target: {asset_ip}")
     db: Session = SessionLocal()
-    from src.scans.domain.entities import ScannerEngine
     scan_engine = ScannerEngine.OPENVAS
+    
     try:
         scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
         if scan:
-            scan.status = ScanStatus.IN_PROGRESS
+            if not scan.target_states:
+                scan.target_states = {}
+            
+            # Make a copy of target_states, update the current IP, and reassign so SQLAlchemy detects the change
+            current_states = dict(scan.target_states)
+            current_states[asset_ip] = "IN_PROGRESS"
+            scan.target_states = current_states
+            
+            if scan.status != ScanStatus.IN_PROGRESS:
+                scan.status = ScanStatus.IN_PROGRESS
             scan_engine = scan.scanner_engine
             db.commit()
     finally:
@@ -309,22 +341,15 @@ def run_vulnerability_scan(self, scan_id: str, asset_ip: str, asset_name: str, c
         try:
             from src.scans.adapters.outbound.nmap_adapter import NmapAdapter
             hosts = NmapAdapter.run_vulnerability_scan(asset_ip)
+            logger.info(f"Nmap vulnerability scan completed. Hosts found: {len(hosts)}")
             
-            db = SessionLocal()
-            try:
-                scan_update = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
-                if scan_update:
-                    scan_update.status = ScanStatus.COMPLETED
-                    from src.audit.domain.models import AuditLog
-                    db.add(AuditLog(user_id="system", username="celery_worker", action="SCAN_COMPLETED", resource_type="SCAN", resource_id=str(scan_id), details={"status": "COMPLETED"}))
-                    scan_update.progress = 100
-                db.commit()
-            finally:
-                db.close()
-                
+            # Nmap runs synchronously, so we pass to parser. 
+            # We don't mark as COMPLETED here, the parser will do it.
             if hosts:
                 from src.vulnerabilities.application.services.tasks import parse_nmap_report
-                parse_nmap_report.delay(hosts[0], asset_ip, scan_id)
+                for host_data in hosts:
+                    # Queue task to parse report for each host and mark it as COMPLETED
+                    parse_nmap_report.delay(host_data, host_data.get("ip", asset_ip), scan_id)
             return True
         except Exception as e:
             logger.error(f"Nmap scan failed: {str(e)}")
@@ -344,19 +369,7 @@ def run_vulnerability_scan(self, scan_id: str, asset_ip: str, asset_name: str, c
         try:
             from src.scans.adapters.outbound.nuclei_adapter import NucleiAdapter
             vulns = NucleiAdapter.run_scan(asset_ip)
-            
-            db = SessionLocal()
-            try:
-                scan_update = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
-                if scan_update:
-                    scan_update.status = ScanStatus.COMPLETED
-                    from src.audit.domain.models import AuditLog
-                    db.add(AuditLog(user_id="system", username="celery_worker", action="SCAN_COMPLETED", resource_type="SCAN", resource_id=str(scan_id), details={"status": "COMPLETED"}))
-                    scan_update.progress = 100
-                db.commit()
-            finally:
-                db.close()
-                
+            # Nuclei runs synchronously, pass to parser.
             from src.vulnerabilities.application.services.tasks import parse_nuclei_report
             parse_nuclei_report.delay(vulns, asset_ip, scan_id)
             return True
@@ -468,10 +481,8 @@ def poll_scan_status(self, scan_id: str, task_id: str, report_id: str, asset_ip:
                 scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
                 if scan:
                     # If it was stopped/interrupted, we might want to mark it as PARTIAL or just COMPLETED. We'll use COMPLETED to see results.
-                    scan.status = ScanStatus.COMPLETED if status == "Done" else ScanStatus.FAILED
-                    from src.audit.domain.models import AuditLog
-                    db.add(AuditLog(user_id="system", username="celery_worker", action="SCAN_COMPLETED", resource_type="SCAN", resource_id=str(scan_id), details={"status": status}))
-                    scan.progress = 100 if status == "Done" else progress
+                    # For OpenVAS, we will let the parser handle it per IP since OpenVAS scans all IPs at once.
+                    scan.status = ScanStatus.IN_PROGRESS
                     db.commit()
             finally:
                 db.close()

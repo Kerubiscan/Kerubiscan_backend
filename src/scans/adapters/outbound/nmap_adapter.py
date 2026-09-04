@@ -58,7 +58,7 @@ class NmapAdapter:
             # -sV: Version detection
             # -Pn: Disable ping (fixes Docker NAT dropping ICMP)
             # -oX -: Output XML to stdout
-            result = subprocess.run(["nmap", "-sT", "-sV", "-Pn", "--script", "vuln", "-oX", "-", target], capture_output=True, text=True, check=True)
+            result = subprocess.run(["nmap", "-sT", "-sV", "-Pn", "--script", "vuln,vulners", "-oX", "-", target], capture_output=True, text=True, check=True)
             return NmapAdapter._parse_nmap_xml(result.stdout)
         except subprocess.CalledProcessError as e:
             logger.error(f"Nmap deep scan failed: {e.stderr}")
@@ -80,6 +80,9 @@ class NmapAdapter:
                 if addr_elem is None:
                     addr_elem = host.find("address")
                 ip = addr_elem.get("addr") if addr_elem is not None else None
+                
+                mac_elem = host.find("address[@addrtype='mac']")
+                mac_address = mac_elem.get("addr") if mac_elem is not None else None
                 
                 if not ip:
                     continue
@@ -128,6 +131,7 @@ class NmapAdapter:
                 hosts_data.append({
                     "ip": ip,
                     "hostname": hostname or f"Discovered Host ({ip})",
+                    "mac_address": mac_address,
                     "os": os_name,
                     "ports": ", ".join(open_ports) if open_ports else None,
                     "vulns": vulns

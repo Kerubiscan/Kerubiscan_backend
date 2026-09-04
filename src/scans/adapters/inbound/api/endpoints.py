@@ -48,6 +48,7 @@ class ScanResponse(BaseModel):
     scanner_engine: str
     status: str
     progress: int = 0
+    target_states: Optional[dict] = None
     executive_summary: Optional[str] = None
     recurrence_rule: Optional[str] = None
     next_run_at: Optional[str] = None
@@ -95,6 +96,9 @@ def create_scan(req: ScanCreateRequest, db: Session = Depends(get_db), current_u
     s_type = ScanType.DISCOVERY if req.scan_type.upper() == "DISCOVERY" else ScanType.VULNERABILITY
     s_engine = ScannerEngine[req.scanner_engine.upper()] if req.scanner_engine.upper() in ScannerEngine.__members__ else ScannerEngine.OPENVAS
     
+    targets = [t.strip() for t in req.target.split(",") if t.strip()]
+    target_states = {t: "PENDING" for t in targets}
+    
     scan = ScanEntity(
         company_id=company.id,
         name=f"Scan for {req.target}",
@@ -103,6 +107,7 @@ def create_scan(req: ScanCreateRequest, db: Session = Depends(get_db), current_u
         scan_type=s_type,
         scanner_engine=s_engine,
         status=ScanStatus.PENDING if req.scheduled_for else ScanStatus.IN_PROGRESS,
+        target_states=target_states,
         recurrence_rule=req.recurrence_rule,
         next_run_at=req.scheduled_for
     )
@@ -129,7 +134,8 @@ def create_scan(req: ScanCreateRequest, db: Session = Depends(get_db), current_u
     else:
         # Default config_id for 'Full and fast'
         config_id = "daba56c8-73ec-11df-a475-002264764cea"
-        run_vulnerability_scan.delay(scan.id, req.target, req.target, config_id)
+        for ip in targets:
+            run_vulnerability_scan.delay(scan.id, ip, ip, config_id)
         
     return ScanResponse(
         id=scan.id,
@@ -141,6 +147,7 @@ def create_scan(req: ScanCreateRequest, db: Session = Depends(get_db), current_u
         scanner_engine=scan.scanner_engine.name,
         status=scan.status.name,
         progress=scan.progress,
+        target_states=scan.target_states,
         executive_summary=scan.executive_summary,
         recurrence_rule=scan.recurrence_rule,
         next_run_at=scan.next_run_at.isoformat() if scan.next_run_at else None,
@@ -168,6 +175,7 @@ def get_scans(company_id: Optional[str] = None, network_zone: Optional[str] = No
             scanner_engine=s.scanner_engine.name,
             status=s.status.name,
             progress=s.progress,
+            target_states=s.target_states,
             executive_summary=s.executive_summary,
             recurrence_rule=s.recurrence_rule,
             next_run_at=s.next_run_at.isoformat() if s.next_run_at else None,
@@ -235,6 +243,7 @@ def update_scan(scan_id: str, req: ScanUpdateRequest, db: Session = Depends(get_
         scanner_engine=scan.scanner_engine.name,
         status=scan.status.name,
         progress=scan.progress,
+        target_states=scan.target_states,
         executive_summary=scan.executive_summary,
         recurrence_rule=scan.recurrence_rule,
         next_run_at=scan.next_run_at.isoformat() if scan.next_run_at else None,
@@ -285,6 +294,7 @@ async def generate_scan_summary(scan_id: str, req: SummaryGenerateRequest, db: S
         scanner_engine=scan.scanner_engine.name,
         status=scan.status.name,
         progress=scan.progress,
+        target_states=scan.target_states,
         executive_summary=scan.executive_summary,
         recurrence_rule=scan.recurrence_rule,
         next_run_at=scan.next_run_at.isoformat() if scan.next_run_at else None,
@@ -310,6 +320,7 @@ def update_scan_summary(scan_id: str, req: SummaryUpdateRequest, db: Session = D
         scanner_engine=scan.scanner_engine.name,
         status=scan.status.name,
         progress=scan.progress,
+        target_states=scan.target_states,
         executive_summary=scan.executive_summary,
         recurrence_rule=scan.recurrence_rule,
         next_run_at=scan.next_run_at.isoformat() if scan.next_run_at else None,

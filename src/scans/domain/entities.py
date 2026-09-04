@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Enum as SQLEnum, Boolean
+from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Enum as SQLEnum, Boolean, JSON
 from sqlalchemy.sql import func
 import enum
 import uuid
@@ -34,6 +34,7 @@ class ScanEntity(Base):
     progress = Column(Integer, default=0, nullable=False)
     vulnerabilities_found = Column(Integer, default=0, nullable=True)
     executive_summary = Column(String, nullable=True)
+    target_states = Column(JSON, default=dict, nullable=False)
     recurrence_rule = Column(String, nullable=True)
     next_run_at = Column(DateTime(timezone=True), nullable=True)
     is_deleted = Column(Boolean, default=False, nullable=False)

@@ -1,4 +1,5 @@
 from src.core.celery_app import celery_app
+from src.scans.application.services.tasks import update_scan_progress
 from lxml import etree
 import logging
 from sqlalchemy.sql import func
@@ -196,8 +197,12 @@ def parse_scan_report(report_xml: str, target_ip: str, scan_id: str = None):
     except Exception as e:
         logger.error(f"Error parsing report: {str(e)}")
         db.rollback()
+        if scan_id:
+            update_scan_progress(scan_id, target_ip, "FAILED")
     finally:
         db.close()
+        if scan_id and new_vulns_to_insert is not None:
+            update_scan_progress(scan_id, target_ip, "COMPLETED")
 
 
 @celery_app.task
@@ -311,8 +316,13 @@ def parse_nmap_report(host_data: dict, target_ip: str, scan_id: str = None):
     except Exception as e:
         logger.error(f"Error parsing Nmap report: {str(e)}")
         db.rollback()
+        if scan_id:
+            update_scan_progress(scan_id, target_ip, "FAILED")
     finally:
         db.close()
+        if scan_id and new_vulns_to_insert is not None:
+            # We assume success if it didn't jump to except block before db.commit
+            update_scan_progress(scan_id, target_ip, "COMPLETED")
 
 
 @celery_app.task
@@ -434,5 +444,9 @@ def parse_nuclei_report(vuln_data_list: list, target_ip: str, scan_id: str = Non
     except Exception as e:
         logger.error(f"Error parsing Nuclei report: {str(e)}")
         db.rollback()
+        if scan_id:
+            update_scan_progress(scan_id, target_ip, "FAILED")
     finally:
         db.close()
+        if scan_id and new_vulns_to_insert is not None:
+            update_scan_progress(scan_id, target_ip, "COMPLETED")
