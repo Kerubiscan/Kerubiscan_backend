@@ -5,7 +5,7 @@ from lxml import etree
 from celery.exceptions import Retry
 from sqlalchemy.orm import Session
 from src.core.database import SessionLocal
-from src.scans.domain.entities import ScanEntity, ScanStatus
+from src.scans.domain.entities import ScanEntity, ScanStatus, ScannerEngine
 from src.assets.domain.entities import AssetEntity
 from src.companies.domain.entities import CompanyEntity
 
