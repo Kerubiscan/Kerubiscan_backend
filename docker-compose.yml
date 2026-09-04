@@ -19,16 +19,21 @@ services:
       - KEYCLOAK_SERVER_URL=http://keycloak:8080
       - KEYCLOAK_CLIENT_SECRET=kimia-backend-secret
       - TZ=Africa/Lagos
+      # Replace 192.168.x.x with your Windows PC's IP address (run 'ipconfig' to find it)
+      - AI_ENDPOINT=http://192.168.x.x:11434/api/chat
     depends_on:
       - db
       - redis
       - vault
     cap_add:
       - NET_RAW
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
   celery-worker:
     restart: unless-stopped
     build: .
+    network_mode: "host"
     command: celery -A src.core.celery_app worker --loglevel=warning
     logging:
       driver: "json-file"
@@ -39,11 +44,11 @@ services:
       - ./src:/app/src
       - openvas_sock:/run/gvmd
     environment:
-      - POSTGRES_URL=postgresql://kimia:kimia_password@db:5432/kimia_db
-      - REDIS_URL=redis://redis:6379/0
-      - VAULT_URL=http://vault:8200
+      - POSTGRES_URL=postgresql://kimia:kimia_password@localhost:5432/kimia_db
+      - REDIS_URL=redis://localhost:6379/0
+      - VAULT_URL=http://localhost:8200
       - VAULT_TOKEN=root
-      - KEYCLOAK_SERVER_URL=http://keycloak:8080
+      - KEYCLOAK_SERVER_URL=http://localhost:8080
       - KEYCLOAK_CLIENT_SECRET=kimia-backend-secret
       - TZ=Africa/Lagos
     depends_on:

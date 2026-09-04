@@ -31,15 +31,16 @@ class NmapAdapter:
             # -sT: TCP Connect scan
             # -sV: Version detection
             # -O: OS detection (Requires root)
-            # -Pn: Disable ping
+            # -p-: Scan all 65,535 ports
+            # -T4: Aggressive timing to speed up the massive port scan
             # -oX -: Output XML
-            result = subprocess.run(["nmap", "-sT", "-sV", "-O", "-Pn", "-oX", "-", target], capture_output=True, text=True, check=True)
+            result = subprocess.run(["nmap", "-sT", "-sV", "-O", "-Pn", "-p-", "-T4", "-oX", "-", target], capture_output=True, text=True, check=True)
             return NmapAdapter._parse_nmap_xml(result.stdout)
         except subprocess.CalledProcessError as e:
             if "requires root privileges" in e.stderr.lower() or "requires root" in e.stderr.lower() or "root" in e.stderr.lower() or "privilege" in e.stderr.lower():
                 logger.warning(f"OS detection (-O) failed due to privileges. Falling back to -sV only for {target}")
                 try:
-                    result = subprocess.run(["nmap", "-sT", "-sV", "-Pn", "-oX", "-", target], capture_output=True, text=True, check=True)
+                    result = subprocess.run(["nmap", "-sT", "-sV", "-Pn", "-p-", "-T4", "-oX", "-", target], capture_output=True, text=True, check=True)
                     return NmapAdapter._parse_nmap_xml(result.stdout)
                 except subprocess.CalledProcessError as e2:
                     logger.error(f"Nmap fallback detailed scan failed: {e2.stderr}")

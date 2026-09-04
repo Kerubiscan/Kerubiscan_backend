@@ -23,7 +23,7 @@ class NucleiAdapter:
 
             # -ut: Update Templates automatically
             # Removed -silent so we can capture errors in stderr
-            result = subprocess.run(["nuclei", "-ut", "-u", formatted_target, "-je", output_file, "-nc"], 
+            result = subprocess.run(["/usr/local/bin/nuclei", "-ut", "-u", formatted_target, "-je", output_file, "-nc"], 
                            capture_output=True, text=True, check=False)
             
             # Log any errors Nuclei spits out

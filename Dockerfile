@@ -23,6 +23,10 @@ RUN wget https://github.com/projectdiscovery/nuclei/releases/download/v3.3.0/nuc
     && rm nuclei_3.3.0_linux_amd64.zip \
     && nuclei -update-templates
 
+# Install Nmap vulners script
+RUN wget https://raw.githubusercontent.com/vulnersCom/nmap-vulners/master/vulners.nse -O /usr/share/nmap/scripts/vulners.nse \
+    && nmap --script-updatedb
+
 # Install python dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir --default-timeout=100 -r requirements.txt
