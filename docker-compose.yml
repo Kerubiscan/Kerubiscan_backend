@@ -146,7 +146,7 @@ services:
     environment:
       - PUBLIC_HOSTNAME=localhost
       - PASSWORD=admin
-      - SKIPSYNC=true
+      - SKIPSYNC=false
     volumes:
       - openvas_data:/data
       - openvas_sock:/run/gvmd
