@@ -37,21 +37,58 @@ def run_discovery_scan(self, scan_id: str, target: str, network_zone: str, compa
     if scan_engine == ScannerEngine.NMAP:
         try:
             from src.scans.adapters.outbound.nmap_adapter import NmapAdapter
+            logger.info(f"Phase 1: Fast ping sweep on {target}")
             hosts = NmapAdapter.run_discovery_scan(target)
+            
             db = SessionLocal()
             try:
+                # Phase 1: Save basic hosts
+                discovered_ips = []
                 for host_data in hosts:
-                    new_asset = AssetEntity(
-                        company_id=company_id,
-                        name=host_data["hostname"],
-                        ip_address=host_data["ip"],
-                        asset_type="Unknown",
-                        network_zone=network_zone,
-                        operating_system=host_data["os"],
-                        ports=host_data["ports"]
-                    )
-                    db.add(new_asset)
+                    ip = host_data["ip"]
+                    discovered_ips.append(ip)
+                    existing_asset = db.query(AssetEntity).filter(
+                        AssetEntity.ip_address == ip, 
+                        AssetEntity.company_id == company_id,
+                        AssetEntity.is_deleted == False
+                    ).first()
+                    
+                    if not existing_asset:
+                        new_asset = AssetEntity(
+                            company_id=company_id,
+                            name=host_data["hostname"] or ip,
+                            ip_address=ip,
+                            asset_type="Unknown",
+                            network_zone=network_zone,
+                            operating_system=host_data["os"],
+                            ports=host_data["ports"]
+                        )
+                        db.add(new_asset)
                 
+                scan_update = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
+                if scan_update:
+                    scan_update.progress = 50
+                db.commit()
+                
+                if discovered_ips:
+                    logger.info(f"Phase 2: Detailed scan on {len(discovered_ips)} discovered hosts")
+                    detailed_target = ",".join(discovered_ips)
+                    detailed_hosts = NmapAdapter.run_detailed_discovery_scan(detailed_target)
+                    
+                    for d_host in detailed_hosts:
+                        asset_to_update = db.query(AssetEntity).filter(
+                            AssetEntity.ip_address == d_host["ip"],
+                            AssetEntity.company_id == company_id,
+                            AssetEntity.is_deleted == False
+                        ).first()
+                        if asset_to_update:
+                            if d_host.get("hostname"):
+                                asset_to_update.name = d_host["hostname"]
+                            if d_host.get("os") and d_host.get("os") != "Unknown":
+                                asset_to_update.operating_system = d_host["os"]
+                            if d_host.get("ports"):
+                                asset_to_update.ports = d_host["ports"]
+                                
                 scan_update = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
                 if scan_update:
                     scan_update.status = ScanStatus.COMPLETED
@@ -59,7 +96,7 @@ def run_discovery_scan(self, scan_id: str, target: str, network_zone: str, compa
                     db.add(AuditLog(user_id="system", username="celery_worker", action="SCAN_COMPLETED", resource_type="SCAN", resource_id=str(scan_id), details={"status": "COMPLETED"}))
                     scan_update.progress = 100
                 db.commit()
-                logger.info(f"Nmap discovery scan {scan_id} completed. Found {len(hosts)} hosts.")
+                logger.info(f"Nmap discovery scan {scan_id} completed successfully.")
                 return True
             finally:
                 db.close()

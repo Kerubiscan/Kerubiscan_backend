@@ -22,6 +22,33 @@ class NmapAdapter:
             raise Exception(f"Nmap discovery failed: {e.stderr}")
 
     @staticmethod
+    def run_detailed_discovery_scan(target: str) -> List[Dict]:
+        """Runs a detailed Nmap scan to get OS, hostnames, and ports without full vulnerability scripts.
+           Falls back to -sV if -O fails (e.g. due to lack of root privileges)."""
+        logger.info(f"Running Nmap detailed discovery scan on {target}")
+        
+        try:
+            # -sT: TCP Connect scan
+            # -sV: Version detection
+            # -O: OS detection (Requires root)
+            # -Pn: Disable ping
+            # -oX -: Output XML
+            result = subprocess.run(["nmap", "-sT", "-sV", "-O", "-Pn", "-oX", "-", target], capture_output=True, text=True, check=True)
+            return NmapAdapter._parse_nmap_xml(result.stdout)
+        except subprocess.CalledProcessError as e:
+            if "requires root privileges" in e.stderr.lower() or "requires root" in e.stderr.lower() or "root" in e.stderr.lower() or "privilege" in e.stderr.lower():
+                logger.warning(f"OS detection (-O) failed due to privileges. Falling back to -sV only for {target}")
+                try:
+                    result = subprocess.run(["nmap", "-sT", "-sV", "-Pn", "-oX", "-", target], capture_output=True, text=True, check=True)
+                    return NmapAdapter._parse_nmap_xml(result.stdout)
+                except subprocess.CalledProcessError as e2:
+                    logger.error(f"Nmap fallback detailed scan failed: {e2.stderr}")
+                    raise Exception(f"Nmap fallback detailed scan failed: {e2.stderr}")
+            else:
+                logger.error(f"Nmap detailed scan failed: {e.stderr}")
+                raise Exception(f"Nmap detailed scan failed: {e.stderr}")
+
+    @staticmethod
     def run_vulnerability_scan(target: str) -> List[Dict]:
         """Runs an Nmap deep scan (ports, OS, versions) and returns structured data."""
         logger.info(f"Running Nmap deep scan on {target}")
@@ -77,11 +104,26 @@ class NmapAdapter:
                 
                 # Nmap NSE Vulnerabilities (if run with --script vuln)
                 vulns = []
+                import re
                 for script in host.xpath("hostscript/script") + host.xpath("ports/port/script"):
-                    vulns.append({
-                        "id": script.get("id"),
-                        "output": script.get("output")
-                    })
+                    script_id = script.get("id")
+                    output_text = script.get("output", "")
+                    
+                    # Look for CVEs and CVSS scores in the output
+                    cve_matches = re.findall(r"(CVE-\d{4}-\d+)\s+([\d.]+)", output_text)
+                    if cve_matches:
+                        for cve_id, cvss in cve_matches:
+                            vulns.append({
+                                "id": cve_id,
+                                "cve_id": cve_id,
+                                "cvss": float(cvss),
+                                "output": f"[{script_id}] {output_text}"
+                            })
+                    else:
+                        vulns.append({
+                            "id": script_id,
+                            "output": output_text
+                        })
                     
                 hosts_data.append({
                     "ip": ip,

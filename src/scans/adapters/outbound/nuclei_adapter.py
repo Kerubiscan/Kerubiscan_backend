@@ -15,13 +15,21 @@ class NucleiAdapter:
         output_file = f"/tmp/nuclei_{target.replace('.', '_')}.json"
         
         try:
-            # -u: Target URL/IP
-            # -je: JSON Export
-            # -silent: Reduce noise
-            # -nc: No color
-            subprocess.run(["nuclei", "-u", target, "-je", output_file, "-silent", "-nc"], 
+            # Nuclei expects a URL for web templates. Add http:// if it's just a domain.
+            formatted_target = target
+            if not target.startswith("http://") and not target.startswith("https://"):
+                formatted_target = f"http://{target}"
+                logger.info(f"Nuclei target formatted to: {formatted_target}")
+
+            # -ut: Update Templates automatically
+            # Removed -silent so we can capture errors in stderr
+            result = subprocess.run(["nuclei", "-ut", "-u", formatted_target, "-je", output_file, "-nc"], 
                            capture_output=True, text=True, check=False)
             
+            # Log any errors Nuclei spits out
+            if result.stderr:
+                logger.warning(f"Nuclei output/errors: {result.stderr}")
+                
             # Nuclei might return non-zero if vulnerabilities are found, so we don't strict check=True
             return NucleiAdapter._parse_nuclei_json(output_file)
         except Exception as e:

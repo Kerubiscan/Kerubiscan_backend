@@ -268,6 +268,8 @@ def parse_nmap_report(host_data: dict, target_ip: str, scan_id: str = None):
                     title=title,
                     description=output,
                     severity=severity,
+                    cve_id=cve_id,
+                    cvss_base_score=cvss_score,
                     source_engine="NMAP",
                     status=VulnStatus.NEW
                 )
