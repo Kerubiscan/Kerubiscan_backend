@@ -2,6 +2,7 @@ version: '3.8'
 
 services:
   api:
+    restart: unless-stopped
     build: .
     ports:
       - "8000:8000"
@@ -26,6 +27,7 @@ services:
       - NET_RAW
 
   celery-worker:
+    restart: unless-stopped
     build: .
     command: celery -A src.core.celery_app worker --loglevel=info
     volumes:
@@ -48,6 +50,7 @@ services:
       - NET_RAW
 
   celery-beat:
+    restart: unless-stopped
     build: .
     command: celery -A src.core.celery_app beat --loglevel=info
     volumes:
@@ -63,6 +66,7 @@ services:
       - redis
 
   db:
+    restart: unless-stopped
     image: postgres:15-alpine
     environment:
       POSTGRES_USER: kimia
@@ -74,17 +78,20 @@ services:
       - postgres_data:/var/lib/postgresql/data
 
   redis:
+    restart: unless-stopped
     image: redis:7-alpine
     ports:
       - "6379:6379"
 
   rabbitmq:
+    restart: unless-stopped
     image: rabbitmq:3-management-alpine
     ports:
       - "5672:5672"
       - "15672:15672"
 
   keycloak:
+    restart: unless-stopped
     image: quay.io/keycloak/keycloak:24.0.0
     command: start-dev --import-realm
     environment:
@@ -105,6 +112,7 @@ services:
       - db
 
   vault:
+    restart: unless-stopped
     image: hashicorp/vault:1.15
     environment:
       VAULT_DEV_ROOT_TOKEN_ID: "root"
@@ -115,6 +123,7 @@ services:
       - IPC_LOCK
 
   openvas:
+    restart: unless-stopped
     image: immauss/openvas:latest
     ports:
       - "9392:9392"
