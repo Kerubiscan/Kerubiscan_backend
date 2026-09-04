@@ -17,3 +17,6 @@ class AssetRepositoryPort(Protocol):
         
     def delete(self, asset_id: str) -> bool:
         ...
+
+    def delete_all(self) -> int:
+        ...

@@ -78,3 +78,14 @@ class AssetRepository(AssetRepositoryPort):
         db_asset.is_deleted = True
         self.db.commit()
         return True
+
+    def delete_all(self) -> int:
+        from sqlalchemy import update
+        stmt = (
+            update(AssetEntity)
+            .where(AssetEntity.is_deleted == False)
+            .values(is_deleted=True)
+        )
+        result = self.db.execute(stmt)
+        self.db.commit()
+        return result.rowcount

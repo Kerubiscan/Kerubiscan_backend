@@ -168,6 +168,27 @@ async def delete_asset(
     
     return None
 
+@router.delete("", status_code=status.HTTP_204_NO_CONTENT)
+@limiter.limit("5/minute")
+async def delete_all_assets(
+    request: Request,
+    repo: AssetRepository = Depends(get_asset_repository),
+    audit: AuditService = Depends(get_audit_service),
+    current_user: dict = Depends(require_permissions([Permission.ASSET_DELETE]))
+):
+    count = repo.delete_all()
+        
+    audit.log_action(
+        user_id=current_user.get("sub", "unknown"),
+        username=current_user.get("preferred_username"),
+        action="DELETE_ALL_ASSETS",
+        resource_type="Asset",
+        resource_id="ALL",
+        details={"soft_delete": True, "count": count}
+    )
+    
+    return None
+
 @router.post("/{asset_id}/generate-summary", response_model=dict)
 @limiter.limit("10/minute")
 async def generate_asset_summary(
