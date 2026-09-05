@@ -12,6 +12,12 @@ from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
 
+def safe_float(val, default=0.0) -> float:
+    try:
+        return float(val) if val is not None and val != "" else default
+    except (ValueError, TypeError):
+        return default
+
 def map_threat_to_severity(threat: str) -> VulnSeverity:
     if not threat: return VulnSeverity.INFO
     threat = threat.lower()
@@ -117,7 +123,7 @@ def parse_scan_report(report_xml: str, target_ip: str, scan_id: str = None):
             title = title[:250]
             
             cvss_str = nvt.findtext("cvss_base")
-            cvss_base_score = float(cvss_str) if cvss_str else 0.0
+            cvss_base_score = safe_float(cvss_str)
             
             description = result.findtext("description")
             remediation = nvt.findtext("solution")
@@ -194,6 +200,9 @@ def parse_scan_report(report_xml: str, target_ip: str, scan_id: str = None):
                 content=f"The following HIGH and CRITICAL vulnerabilities were newly discovered or regressed on {asset.name} ({target_ip}):\n\n{vuln_list}\n\nPlease investigate immediately."
             )
         
+        if scan_id:
+            update_scan_progress(scan_id, target_ip, "COMPLETED")
+        
     except Exception as e:
         logger.error(f"Error parsing report: {str(e)}")
         db.rollback()
@@ -201,8 +210,6 @@ def parse_scan_report(report_xml: str, target_ip: str, scan_id: str = None):
             update_scan_progress(scan_id, target_ip, "FAILED")
     finally:
         db.close()
-        if scan_id and new_vulns_to_insert is not None:
-            update_scan_progress(scan_id, target_ip, "COMPLETED")
 
 
 @celery_app.task
@@ -252,6 +259,8 @@ def parse_nmap_report(host_data: dict, target_ip: str, scan_id: str = None):
         for v in vulns:
             title = v.get("id", "Nmap Vuln")[:250]
             output = v.get("output", "")
+            cve_id = v.get("cve_id")
+            cvss_score = safe_float(v.get("cvss"))
             
             # Simple Nmap deduction
             severity = VulnSeverity.INFO
@@ -313,6 +322,9 @@ def parse_nmap_report(host_data: dict, target_ip: str, scan_id: str = None):
                 content=f"The following HIGH and CRITICAL vulnerabilities were newly discovered or regressed on {asset.name} ({target_ip}):\n\n{vuln_list}\n\nPlease investigate immediately."
             )
 
+        if scan_id:
+            update_scan_progress(scan_id, target_ip, "COMPLETED")
+            
     except Exception as e:
         logger.error(f"Error parsing Nmap report: {str(e)}")
         db.rollback()
@@ -320,9 +332,6 @@ def parse_nmap_report(host_data: dict, target_ip: str, scan_id: str = None):
             update_scan_progress(scan_id, target_ip, "FAILED")
     finally:
         db.close()
-        if scan_id and new_vulns_to_insert is not None:
-            # We assume success if it didn't jump to except block before db.commit
-            update_scan_progress(scan_id, target_ip, "COMPLETED")
 
 
 @celery_app.task
@@ -380,7 +389,7 @@ def parse_nuclei_report(vuln_data_list: list, target_ip: str, scan_id: str = Non
                 description += f"\nExtracted: {', '.join(v.get('extracted_results'))}"
                 
             remediation = v.get("remediation", "")
-            cvss_score = float(v.get("cvss_score", 0.0))
+            cvss_score = safe_float(v.get("cvss_score"))
             
             contextual_risk = calculate_contextual_risk(cvss_score, asset.criticality)
 
@@ -441,6 +450,9 @@ def parse_nuclei_report(vuln_data_list: list, target_ip: str, scan_id: str = Non
                 content=f"The following HIGH and CRITICAL vulnerabilities were newly discovered or regressed on {asset.name} ({target_ip}):\n\n{vuln_list}\n\nPlease investigate immediately."
             )
 
+        if scan_id:
+            update_scan_progress(scan_id, target_ip, "COMPLETED")
+
     except Exception as e:
         logger.error(f"Error parsing Nuclei report: {str(e)}")
         db.rollback()
@@ -448,5 +460,3 @@ def parse_nuclei_report(vuln_data_list: list, target_ip: str, scan_id: str = Non
             update_scan_progress(scan_id, target_ip, "FAILED")
     finally:
         db.close()
-        if scan_id and new_vulns_to_insert is not None:
-            update_scan_progress(scan_id, target_ip, "COMPLETED")

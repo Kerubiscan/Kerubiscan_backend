@@ -15,8 +15,14 @@ class NmapAdapter:
         try:
             # -sn: Ping Scan (disable port scan)
             # -oX -: Output XML to stdout
-            result = subprocess.run(["nmap", "-sn", "-oX", "-", target], capture_output=True, text=True, check=True)
+            result = subprocess.run(
+                ["nmap", "-sn", "-oX", "-", target], 
+                capture_output=True, text=True, check=True, timeout=300
+            )
             return NmapAdapter._parse_nmap_xml(result.stdout)
+        except subprocess.TimeoutExpired:
+            logger.error(f"Nmap discovery scan timed out for {target}")
+            raise Exception(f"Nmap discovery timed out on {target}")
         except subprocess.CalledProcessError as e:
             logger.error(f"Nmap discovery failed: {e.stderr}")
             raise Exception(f"Nmap discovery failed: {e.stderr}")
@@ -34,14 +40,26 @@ class NmapAdapter:
             # -p-: Scan all 65,535 ports
             # -T4: Aggressive timing to speed up the massive port scan
             # -oX -: Output XML
-            result = subprocess.run(["nmap", "-sT", "-sV", "-O", "-Pn", "-p-", "-T4", "-oX", "-", target], capture_output=True, text=True, check=True)
+            result = subprocess.run(
+                ["nmap", "-sT", "-sV", "-O", "-Pn", "-p-", "-T4", "-oX", "-", target], 
+                capture_output=True, text=True, check=True, timeout=1800
+            )
             return NmapAdapter._parse_nmap_xml(result.stdout)
+        except subprocess.TimeoutExpired:
+            logger.error(f"Nmap detailed scan timed out for {target}")
+            raise Exception(f"Nmap detailed scan timed out on {target}")
         except subprocess.CalledProcessError as e:
             if "requires root privileges" in e.stderr.lower() or "requires root" in e.stderr.lower() or "root" in e.stderr.lower() or "privilege" in e.stderr.lower():
                 logger.warning(f"OS detection (-O) failed due to privileges. Falling back to -sV only for {target}")
                 try:
-                    result = subprocess.run(["nmap", "-sT", "-sV", "-Pn", "-p-", "-T4", "-oX", "-", target], capture_output=True, text=True, check=True)
+                    result = subprocess.run(
+                        ["nmap", "-sT", "-sV", "-Pn", "-p-", "-T4", "-oX", "-", target], 
+                        capture_output=True, text=True, check=True, timeout=1800
+                    )
                     return NmapAdapter._parse_nmap_xml(result.stdout)
+                except subprocess.TimeoutExpired:
+                    logger.error(f"Nmap fallback detailed scan timed out for {target}")
+                    raise Exception(f"Nmap fallback detailed scan timed out on {target}")
                 except subprocess.CalledProcessError as e2:
                     logger.error(f"Nmap fallback detailed scan failed: {e2.stderr}")
                     raise Exception(f"Nmap fallback detailed scan failed: {e2.stderr}")
@@ -59,8 +77,14 @@ class NmapAdapter:
             # -sV: Version detection
             # -Pn: Disable ping (fixes Docker NAT dropping ICMP)
             # -oX -: Output XML to stdout
-            result = subprocess.run(["nmap", "-sT", "-sV", "-Pn", "--script", "vuln,vulners", "-oX", "-", target], capture_output=True, text=True, check=True)
+            result = subprocess.run(
+                ["nmap", "-sT", "-sV", "-Pn", "--script", "vuln,vulners", "-oX", "-", target], 
+                capture_output=True, text=True, check=True, timeout=3600, stdin=subprocess.DEVNULL
+            )
             return NmapAdapter._parse_nmap_xml(result.stdout)
+        except subprocess.TimeoutExpired:
+            logger.error(f"Nmap deep scan timed out for {target}")
+            raise Exception(f"Nmap deep scan timed out on {target}")
         except subprocess.CalledProcessError as e:
             logger.error(f"Nmap deep scan failed: {e.stderr}")
             raise Exception(f"Nmap deep scan failed: {e.stderr}")

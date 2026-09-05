@@ -22,9 +22,16 @@ class NucleiAdapter:
                 logger.info(f"Nuclei target formatted to: {formatted_target}")
 
             # -ut: Update Templates automatically
+            # -duc: Disable update check to prevent interactive prompts hanging the worker
             # Removed -silent so we can capture errors in stderr
-            result = subprocess.run(["/usr/local/bin/nuclei", "-ut", "-u", formatted_target, "-je", output_file, "-nc"], 
-                           capture_output=True, text=True, check=False)
+            result = subprocess.run(
+                ["/usr/local/bin/nuclei", "-duc", "-ut", "-u", formatted_target, "-je", output_file, "-nc"], 
+                capture_output=True, 
+                text=True, 
+                check=False,
+                stdin=subprocess.DEVNULL,
+                timeout=3600
+            )
             
             # Log any errors Nuclei spits out
             if result.stderr:
@@ -32,6 +39,9 @@ class NucleiAdapter:
                 
             # Nuclei might return non-zero if vulnerabilities are found, so we don't strict check=True
             return NucleiAdapter._parse_nuclei_json(output_file)
+        except subprocess.TimeoutExpired:
+            logger.error(f"Nuclei scan timed out for {target}")
+            raise Exception(f"Nuclei scan timed out on {target}")
         except Exception as e:
             logger.error(f"Nuclei scan failed: {str(e)}")
             raise Exception(f"Nuclei scan failed: {str(e)}")
