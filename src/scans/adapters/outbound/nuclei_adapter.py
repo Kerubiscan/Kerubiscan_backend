@@ -85,6 +85,5 @@ class NucleiAdapter:
         except Exception as e:
             logger.error(f"Failed to parse Nuclei JSON: {str(e)}")
             
-        import json
         logger.info(f"Nuclei parsed result:\n{json.dumps(vulns, indent=2)}")
         return vulns
