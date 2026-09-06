@@ -30,7 +30,7 @@ class NucleiAdapter:
                 text=True, 
                 check=False,
                 stdin=subprocess.DEVNULL,
-                timeout=3600
+                timeout=86400
             )
             
             # Log any errors Nuclei spits out

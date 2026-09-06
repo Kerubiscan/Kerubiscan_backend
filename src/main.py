@@ -31,10 +31,36 @@ from src.assets.domain.entities import AssetEntity
 from src.vulnerabilities.domain.entities import VulnerabilityEntity
 from src.audit.domain.models import AuditLog
 
+import alembic.config
+import alembic.command
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Initialize database tables on startup
+    # Automatically apply Alembic migrations on startup
+    try:
+        alembic_cfg = alembic.config.Config("alembic.ini")
+        alembic.command.upgrade(alembic_cfg, "head")
+        print("Alembic migrations applied successfully.")
+    except Exception as e:
+        print(f"Failed to apply Alembic migrations: {e}")
+        
+    # Initialize database tables on startup (creates missing tables that don't have migrations yet)
     Base.metadata.create_all(bind=engine)
+    
+    # Automatically clear useless bloat (raw outputs and old audit logs) on application start
+    from sqlalchemy import text
+    try:
+        with engine.begin() as conn:
+            # Clear 10-20MB Raw XML Blobs
+            conn.execute(text("UPDATE assets SET last_scan_raw_output = NULL WHERE last_scan_raw_output IS NOT NULL"))
+            
+            # Delete Audit Logs older than 30 days to prevent infinite table growth
+            conn.execute(text("DELETE FROM audit_logs WHERE created_at < NOW() - INTERVAL '30 days'"))
+            
+            print("Successfully cleared database bloat (raw outputs and old audit logs) to save space.")
+    except Exception as e:
+        print(f"Failed to clear database bloat: {e}")
+        
     yield
 
 app = FastAPI(

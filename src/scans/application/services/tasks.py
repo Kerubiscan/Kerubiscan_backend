@@ -421,6 +421,27 @@ def run_vulnerability_scan(self, scan_id: str, asset_ip: str, asset_name: str, c
                 db.close()
             raise e
 
+    if scan_engine == ScannerEngine.OWASP_ZAP:
+        try:
+            from src.scans.adapters.outbound.zap_adapter import ZAPAdapter
+            vulns = ZAPAdapter.run_scan(asset_ip)
+            from src.vulnerabilities.application.services.tasks import parse_zap_report
+            parse_zap_report.delay(vulns, asset_ip, scan_id)
+            return True
+        except Exception as e:
+            logger.error(f"OWASP ZAP scan failed: {str(e)}")
+            db = SessionLocal()
+            try:
+                scan_fail = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
+                if scan_fail:
+                    scan_fail.status = ScanStatus.FAILED
+                    from src.audit.domain.models import AuditLog
+                    db.add(AuditLog(user_id="system", username="celery_worker", action="SCAN_FAILED", resource_type="SCAN", resource_id=str(scan_id), details={"status": "FAILED"}))
+                    db.commit()
+            finally:
+                db.close()
+            raise e
+
     adapter = GVMAdapter()
     if not adapter.connect():
         logger.error("Failed to connect to GVM")

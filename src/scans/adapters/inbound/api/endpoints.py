@@ -84,6 +84,22 @@ def get_scanner_status(db: Session = Depends(get_db)):
 def get_companies(db: Session = Depends(get_db)):
     return db.query(CompanyEntity).all()
 
+@router.delete("/companies/{company_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_company(company_id: str, db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)):
+    company = db.query(CompanyEntity).filter(CompanyEntity.id == company_id).first()
+    if not company:
+        raise HTTPException(status_code=404, detail="Company not found")
+        
+    try:
+        db.delete(company)
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=400, detail="Cannot delete company. It may have associated scans or assets.")
+    
+    return None
+
+
 @router.post("", response_model=ScanResponse)
 def create_scan(req: ScanCreateRequest, db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)):
     company = db.query(CompanyEntity).filter(CompanyEntity.name == req.company_name).first()

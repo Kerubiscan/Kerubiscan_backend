@@ -43,7 +43,7 @@ class NmapAdapter:
             # -oX -: Output XML
             result = subprocess.run(
                 ["nmap", "-sT", "-sV", "-O", "-Pn", "-p-", "-T4", "-oX", "-", target], 
-                capture_output=True, text=True, check=True, timeout=1800
+                capture_output=True, text=True, check=True, timeout=86400
             )
             logger.info(f"Nmap detailed scan raw output for {target}:\n{result.stdout}")
             return NmapAdapter._parse_nmap_xml(result.stdout)
@@ -56,7 +56,7 @@ class NmapAdapter:
                 try:
                     result = subprocess.run(
                         ["nmap", "-sT", "-sV", "-Pn", "-p-", "-T4", "-oX", "-", target], 
-                        capture_output=True, text=True, check=True, timeout=1800
+                        capture_output=True, text=True, check=True, timeout=86400
                     )
                     logger.info(f"Nmap detailed scan (fallback) raw output for {target}:\n{result.stdout}")
                     return NmapAdapter._parse_nmap_xml(result.stdout)
@@ -82,7 +82,7 @@ class NmapAdapter:
             # -oX -: Output XML to stdout
             result = subprocess.run(
                 ["nmap", "-sT", "-sV", "-Pn", "--script", "vuln,vulners", "-oX", "-", target], 
-                capture_output=True, text=True, check=True, timeout=3600, stdin=subprocess.DEVNULL
+                capture_output=True, text=True, check=True, timeout=86400, stdin=subprocess.DEVNULL
             )
             logger.info(f"Nmap vulnerability scan raw output for {target}:\n{result.stdout}")
             return NmapAdapter._parse_nmap_xml(result.stdout)

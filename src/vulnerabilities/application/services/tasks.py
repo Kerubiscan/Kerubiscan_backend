@@ -470,3 +470,137 @@ def parse_nuclei_report(vuln_data_list: list, target_ip: str, scan_id: str = Non
             update_scan_progress(scan_id, target_ip, "FAILED")
     finally:
         db.close()
+
+
+@celery_app.task
+def parse_zap_report(vuln_data_list: list, target_ip: str, scan_id: str = None):
+    logger.info(f"Parsing ZAP report for {target_ip} (Scan {scan_id})")
+    db: Session = SessionLocal()
+    new_alerts = []
+    try:
+        asset = db.query(AssetEntity).filter(AssetEntity.ip_address == target_ip).first()
+        if not asset:
+            logger.info(f"Asset with IP {target_ip} not found. Creating it automatically.")
+            scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
+            if not scan:
+                logger.error(f"Scan {scan_id} not found. Cannot create asset.")
+                return
+            
+            asset = AssetEntity(
+                company_id=scan.company_id,
+                name=f"Auto-added Web Host ({target_ip})",
+                ip_address=target_ip,
+                asset_type="Unknown",
+                network_zone=scan.network_zone or "Internal",
+                operating_system="Unknown"
+            )
+            db.add(asset)
+            db.commit()
+            db.refresh(asset)
+
+        import json
+        asset.last_scan_raw_output = json.dumps(vuln_data_list, indent=2)
+        db.commit()
+
+        # 1. Load existing vulnerabilities into memory
+        existing_vulns_list = db.query(VulnerabilityEntity).filter(VulnerabilityEntity.asset_id == asset.id).all()
+        existing_by_title = {v.title: v for v in existing_vulns_list}
+        
+        new_vulns_to_insert = []
+
+        for v in vuln_data_list:
+            title = v.get("name", "ZAP Vuln")[:250]
+            cve_id = v.get("cve_id")
+            
+            # Map severity
+            sev_str = v.get("severity", "info").lower()
+            severity = VulnSeverity.INFO
+            if sev_str == "high": severity = VulnSeverity.HIGH
+            elif sev_str == "medium": severity = VulnSeverity.MEDIUM
+            elif sev_str == "low": severity = VulnSeverity.LOW
+
+            description = v.get("description", "")
+            if v.get("reference"):
+                description += f"\nReferences:\n{v.get('reference')}"
+                
+            remediation = v.get("remediation", "")
+            cvss_score = safe_float(v.get("cvss_score"))
+            
+            contextual_risk = calculate_contextual_risk(cvss_score, asset.criticality)
+
+            # 2. In-memory deduplication
+            existing_vuln = existing_by_title.get(title)
+            
+            if existing_vuln:
+                existing_vuln.last_seen_at = func.now()
+                if existing_vuln.status == VulnStatus.FIXED:
+                    existing_vuln.status = VulnStatus.NEW
+                    if severity in [VulnSeverity.CRITICAL, VulnSeverity.HIGH]:
+                        new_alerts.append(f"[{severity.name}] {title}")
+            else:
+                new_vuln = VulnerabilityEntity(
+                    asset_id=asset.id,
+                    cve_id=cve_id,
+                    title=title,
+                    description=description,
+                    remediation=remediation,
+                    cvss_base_score=cvss_score,
+                    contextual_risk_score=contextual_risk,
+                    severity=severity,
+                    source_engine="OWASP_ZAP",
+                    status=VulnStatus.NEW
+                )
+                new_vulns_to_insert.append(new_vuln)
+                existing_by_title[title] = new_vuln
+                
+                if severity in [VulnSeverity.CRITICAL, VulnSeverity.HIGH]:
+                    new_alerts.append(f"[{severity.name}] {title}")
+
+        # 3. Bulk insert and single commit
+        if new_vulns_to_insert:
+            parsed_vulns = []
+            for v in new_vulns_to_insert:
+                parsed_vulns.append({
+                    "title": v.title,
+                    "cve": v.cve_id,
+                    "severity": v.severity.name if hasattr(v.severity, 'name') else str(v.severity),
+                    "cvss": v.cvss_base_score
+                })
+            logger.info(f"ZAP new parsed findings:\n{json.dumps(parsed_vulns, indent=2)}")
+            db.add_all(new_vulns_to_insert)
+            
+        db.commit()
+
+        logger.info(f"Finished parsing ZAP report. Processed {len(vuln_data_list)} findings.")
+
+        # Send Email Alerts
+        from src.notifications.application.services.smtp import send_alert_email
+        admin_email = "admin@kerubiscan.local" # Or fetch from a config
+        
+        # 1. Email for finished scan
+        send_alert_email(
+            to_email=admin_email,
+            subject=f"ZAP Scan Completed: {target_ip}",
+            content=f"The OWASP ZAP scan for asset {asset.name} ({target_ip}) has completed successfully.\nTotal findings processed: {len(vuln_data_list)}."
+        )
+        
+        # 2. Email for critical/high alerts
+        if new_alerts:
+            logger.info(f"Sending alerts for {len(new_alerts)} ZAP vulnerabilities.")
+            vuln_list = "\n".join([f"- {v}" for v in new_alerts])
+            send_alert_email(
+                to_email=admin_email,
+                subject=f"HIGH/CRITICAL Web Vulnerabilities Detected by ZAP on {asset.name}",
+                content=f"The following HIGH and CRITICAL vulnerabilities were newly discovered or regressed on {asset.name} ({target_ip}):\n\n{vuln_list}\n\nPlease investigate immediately."
+            )
+
+        if scan_id:
+            update_scan_progress(scan_id, target_ip, "COMPLETED")
+
+    except Exception as e:
+        logger.error(f"Error parsing ZAP report: {str(e)}")
+        db.rollback()
+        if scan_id:
+            update_scan_progress(scan_id, target_ip, "FAILED")
+    finally:
+        db.close()

@@ -7,12 +7,14 @@ from src.core.database import Base
 class ScanType(enum.Enum):
     DISCOVERY = "DISCOVERY"
     VULNERABILITY = "VULNERABILITY"
+    WEB_APP = "WEB_APP"
 
 class ScannerEngine(enum.Enum):
     OPENVAS = "OPENVAS"
     NMAP = "NMAP"
     NUCLEI = "NUCLEI"
     NESSUS = "NESSUS"
+    OWASP_ZAP = "OWASP_ZAP"
 
 class ScanStatus(enum.Enum):
     PENDING = "PENDING"
