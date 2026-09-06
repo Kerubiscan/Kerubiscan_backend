@@ -18,10 +18,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Install OWASP ZAP
-RUN wget https://github.com/zaproxy/zaproxy/releases/download/v2.15.0/ZAP_2.15.0_Linux.tar.gz \
-    && tar -xzf ZAP_2.15.0_Linux.tar.gz \
-    && mv ZAP_2.15.0 /opt/zaproxy \
-    && rm ZAP_2.15.0_Linux.tar.gz \
+RUN wget https://github.com/zaproxy/zaproxy/releases/download/v2.17.0/ZAP_2.17.0_Linux.tar.gz \
+    && tar -xzf ZAP_2.17.0_Linux.tar.gz \
+    && mv ZAP_2.17.0 /opt/zaproxy \
+    && rm ZAP_2.17.0_Linux.tar.gz \
     && ln -s /opt/zaproxy/zap.sh /usr/local/bin/zap
 
 # Get latest Nuclei directly from official image
