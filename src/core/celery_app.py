@@ -25,6 +25,10 @@ celery_app.conf.beat_schedule = {
         'task': 'src.scheduling.application.services.tasks.check_scheduled_scans',
         'schedule': crontab(minute='*'),
     },
+    'update-nuclei-templates-daily': {
+        'task': 'update_nuclei_templates',
+        'schedule': crontab(hour=0, minute=0), # Run daily at midnight
+    },
 }
 
 celery_app.autodiscover_tasks([

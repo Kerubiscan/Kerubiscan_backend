@@ -14,6 +14,22 @@ logger = logging.getLogger(__name__)
 # Standard OpenVAS Default Scanner ID
 DEFAULT_SCANNER_ID = "08b69003-5fc2-4037-a479-93b440211c73"
 
+@celery_app.task(name="update_nuclei_templates")
+def update_nuclei_templates():
+    """Background task to update Nuclei templates daily to ensure the latest CVEs are covered."""
+    logger.info("Running daily Nuclei templates update...")
+    import subprocess
+    try:
+        result = subprocess.run(
+            ["/usr/local/bin/nuclei", "-ut"],
+            capture_output=True, text=True, check=True
+        )
+        logger.info(f"Nuclei templates updated successfully: {result.stdout}")
+    except subprocess.CalledProcessError as e:
+        logger.error(f"Failed to update Nuclei templates: {e.stderr}")
+    except Exception as e:
+        logger.error(f"Error during Nuclei template update: {str(e)}")
+
 def update_scan_progress(scan_id: str, ip: str, target_status: str):
     db: Session = SessionLocal()
     try:

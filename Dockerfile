@@ -14,14 +14,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     nmap \
     wget \
     unzip \
+    default-jre \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Nuclei
-RUN wget https://github.com/projectdiscovery/nuclei/releases/download/v3.3.0/nuclei_3.3.0_linux_amd64.zip \
-    && unzip nuclei_3.3.0_linux_amd64.zip \
-    && mv nuclei /usr/local/bin/ \
-    && rm nuclei_3.3.0_linux_amd64.zip \
-    && nuclei -update-templates
+# Install OWASP ZAP
+RUN wget https://github.com/zaproxy/zaproxy/releases/download/v2.15.0/ZAP_2.15.0_Linux.tar.gz \
+    && tar -xzf ZAP_2.15.0_Linux.tar.gz \
+    && mv ZAP_2.15.0 /opt/zaproxy \
+    && rm ZAP_2.15.0_Linux.tar.gz \
+    && ln -s /opt/zaproxy/zap.sh /usr/local/bin/zap
+
+# Get latest Nuclei directly from official image
+COPY --from=projectdiscovery/nuclei:latest /usr/local/bin/nuclei /usr/local/bin/nuclei
+RUN nuclei -ut || true
 
 # Install Nmap vulners script
 RUN wget https://raw.githubusercontent.com/vulnersCom/nmap-vulners/master/vulners.nse -O /usr/share/nmap/scripts/vulners.nse \
