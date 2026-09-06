@@ -42,7 +42,7 @@ class NmapAdapter:
             # -T4: Aggressive timing to speed up the massive port scan
             # -oX -: Output XML
             result = subprocess.run(
-                ["nmap", "-sT", "-sV", "-O", "-Pn", "-p-", "-T4", "-oX", "-", target], 
+                ["nmap", "-sT", "-sV", "-O", "-Pn", "-p-", "-T4", "-oX", "-"] + target.split(','), 
                 capture_output=True, text=True, check=True, timeout=86400
             )
             logger.info(f"Nmap detailed scan raw output for {target}:\n{result.stdout}")
@@ -55,7 +55,7 @@ class NmapAdapter:
                 logger.warning(f"OS detection (-O) failed due to privileges. Falling back to -sV only for {target}")
                 try:
                     result = subprocess.run(
-                        ["nmap", "-sT", "-sV", "-Pn", "-p-", "-T4", "-oX", "-", target], 
+                        ["nmap", "-sT", "-sV", "-Pn", "-p-", "-T4", "-oX", "-"] + target.split(','), 
                         capture_output=True, text=True, check=True, timeout=86400
                     )
                     logger.info(f"Nmap detailed scan (fallback) raw output for {target}:\n{result.stdout}")
