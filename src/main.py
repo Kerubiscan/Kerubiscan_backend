@@ -55,7 +55,7 @@ async def lifespan(app: FastAPI):
             conn.execute(text("UPDATE assets SET last_scan_raw_output = NULL WHERE last_scan_raw_output IS NOT NULL"))
             
             # Delete Audit Logs older than 30 days to prevent infinite table growth
-            conn.execute(text("DELETE FROM audit_logs WHERE created_at < NOW() - INTERVAL '30 days'"))
+            conn.execute(text("DELETE FROM audit_logs WHERE timestamp < NOW() - INTERVAL '30 days'"))
             
             print("Successfully cleared database bloat (raw outputs and old audit logs) to save space.")
     except Exception as e:
