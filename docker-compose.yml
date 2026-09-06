@@ -34,7 +34,7 @@ services:
     restart: unless-stopped
     build: .
     network_mode: "host"
-    command: celery -A src.core.celery_app worker --loglevel=warning
+    command: celery -A src.core.celery_app worker --loglevel=info
     logging:
       driver: "json-file"
       options:
@@ -62,7 +62,7 @@ services:
   celery-beat:
     restart: unless-stopped
     build: .
-    command: celery -A src.core.celery_app beat --loglevel=warning
+    command: celery -A src.core.celery_app beat --loglevel=info
     logging:
       driver: "json-file"
       options:
