@@ -37,6 +37,10 @@ class NucleiAdapter:
             if result.stderr:
                 logger.warning(f"Nuclei output/errors: {result.stderr}")
                 
+            if os.path.exists(output_file):
+                with open(output_file, 'r') as f:
+                    logger.info(f"Nuclei raw output for {target}:\n{f.read()}")
+                    
             # Nuclei might return non-zero if vulnerabilities are found, so we don't strict check=True
             return NucleiAdapter._parse_nuclei_json(output_file)
         except subprocess.TimeoutExpired:
@@ -88,4 +92,6 @@ class NucleiAdapter:
         except Exception as e:
             logger.error(f"Failed to parse Nuclei JSON: {str(e)}")
             
+        import json
+        logger.info(f"Nuclei parsed result:\n{json.dumps(vulns, indent=2)}")
         return vulns

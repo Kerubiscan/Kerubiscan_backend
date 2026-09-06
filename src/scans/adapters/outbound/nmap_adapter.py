@@ -19,6 +19,7 @@ class NmapAdapter:
                 ["nmap", "-sn", "-oX", "-", target], 
                 capture_output=True, text=True, check=True, timeout=300
             )
+            logger.info(f"Nmap discovery scan raw output for {target}:\n{result.stdout}")
             return NmapAdapter._parse_nmap_xml(result.stdout)
         except subprocess.TimeoutExpired:
             logger.error(f"Nmap discovery scan timed out for {target}")
@@ -44,6 +45,7 @@ class NmapAdapter:
                 ["nmap", "-sT", "-sV", "-O", "-Pn", "-p-", "-T4", "-oX", "-", target], 
                 capture_output=True, text=True, check=True, timeout=1800
             )
+            logger.info(f"Nmap detailed scan raw output for {target}:\n{result.stdout}")
             return NmapAdapter._parse_nmap_xml(result.stdout)
         except subprocess.TimeoutExpired:
             logger.error(f"Nmap detailed scan timed out for {target}")
@@ -56,6 +58,7 @@ class NmapAdapter:
                         ["nmap", "-sT", "-sV", "-Pn", "-p-", "-T4", "-oX", "-", target], 
                         capture_output=True, text=True, check=True, timeout=1800
                     )
+                    logger.info(f"Nmap detailed scan (fallback) raw output for {target}:\n{result.stdout}")
                     return NmapAdapter._parse_nmap_xml(result.stdout)
                 except subprocess.TimeoutExpired:
                     logger.error(f"Nmap fallback detailed scan timed out for {target}")
@@ -81,6 +84,7 @@ class NmapAdapter:
                 ["nmap", "-sT", "-sV", "-Pn", "--script", "vuln,vulners", "-oX", "-", target], 
                 capture_output=True, text=True, check=True, timeout=3600, stdin=subprocess.DEVNULL
             )
+            logger.info(f"Nmap vulnerability scan raw output for {target}:\n{result.stdout}")
             return NmapAdapter._parse_nmap_xml(result.stdout)
         except subprocess.TimeoutExpired:
             logger.error(f"Nmap deep scan timed out for {target}")
@@ -165,4 +169,6 @@ class NmapAdapter:
         except Exception as e:
             logger.error(f"Failed to parse Nmap XML: {str(e)}")
             
+        import json
+        logger.info(f"Nmap parsed result:\n{json.dumps(hosts_data, indent=2)}")
         return hosts_data

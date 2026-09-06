@@ -173,6 +173,16 @@ def parse_scan_report(report_xml: str, target_ip: str, scan_id: str = None):
                     
         # 3. Bulk insert and single commit
         if new_vulns_to_insert:
+            parsed_vulns = []
+            for v in new_vulns_to_insert:
+                parsed_vulns.append({
+                    "title": v.title,
+                    "cve": v.cve_id,
+                    "severity": v.severity.name if hasattr(v.severity, 'name') else str(v.severity),
+                    "cvss": v.cvss_base_score
+                })
+            import json
+            logger.info(f"OpenVAS new parsed findings:\n{json.dumps(parsed_vulns, indent=2)}")
             db.add_all(new_vulns_to_insert)
             
         db.commit()

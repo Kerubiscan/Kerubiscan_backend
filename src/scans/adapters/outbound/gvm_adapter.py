@@ -124,7 +124,9 @@ class GVMAdapter(ScanEnginePort):
             # We want the raw XML to parse it later
             response = self.gmp.get_report(report_id=report_id, details=True, ignore_pagination=True)
             from lxml import etree
-            return etree.tostring(response, encoding='unicode')
+            xml_report = etree.tostring(response, encoding='unicode')
+            logger.info(f"OpenVAS raw XML report:\n{xml_report}")
+            return xml_report
         except GvmError as e:
             logger.error(f"Failed to get report: {str(e)}")
             raise
