@@ -15,17 +15,10 @@ class NucleiAdapter:
         output_file = f"/tmp/nuclei_{target.replace('.', '_')}.json"
         
         try:
-            # Nuclei expects a URL for web templates. Add http:// if it's just a domain.
-            formatted_target = target
-            if not target.startswith("http://") and not target.startswith("https://"):
-                formatted_target = f"http://{target}"
-                logger.info(f"Nuclei target formatted to: {formatted_target}")
-
-            # -ut: Update Templates automatically
             # -duc: Disable update check to prevent interactive prompts hanging the worker
             # Removed -silent so we can capture errors in stderr
             result = subprocess.run(
-                ["/usr/local/bin/nuclei", "-duc", "-ut", "-u", formatted_target, "-je", output_file, "-nc"], 
+                ["/usr/local/bin/nuclei", "-duc", "-u", target, "-je", output_file, "-nc"], 
                 capture_output=True, 
                 text=True, 
                 check=False,

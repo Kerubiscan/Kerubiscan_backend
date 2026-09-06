@@ -42,7 +42,7 @@ class NmapAdapter:
             # -T4: Aggressive timing to speed up the massive port scan
             # -oX -: Output XML
             result = subprocess.run(
-                ["nmap", "-sT", "-sV", "-O", "-Pn", "-p-", "-T4", "-oX", "-"] + target.split(','), 
+                ["nmap", "-sT", "-sV", "-O", "-Pn", "-p-", "-T4", "--script", "nbstat,smb-os-discovery", "-oX", "-"] + target.split(','), 
                 capture_output=True, text=True, check=True, timeout=86400
             )
             logger.info(f"Nmap detailed scan raw output for {target}:\n{result.stdout}")
@@ -55,7 +55,7 @@ class NmapAdapter:
                 logger.warning(f"OS detection (-O) failed due to privileges. Falling back to -sV only for {target}")
                 try:
                     result = subprocess.run(
-                        ["nmap", "-sT", "-sV", "-Pn", "-p-", "-T4", "-oX", "-"] + target.split(','), 
+                        ["nmap", "-sT", "-sV", "-Pn", "-p-", "-T4", "--script", "nbstat,smb-os-discovery", "-oX", "-"] + target.split(','), 
                         capture_output=True, text=True, check=True, timeout=86400
                     )
                     logger.info(f"Nmap detailed scan (fallback) raw output for {target}:\n{result.stdout}")
@@ -141,6 +141,15 @@ class NmapAdapter:
                     script_id = script.get("id")
                     output_text = script.get("output", "")
                     
+                    # Intercept hostname scripts so they don't appear as vulnerabilities
+                    if script_id in ("smb-os-discovery", "nbstat"):
+                        if not hostname or hostname.startswith("Discovered Host"):
+                            # Extract Computer Name or NetBIOS Name
+                            m = re.search(r"(?i)(?:Computer name|NetBIOS computer name|NetBIOS name):\s*([^\r\n,\\]+)", output_text)
+                            if m:
+                                hostname = m.group(1).strip()
+                        continue
+                        
                     # Look for CVEs and CVSS scores in the output
                     cve_matches = re.findall(r"(CVE-\d{4}-\d+)\s+([\d.]+)", output_text)
                     if cve_matches:
