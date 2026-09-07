@@ -395,7 +395,7 @@ def run_vulnerability_scan(self, scan_id: str, asset_ip: str, asset_name: str, c
     if scan_engine == ScannerEngine.NUCLEI:
         try:
             # Check if we have discovered ports for this asset
-            targets = [asset_ip]
+            target_ports = None
             db = SessionLocal()
             try:
                 scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
@@ -412,12 +412,12 @@ def run_vulnerability_scan(self, scan_id: str, asset_ip: str, asset_name: str, c
                             if match:
                                 port_list.append(match.group(0))
                         if port_list:
-                            targets = [f"{asset_ip}:{p}" for p in port_list]
+                            target_ports = ",".join(port_list)
             finally:
                 db.close()
                         
             from src.scans.adapters.outbound.nuclei_adapter import NucleiAdapter
-            vulns = NucleiAdapter.run_scan(targets)
+            vulns = NucleiAdapter.run_scan(target=asset_ip, ports=target_ports)
             
             # Nuclei runs synchronously, pass to parser.
             from src.vulnerabilities.application.services.tasks import parse_nuclei_report
