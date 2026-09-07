@@ -405,7 +405,12 @@ def run_vulnerability_scan(self, scan_id: str, asset_ip: str, asset_name: str, c
                         AssetEntity.company_id == scan.company_id,
                         AssetEntity.is_deleted == False
                     ).first()
-                    if asset and asset.ports:
+                    
+                    if not asset:
+                        logger.warning(f"No active AssetEntity found for IP {asset_ip} and company {scan.company_id}")
+                    elif not asset.ports:
+                        logger.warning(f"AssetEntity for IP {asset_ip} found, but ports field is empty or None")
+                    else:
                         import re
                         port_list = []
                         for p_str in asset.ports.split(','):
@@ -414,6 +419,8 @@ def run_vulnerability_scan(self, scan_id: str, asset_ip: str, asset_name: str, c
                                 port_list.append(match.group(0))
                         if port_list:
                             target_ports = ",".join(port_list)
+                        else:
+                            logger.warning(f"Failed to parse any ports from asset.ports: {asset.ports}")
             finally:
                 db.close()
                         
