@@ -402,7 +402,8 @@ def run_vulnerability_scan(self, scan_id: str, asset_ip: str, asset_name: str, c
                 if scan:
                     asset = db.query(AssetEntity).filter(
                         AssetEntity.ip_address == asset_ip, 
-                        AssetEntity.company_id == scan.company_id
+                        AssetEntity.company_id == scan.company_id,
+                        AssetEntity.is_deleted == False
                     ).first()
                     if asset and asset.ports:
                         import re
