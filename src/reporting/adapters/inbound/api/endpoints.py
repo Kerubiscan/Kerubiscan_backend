@@ -38,7 +38,7 @@ async def get_reports(
         pages=pages
     )
 
-@router.post("/{asset_id}/pdf", response_class=Response)
+@router.post("/{asset_id}/html", response_class=Response)
 async def generate_executive_report(
     asset_id: str, 
     request_data: ReportGenerationRequest,
@@ -50,16 +50,17 @@ async def generate_executive_report(
         
     vulnerabilities = db.query(VulnerabilityEntity).filter(VulnerabilityEntity.asset_id == asset_id).all()
     
-    from src.reporting.application.services.pdf_generator import generate_vulnerability_pdf
+    from src.reporting.application.services.html_generator import generate_vulnerability_html
     
-    pdf_bytes = generate_vulnerability_pdf(
-        asset=asset,
-        vulnerabilities=vulnerabilities,
+    html_bytes = generate_vulnerability_html(
+        assets=[asset],
+        all_vulnerabilities={str(asset.id): vulnerabilities},
         executive_summary=request_data.executive_summary,
         scanner_company_name=request_data.scanner_company_name,
-        target_company_name=request_data.target_company_name
+        target_company_name=request_data.target_company_name,
+        scan_name=f"Asset Report: {asset.name}"
     )
     
-    return Response(content=pdf_bytes, media_type="application/pdf", headers={
-        "Content-Disposition": f"attachment; filename=report_{asset.name.replace(' ', '_')}.pdf"
+    return Response(content=html_bytes, media_type="text/html", headers={
+        "Content-Disposition": f"attachment; filename=report_{asset.name.replace(' ', '_')}.html"
     })

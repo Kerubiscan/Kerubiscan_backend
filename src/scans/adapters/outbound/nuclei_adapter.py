@@ -8,17 +8,23 @@ logger = logging.getLogger(__name__)
 
 class NucleiAdapter:
     @staticmethod
-    def run_scan(target: str) -> List[Dict]:
+    def run_scan(target: str | List[str]) -> List[Dict]:
         """Runs a Nuclei vulnerability scan and returns structured JSON data."""
-        logger.info(f"Running Nuclei scan on {target}")
+        targets = [target] if isinstance(target, str) else target
+        target_name = targets[0].replace('.', '_').replace(':', '_')
+        logger.info(f"Running Nuclei scan on {targets}")
         
-        output_file = f"/tmp/nuclei_{target.replace('.', '_')}.json"
+        output_file = f"/tmp/nuclei_{target_name}.json"
         
         try:
             # -duc: Disable update check to prevent interactive prompts hanging the worker
             # Removed -silent so we can capture errors in stderr
+            cmd = ["/usr/local/bin/nuclei", "-duc", "-je", output_file, "-nc"]
+            for t in targets:
+                cmd.extend(["-u", t])
+                
             result = subprocess.run(
-                ["/usr/local/bin/nuclei", "-duc", "-u", target, "-je", output_file, "-nc"], 
+                cmd, 
                 capture_output=True, 
                 text=True, 
                 check=False,

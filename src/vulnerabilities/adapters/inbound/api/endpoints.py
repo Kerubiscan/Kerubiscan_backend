@@ -83,3 +83,26 @@ async def get_vulnerability_history(
 ):
     history = repo.get_history(vuln_id)
     return history
+
+from pydantic import BaseModel
+class VulnGenerateRemediationRequest(BaseModel):
+    language: str = "French"
+
+@router.post("/{vuln_id}/generate-remediation")
+@limiter.limit("10/minute")
+async def generate_vulnerability_remediation_endpoint(
+    request: Request,
+    vuln_id: str,
+    req: VulnGenerateRemediationRequest,
+    repo: VulnerabilityRepository = Depends(get_vuln_repository),
+    current_user: dict = Depends(require_permissions([Permission.ASSET_READ]))
+):
+    vuln = repo.get_by_id(vuln_id)
+    if not vuln:
+        raise HTTPException(status_code=404, detail="Vulnerability not found")
+        
+    from src.ai.application.services.nlp import generate_vulnerability_remediation
+    
+    ai_content = await generate_vulnerability_remediation(vuln.title, vuln.description, req.language)
+    
+    return {"ai_remediation": ai_content}

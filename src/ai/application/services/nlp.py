@@ -54,6 +54,49 @@ async def generate_executive_summary(vuln_data: List[Dict], language: str = "Fre
         logger.error(f"AI generation failed: {str(e)}")
         return "Erreur lors de la génération du résumé par l'IA. Veuillez vérifier la configuration du fournisseur ou du réseau."
 
+async def generate_vulnerability_remediation(vuln_name: str, vuln_desc: str, language: str = "French") -> str:
+    prompt = (
+        f"En tant qu'expert en sécurité, analysez la vulnérabilité suivante en {language}.\n"
+        f"Titre : {vuln_name}\n"
+        f"Description technique : {vuln_desc}\n\n"
+        "Veuillez fournir :\n"
+        "1. Un bref Résumé Exécutif (Executive Summary) expliquant l'impact de manière claire pour le management.\n"
+        "2. Un plan de remédiation étape par étape."
+    )
+    
+    try:
+        async with httpx.AsyncClient() as client:
+            if AI_PROVIDER == "openai":
+                response = await client.post(
+                    "https://api.openai.com/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {AI_API_KEY}"},
+                    json={
+                        "model": AI_MODEL,
+                        "messages": [{"role": "user", "content": prompt}],
+                        "temperature": 0.2
+                    },
+                    timeout=30.0
+                )
+                data = response.json()
+                return data["choices"][0]["message"]["content"]
+                
+            elif AI_PROVIDER == "ollama":
+                response = await client.post(
+                    AI_ENDPOINT,
+                    json={
+                        "model": AI_MODEL,
+                        "messages": [{"role": "user", "content": prompt}],
+                        "stream": False
+                    },
+                    timeout=60.0
+                )
+                data = response.json()
+                return data["message"]["content"]
+                
+    except Exception as e:
+        logger.error(f"AI remediation generation failed: {str(e)}")
+        return "Erreur lors de la génération par l'IA. Veuillez vérifier la configuration du fournisseur."
+
 def refine_risk_score_sync(title: str, description: str) -> float:
     """
     Calls the AI synchronously to evaluate real-world exploitability and returns a multiplier.

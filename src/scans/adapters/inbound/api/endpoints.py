@@ -346,7 +346,7 @@ def update_scan_summary(scan_id: str, req: SummaryUpdateRequest, db: Session = D
 from fastapi.responses import StreamingResponse
 import io
 
-@router.get("/{scan_id}/report/pdf")
+@router.get("/{scan_id}/report/html")
 def download_scan_report(
     scan_id: str, 
     scanner_company: str = "Kerubiscan Security", 
@@ -357,30 +357,31 @@ def download_scan_report(
     if not scan:
         raise HTTPException(status_code=404, detail="Scan not found")
         
-    # Get Asset
-    asset = db.query(AssetEntity).filter(AssetEntity.ip_address == scan.target).first()
-    if not asset:
-        # Create a dummy asset for the report if it doesn't exist
-        asset = AssetEntity(name=scan.target, ip_address=scan.target, network_zone=scan.network_zone)
+    targets = [t.strip() for t in scan.target.split(",")] if scan.target else []
+    assets = db.query(AssetEntity).filter(AssetEntity.ip_address.in_(targets)).all()
+    
+    if not assets:
+        assets = [AssetEntity(id="dummy", name=scan.target, ip_address=scan.target, network_zone=scan.network_zone)]
         
-    # Get Vulnerabilities
     from src.vulnerabilities.domain.entities import VulnerabilityEntity
-    vulns = []
-    if asset.id:
-        vulns = db.query(VulnerabilityEntity).filter(VulnerabilityEntity.asset_id == asset.id).all()
+    all_vulns = {}
+    for a in assets:
+        if a.id != "dummy":
+            all_vulns[str(a.id)] = db.query(VulnerabilityEntity).filter(VulnerabilityEntity.asset_id == a.id).all()
     
-    from src.reporting.application.services.pdf_generator import generate_vulnerability_pdf
+    from src.reporting.application.services.html_generator import generate_vulnerability_html
     
-    pdf_bytes = generate_vulnerability_pdf(
-        asset=asset,
-        vulnerabilities=vulns,
+    html_bytes = generate_vulnerability_html(
+        assets=assets,
+        all_vulnerabilities=all_vulns,
         executive_summary=scan.executive_summary,
         scanner_company_name=scanner_company,
-        target_company_name=target_company
+        target_company_name=target_company,
+        scan_name=scan.name
     )
     
     return StreamingResponse(
-        io.BytesIO(pdf_bytes), 
-        media_type="application/pdf", 
-        headers={"Content-Disposition": f"attachment; filename=rapport_{scan.target}.pdf"}
+        io.BytesIO(html_bytes), 
+        media_type="text/html", 
+        headers={"Content-Disposition": f"attachment; filename=rapport_{scan.target.split(',')[0]}.html"}
     )

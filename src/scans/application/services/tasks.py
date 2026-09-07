@@ -383,8 +383,26 @@ def run_vulnerability_scan(self, scan_id: str, asset_ip: str, asset_name: str, c
 
     if scan_engine == ScannerEngine.NUCLEI:
         try:
+            # Check if we have discovered ports for this asset
+            targets = [asset_ip]
+            if scan:
+                asset = db.query(AssetEntity).filter(
+                    AssetEntity.ip_address == asset_ip, 
+                    AssetEntity.company_id == scan.company_id
+                ).first()
+                if asset and asset.ports:
+                    import re
+                    port_list = []
+                    for p_str in asset.ports.split(','):
+                        match = re.search(r'\d+', p_str)
+                        if match:
+                            port_list.append(match.group(0))
+                    if port_list:
+                        targets = [f"{asset_ip}:{p}" for p in port_list]
+                        
             from src.scans.adapters.outbound.nuclei_adapter import NucleiAdapter
-            vulns = NucleiAdapter.run_scan(asset_ip)
+            vulns = NucleiAdapter.run_scan(targets)
+            
             # Nuclei runs synchronously, pass to parser.
             from src.vulnerabilities.application.services.tasks import parse_nuclei_report
             parse_nuclei_report.delay(vulns, asset_ip, scan_id)

@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8"></meta>
+    <title>{{ scan_name }} - Vulnerability Report</title>
+    <style type="text/css" media="all">
+        @import url("https://fonts.googleapis.com/css?family=Open+Sans:300,400,700,800");
+    </style>
+    <style type="text/css" media="all">
+        html, body, div, span, applet, object, iframe, h1, h2, h4, h5, p, blockquote, pre, a, abbr, acronym, address, big, cite, code, del, dfn, em, img, ins, kbd, q, s, samp, small, strike, strong, sub, sup, tt, var, b, u, i, center, dl, dt, dd, ol, ul, li, fieldset, form, label, legend, table, caption, tbody, tfoot, thead, tr, th, td, article, aside, canvas, details, embed, figure, figcaption, footer, header, hgroup, menu, nav, output, ruby, section, summary, time, mark, audio, video {
+            margin: 0;
+            padding: 0;
+            border: 0;
+            font-size: 100%;
+            font: inherit;
+            vertical-align: baseline;
+            -webkit-text-size-adjust: none;
+        }
+
+        h3, h6 { font-weight: 300 !important; }
+
+        html, body {
+            font-family: 'Open Sans', 'Helvetica Neue', 'Segoe UI', helvetica, arial, sans-serif;
+            width: 100%;
+            color: #333;
+            font-size: 13px;
+            background: #efefef;
+        }
+
+        a, a:visited, a:active { color: #67ACE1; text-decoration: none; }
+        a:hover { color: #67ACE1; text-decoration: underline; }
+
+        .clear { clear: both; width: 0 !important; height: 0 !important; margin: 0 !important; padding: 0 !important; }
+
+        table {
+            table-layout: fixed;
+            width: 100%;
+            border-collapse: collapse;
+            border-spacing: 0;
+            margin-bottom: 20px;
+            margin-top: 20px;
+        }
+
+        .plugin-row-header {
+            height: 35px;
+            line-height: 35px;
+            background: #f5f5f5;
+            font-size: 12px;
+            border: 1px solid #ddd;
+        }
+
+        .plugin-row { border: 1px solid #ddd; border-bottom: none; }
+        .plugin-row td { padding: 10px 0; line-height: 20px; }
+        .plugin-row.details-row { border-top: none; border-bottom: 1px solid #ddd; background: #fafafa; }
+        .plugin-row.details-row td { padding: 5px 15px 15px 15px; }
+
+        .table-wrapper.details, .table-wrapper.see-also { margin: 0 0 20px 0; }
+        .table-wrapper.details > table > tbody > tr > td { padding: 5px 0; }
+
+        .button {
+            display: block;
+            float: left;
+            line-height: 30px;
+            background: #eee;
+            border-radius: 3px;
+            cursor: pointer;
+            padding: 0 15px;
+        }
+        .button:hover { background: #ccc; }
+
+        .expand, .expand-spacer {
+            display: block;
+            float:right;
+            font-size: 12px;
+            font-weight: 400;
+            line-height: 20px;
+            margin: 0 0 0 10px;
+        }
+        .expand { color: #67ACE1; cursor: pointer; }
+        .expand:hover { text-decoration: underline; }
+
+        .executive-summary {
+            background: #fff;
+            border: 1px solid #e2e8f0;
+            border-left: 4px solid #3b82f6;
+            padding: 20px;
+            margin-bottom: 30px;
+            border-radius: 4px;
+            line-height: 1.6;
+        }
+        .executive-summary h5 {
+            font-size: 16px;
+            font-weight: 700;
+            margin-bottom: 15px;
+            color: #1e3a8a;
+        }
+    </style>
+    <script type="text/javascript">
+        var toggle = function (id) {
+            var div = document.getElementById(id);
+            var button = document.getElementById(id + '-show');
+
+            if (!div || !button) return;
+
+            if (div.style.display === '' || div.style.display === 'block') {
+                button.style.display = 'block';
+                div.style.display = 'none';
+                return;
+            }
+
+            button.style.display = 'none';
+            div.style.display = 'block';
+        };
+
+        var toggleAll = function (hide) {
+            var divs = document.querySelectorAll('div.table-wrapper');
+            for (var i = 0, il = divs.length; i < il; i++) {
+                if(divs[i].id.indexOf("asset_details_") !== -1) {
+                    var id = divs[i].getAttribute('id');
+                    var button = document.getElementById(id + '-show');
+                    if (hide) {
+                        button.style.display = 'block';
+                        divs[i].style.display = 'none';
+                    } else {
+                        button.style.display = 'none';
+                        divs[i].style.display = 'block';
+                    }
+                }
+            }
+        };
+        
+        var toggleVulnDetails = function(id) {
+            var el = document.getElementById(id);
+            if (el.style.display === 'none') {
+                el.style.display = 'table-row';
+            } else {
+                el.style.display = 'none';
+            }
+        };
+    </script>
+</head>
+<body>
+    <div id="report" style="width: 1024px; box-sizing: border-box; margin: 0 auto; background: #fff; padding: 0 20px 20px 20px; border-top: #263746 solid 3px; box-shadow: 0 2px 10px rgba(0, 0, 0, .2); margin-bottom: 20px; border-radius: 0 0 3px 3px;">
+        
+        <header style="width: 100%; border-bottom: 1px dotted #ccc; padding: 20px 0; margin: 0 0 20px 0;">
+            <div style="float: left;">
+                <h1 style="font-size: 28px; font-weight: bold; color: #1e3a8a;">KERUBISCAN REPORT</h1>
+            </div>
+            <div style="float: right;">
+                <h2 style="color: #999; text-align: right">Generated by {{ scanner_company_name }}<br/>For {{ target_company_name }}</h2>
+            </div>
+            <div class="clear"></div>
+        </header>
+        <div class="clear"></div>
+
+        <h3 style="font-size: 24px; font-weight: 300;">{{ scan_name }}</h3>
+        <h4 style="color: #999; border-bottom: 1px dotted #ccc; padding: 0 0 20px 0; margin: 0 0 20px 0;">{{ report_date }}</h4>
+        <div class="clear"></div>
+
+        <!-- Executive Summary (AI Generated) -->
+        <div class="executive-summary">
+            <h5>Executive Summary & Remediation Plan (AI Generated)</h5>
+            {% if executive_summary %}
+                <div>{{ executive_summary | replace('\n', '<br/>') | safe }}</div>
+            {% else %}
+                <div style="color: #64748b; font-style: italic;">No executive summary was generated for this report.</div>
+            {% endif %}
+        </div>
+
+        <div style="width: 100%;">
+            <h5 style="font-size: 16px; font-weight: 700; margin-bottom: 20px;">TABLE OF CONTENTS</h5>
+            <ul style="list-style-type: none; margin-bottom: 20px;">
+                <li style="font-size: 14px;">
+                    <a href="#id1" style="font-weight: 700;">Vulnerabilities by Host</a>
+                    <ul style="list-style-type: disc; margin: 10px 0 0 20px;">
+                        {% for asset in assets %}
+                        <li style="margin: 0 0 10px 0; color: #000000;"><a href="#asset_{{ asset.id }}">{{ asset.ip_address }}</a></li>
+                        {% endfor %}
+                    </ul>
+                </li>
+            </ul>
+
+            <h6 id="id1" style="padding: 20px 0; border-top: 1px dotted #ccc; border-bottom: 1px dotted #ccc; font-size: 20px; font-weight: 400; line-height: 20px;">
+                Vulnerabilities by Host
+                <span onclick="toggleAll();" class="expand">Expand All</span><span class="expand-spacer"> | </span><span onclick="toggleAll(true);" class="expand">Collapse All</span>
+            </h6>
+
+            {% for asset in assets %}
+            <div id="asset_{{ asset.id }}" style="font-size: 22px; font-weight: 700; padding: 10px 0; overflow-wrap: break-word;">{{ asset.ip_address }}<div class="clear"></div></div>
+            
+            <div id="asset_summary_{{ asset.id }}" style="display: block;" class="table-wrapper ">
+                <table cellpadding="0" cellspacing="0">
+                    <thead><tr>
+                        <th width="20%"></th><th width="20%"></th><th width="20%"></th><th width="20%"></th><th width="20%"></th>
+                    </tr></thead>
+                    <tbody>
+                        <tr class="">
+                            <td class="#91243E" style=" " colspan="1"><div style="box-sizing: border-box; font-size: 45px; font-weight: 300; line-height: 80px; color: #fff; text-align: center; background: #91243E; border-radius: 3px 3px 0 0; width: 98%; margin: 0;">{{ asset.crit_count }}</div></td>
+                            <td class="#DD4B50" style=" " colspan="1"><div style="box-sizing: border-box; font-size: 45px; font-weight: 300; line-height: 80px; color: #fff; text-align: center; background: #DD4B50; border-radius: 3px 3px 0 0; width: 98%; margin: 0 1%;">{{ asset.high_count }}</div></td>
+                            <td class="#F18C43" style=" " colspan="1"><div style="box-sizing: border-box; font-size: 45px; font-weight: 300; line-height: 80px; color: #fff; text-align: center; background: #F18C43; border-radius: 3px 3px 0 0; width: 98%; margin: 0 1%;">{{ asset.med_count }}</div></td>
+                            <td class="#F8C851" style=" " colspan="1"><div style="box-sizing: border-box; font-size: 45px; font-weight: 300; line-height: 80px; color: #fff; text-align: center; background: #F8C851; border-radius: 3px 3px 0 0; width: 98%; margin: 0 1%;">{{ asset.low_count }}</div></td>
+                            <td class="#67ACE1" style=" " colspan="1"><div style="box-sizing: border-box; font-size: 45px; font-weight: 300; line-height: 80px; color: #fff; text-align: center; background: #67ACE1; border-radius: 3px 3px 0 0; width: 98%; margin: 0 0 0 2%;">{{ asset.info_count }}</div></td>
+                        </tr>
+                        <tr class="">
+                            <td class="#ffffff" style=" " colspan="1"><div style="font-size: 10px; text-transform: uppercase; padding: 5px 0; text-align: center; width: 98%; box-sizing: border-box; border-left: 1px solid #ddd; border-right: 1px solid #ddd; border-bottom: 1px solid #ddd; border-radius: 0 0 3px 3px;  margin: 0; margin-bottom: 15px;">Critical</div></td>
+                            <td class="#ffffff" style=" " colspan="1"><div style="font-size: 10px; text-transform: uppercase; padding: 5px 0; text-align: center; width: 98%; box-sizing: border-box; border-left: 1px solid #ddd; border-right: 1px solid #ddd; border-bottom: 1px solid #ddd; border-radius: 0 0 3px 3px;  margin: 0 1%; margin-bottom: 15px;">High</div></td>
+                            <td class="#ffffff" style=" " colspan="1"><div style="font-size: 10px; text-transform: uppercase; padding: 5px 0; text-align: center; width: 98%; box-sizing: border-box; border-left: 1px solid #ddd; border-right: 1px solid #ddd; border-bottom: 1px solid #ddd; border-radius: 0 0 3px 3px;  margin: 0 1%; margin-bottom: 15px;">Medium</div></td>
+                            <td class="#ffffff" style=" " colspan="1"><div style="font-size: 10px; text-transform: uppercase; padding: 5px 0; text-align: center; width: 98%; box-sizing: border-box; border-left: 1px solid #ddd; border-right: 1px solid #ddd; border-bottom: 1px solid #ddd; border-radius: 0 0 3px 3px;  margin: 0 1%; margin-bottom: 15px;">Low</div></td>
+                            <td class="#ffffff" style=" " colspan="1"><div style="font-size: 10px; text-transform: uppercase; padding: 5px 0; text-align: center; width: 98%; box-sizing: border-box; border-left: 1px solid #ddd; border-right: 1px solid #ddd; border-bottom: 1px solid #ddd; border-radius: 0 0 3px 3px;  margin: 0 0 0 2%; margin-bottom: 15px;">Info</div></td>
+                        </tr>
+                    </tbody>
+                </table>
+                <div class="clear"></div>
+            </div>
+
+            <span id="asset_details_{{ asset.id }}-show" onclick="toggle('asset_details_{{ asset.id }}');" class="button">Show Findings</span><div class="clear"></div>
+            
+            <div id="asset_details_{{ asset.id }}" style="display: none;" class="table-wrapper ">
+                <table cellpadding="0" cellspacing="0">
+                    <thead><tr>
+                        <th width="1%"></th><th width="10%"></th><th width="2%"></th><th width="6%"></th><th width="2%"></th><th width="8%"></th><th width="2%"></th><th width="10%"></th><th width="1%"></th><th width="8%"></th><th width="58%"></th>
+                    </tr></thead>
+                    <tbody>
+                        <tr class="plugin-row-header">
+                            <td class="#ffffff" style=" " colspan="1"></td>
+                            <td class="#ffffff" style=" " colspan="1">Severity</td>
+                            <td class="#ffffff" style=" " colspan="1"></td>
+                            <td class="#ffffff" style=" " colspan="1">CVSS</td>
+                            <td class="#ffffff" style=" " colspan="1"></td>
+                            <td class="#ffffff" style=" " colspan="1">CVE</td>
+                            <td class="#ffffff" style=" " colspan="1"></td>
+                            <td class="#ffffff" style=" " colspan="1">Engine</td>
+                            <td class="#ffffff" style=" " colspan="1"></td>
+                            <td class="#ffffff" style=" " colspan="1"></td>
+                            <td class="#ffffff" style=" " colspan="1">Name</td>
+                        </tr>
+
+                        {% for vuln in asset.vulnerabilities %}
+                        <tr class="plugin-row" style="cursor: pointer;" onclick="toggleVulnDetails('vuln_detail_{{ vuln.id }}')">
+                            <td class="#ffffff" style=" " colspan="1"></td>
+                            <td class="#ffffff" style=" " colspan="1">
+                                {% if vuln.severity == 'Critical' %}<span style="display: inline-block; width: 60px; text-align: center; text-transform: uppercase; background: #91243E; font-size: 10px; color: #fff; border-radius: 3px; line-height: 20px;">Critical</span>
+                                {% elif vuln.severity == 'High' %}<span style="display: inline-block; width: 60px; text-align: center; text-transform: uppercase; background: #DD4B50; font-size: 10px; color: #fff; border-radius: 3px; line-height: 20px;">High</span>
+                                {% elif vuln.severity == 'Medium' %}<span style="display: inline-block; width: 60px; text-align: center; text-transform: uppercase; background: #F18C43; font-size: 10px; color: #fff; border-radius: 3px; line-height: 20px;">Medium</span>
+                                {% elif vuln.severity == 'Low' %}<span style="display: inline-block; width: 60px; text-align: center; text-transform: uppercase; background: #F8C851; font-size: 10px; color: #fff; border-radius: 3px; line-height: 20px;">Low</span>
+                                {% else %}<span style="display: inline-block; width: 60px; text-align: center; text-transform: uppercase; background: #67ACE1; font-size: 10px; color: #fff; border-radius: 3px; line-height: 20px;">Info</span>
+                                {% endif %}
+                            </td>
+                            <td class="#ffffff" style=" " colspan="1"></td>
+                            <td class="#ffffff" style=" " colspan="1">{{ vuln.cvss }}</td>
+                            <td class="#ffffff" style=" " colspan="1"></td>
+                            <td class="#ffffff" style=" " colspan="1">{{ vuln.cve }}</td>
+                            <td class="#ffffff" style=" " colspan="1"></td>
+                            <td class="#ffffff" style=" " colspan="1">{{ vuln.engine }}</td>
+                            <td class="#ffffff" style=" " colspan="1"></td>
+                            <td class="#ffffff" style=" " colspan="1"><span style="color: #67ACE1; font-size: 11px;">Details ▼</span></td>
+                            <td class="#ffffff" style=" " colspan="1"><strong>{{ vuln.title }}</strong></td>
+                        </tr>
+                        <tr id="vuln_detail_{{ vuln.id }}" class="plugin-row details-row" style="display: none;">
+                            <td colspan="2"></td>
+                            <td colspan="9">
+                                <div style="margin-bottom: 10px;">
+                                    <strong>Description:</strong><br/>
+                                    <div style="color: #555; margin-top: 5px;">{{ vuln.description | replace('\n', '<br/>') | safe }}</div>
+                                </div>
+                                <div>
+                                    <strong>Remediation:</strong><br/>
+                                    <div style="color: #555; margin-top: 5px;">{{ vuln.remediation | replace('\n', '<br/>') | safe }}</div>
+                                </div>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                        
+                        {% if not asset.vulnerabilities %}
+                        <tr class="plugin-row">
+                            <td colspan="11" style="text-align: center; color: #999; padding: 20px;">No vulnerabilities reported for this host.</td>
+                        </tr>
+                        {% endif %}
+                    </tbody>
+                </table>
+                <span onclick="toggle('asset_details_{{ asset.id }}');" class="button" style="margin-top: 20px">Hide Findings</span><div class="clear"></div>
+            </div>
+            
+            <div style="height: 40px;"></div><div class="clear"></div>
+            {% endfor %}
+
+        </div>
+        <div class="clear"></div>
+    </div>
+</body>
+</html>

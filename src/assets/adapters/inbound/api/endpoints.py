@@ -214,7 +214,7 @@ async def generate_asset_summary(
     summary = await generate_executive_summary(vuln_data, language=req.language, extra_instructions=req.instructions)
     return {"executive_summary": summary}
 
-@router.post("/{asset_id}/report/pdf")
+@router.post("/{asset_id}/report/html")
 @limiter.limit("5/minute")
 async def download_asset_report(
     request: Request,
@@ -234,16 +234,19 @@ async def download_asset_report(
         VulnerabilityEntity.status != VulnStatus.FIXED
     ).all()
     
-    pdf_bytes = generate_vulnerability_pdf(
-        asset=asset,
-        vulnerabilities=vulns,
+    from src.reporting.application.services.html_generator import generate_vulnerability_html
+    
+    html_bytes = generate_vulnerability_html(
+        assets=[asset],
+        all_vulnerabilities={str(asset.id): vulns},
         executive_summary=req.executive_summary,
         scanner_company_name=req.scanner_company,
-        target_company_name=req.target_company
+        target_company_name=req.target_company,
+        scan_name=f"Asset Report: {asset.name}"
     )
     
     return StreamingResponse(
-        io.BytesIO(pdf_bytes), 
-        media_type="application/pdf", 
-        headers={"Content-Disposition": f"attachment; filename=rapport_{asset.name}.pdf"}
+        io.BytesIO(html_bytes), 
+        media_type="text/html", 
+        headers={"Content-Disposition": f"attachment; filename=rapport_{asset.name.replace(' ', '_')}.html"}
     )

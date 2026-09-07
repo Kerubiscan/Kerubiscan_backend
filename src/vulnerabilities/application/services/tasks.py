@@ -118,6 +118,11 @@ def parse_scan_report(report_xml: str, target_ip: str, scan_id: str = None):
             cve_id = nvt.findtext("cve")
             if cve_id == "NOCVE": cve_id = None
             
+            if not cve_id:
+                cve_refs = nvt.xpath(".//ref[@type='cve']/@id")
+                if cve_refs:
+                    cve_id = cve_refs[0]
+            
             title = nvt.findtext("name")
             if not title: continue
             title = title[:250]
