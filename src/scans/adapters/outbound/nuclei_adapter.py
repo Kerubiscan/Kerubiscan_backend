@@ -18,7 +18,8 @@ class NucleiAdapter:
         
         try:
             # -duc: Disable update check to prevent interactive prompts hanging the worker
-            cmd = ["/usr/local/bin/nuclei", "-duc", "-je", output_file, "-nc"]
+            # -as: Enable Automatic Scan mode (fingerprints ports and runs network/web templates correctly)
+            cmd = ["/usr/local/bin/nuclei", "-duc", "-je", output_file, "-nc", "-as"]
             
             if ports:
                 cmd.extend(["-p", ports])
