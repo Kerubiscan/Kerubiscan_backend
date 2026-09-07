@@ -385,20 +385,25 @@ def run_vulnerability_scan(self, scan_id: str, asset_ip: str, asset_name: str, c
         try:
             # Check if we have discovered ports for this asset
             targets = [asset_ip]
-            if scan:
-                asset = db.query(AssetEntity).filter(
-                    AssetEntity.ip_address == asset_ip, 
-                    AssetEntity.company_id == scan.company_id
-                ).first()
-                if asset and asset.ports:
-                    import re
-                    port_list = []
-                    for p_str in asset.ports.split(','):
-                        match = re.search(r'\d+', p_str)
-                        if match:
-                            port_list.append(match.group(0))
-                    if port_list:
-                        targets = [f"{asset_ip}:{p}" for p in port_list]
+            db = SessionLocal()
+            try:
+                scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
+                if scan:
+                    asset = db.query(AssetEntity).filter(
+                        AssetEntity.ip_address == asset_ip, 
+                        AssetEntity.company_id == scan.company_id
+                    ).first()
+                    if asset and asset.ports:
+                        import re
+                        port_list = []
+                        for p_str in asset.ports.split(','):
+                            match = re.search(r'\d+', p_str)
+                            if match:
+                                port_list.append(match.group(0))
+                        if port_list:
+                            targets = [f"{asset_ip}:{p}" for p in port_list]
+            finally:
+                db.close()
                         
             from src.scans.adapters.outbound.nuclei_adapter import NucleiAdapter
             vulns = NucleiAdapter.run_scan(targets)
