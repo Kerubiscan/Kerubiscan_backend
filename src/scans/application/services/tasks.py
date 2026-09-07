@@ -109,25 +109,36 @@ def run_discovery_scan(self, scan_id: str, target: str, network_zone: str, compa
                 db.commit()
                 
                 if discovered_ips:
-                    logger.info(f"Phase 2: Detailed scan on {len(discovered_ips)} discovered hosts")
-                    detailed_target = ",".join(discovered_ips)
-                    detailed_hosts = NmapAdapter.run_detailed_discovery_scan(detailed_target)
+                    logger.info(f"Phase 2: Detailed scan on {len(discovered_ips)} discovered hosts one-by-one")
+                    total_hosts = len(discovered_ips)
                     
-                    for d_host in detailed_hosts:
-                        asset_to_update = db.query(AssetEntity).filter(
-                            AssetEntity.ip_address == d_host["ip"],
-                            AssetEntity.company_id == company_id,
-                            AssetEntity.is_deleted == False
-                        ).first()
-                        if asset_to_update:
-                            if d_host.get("hostname"):
-                                asset_to_update.name = d_host["hostname"]
-                            if d_host.get("mac_address"):
-                                asset_to_update.mac_address = d_host["mac_address"]
-                            if d_host.get("os") and d_host.get("os") != "Unknown":
-                                asset_to_update.operating_system = d_host["os"]
-                            if d_host.get("ports"):
-                                asset_to_update.ports = d_host["ports"]
+                    for index, ip in enumerate(discovered_ips, start=1):
+                        logger.info(f"Phase 2: Scanning host {index}/{total_hosts} ({ip})")
+                        detailed_hosts = NmapAdapter.run_detailed_discovery_scan(ip)
+                        
+                        if detailed_hosts:
+                            d_host = detailed_hosts[0]
+                            asset_to_update = db.query(AssetEntity).filter(
+                                AssetEntity.ip_address == d_host["ip"],
+                                AssetEntity.company_id == company_id,
+                                AssetEntity.is_deleted == False
+                            ).first()
+                            
+                            if asset_to_update:
+                                if d_host.get("hostname"):
+                                    asset_to_update.name = d_host["hostname"]
+                                if d_host.get("mac_address"):
+                                    asset_to_update.mac_address = d_host["mac_address"]
+                                if d_host.get("os") and d_host.get("os") != "Unknown":
+                                    asset_to_update.operating_system = d_host["os"]
+                                if d_host.get("ports"):
+                                    asset_to_update.ports = d_host["ports"]
+                        
+                        # Update scan progress
+                        scan_update = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
+                        if scan_update:
+                            scan_update.progress = 50 + int(50 * (index / total_hosts))
+                        db.commit()
                                 
                 scan_update = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
                 if scan_update:
