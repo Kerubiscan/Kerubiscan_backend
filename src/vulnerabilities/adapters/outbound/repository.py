@@ -53,3 +53,7 @@ class VulnerabilityRepository:
             .filter(VulnerabilityHistoryEntity.vulnerability_id == vuln_id)\
             .order_by(VulnerabilityHistoryEntity.changed_at.desc())\
             .all()
+
+    def get_by_id(self, vuln_id: str) -> Optional[VulnerabilityEntity]:
+        return self.db.query(VulnerabilityEntity).filter(VulnerabilityEntity.id == vuln_id).first()
+
