@@ -358,7 +358,17 @@ def download_scan_report(
         raise HTTPException(status_code=404, detail="Scan not found")
         
     targets = [t.strip() for t in scan.target.split(",")] if scan.target else []
-    assets = db.query(AssetEntity).filter(AssetEntity.ip_address.in_(targets)).all()
+    raw_assets = db.query(AssetEntity).filter(AssetEntity.ip_address.in_(targets)).all()
+    
+    # Deduplicate: one asset object per unique IP address
+    seen_ips: dict = {}
+    for a in raw_assets:
+        ip = a.ip_address
+        if ip not in seen_ips:
+            seen_ips[ip] = a
+        elif a.ports and not seen_ips[ip].ports:
+            seen_ips[ip] = a  # prefer the record that has port data
+    assets = list(seen_ips.values())
     
     if not assets:
         assets = [AssetEntity(id="dummy", name=scan.target, ip_address=scan.target, network_zone=scan.network_zone)]
@@ -367,7 +377,15 @@ def download_scan_report(
     all_vulns = {}
     for a in assets:
         if a.id != "dummy":
-            all_vulns[str(a.id)] = db.query(VulnerabilityEntity).filter(VulnerabilityEntity.asset_id == a.id).all()
+            vulns = db.query(VulnerabilityEntity).filter(VulnerabilityEntity.asset_id == a.id).all()
+            # Also deduplicate vulnerabilities by title
+            seen_titles: dict = {}
+            deduped = []
+            for v in vulns:
+                if v.title not in seen_titles:
+                    seen_titles[v.title] = True
+                    deduped.append(v)
+            all_vulns[str(a.id)] = deduped
     
     from src.reporting.application.services.html_generator import generate_vulnerability_html
     

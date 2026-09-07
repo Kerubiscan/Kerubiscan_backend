@@ -34,6 +34,11 @@ class VulnerabilityResponse(VulnerabilityBase):
     id: str
     first_detected_at: datetime
     last_seen_at: datetime
+    ip_address: Optional[str] = None
+    asset_name: Optional[str] = None
+    company_id: Optional[str] = None
+    network_zone: Optional[str] = None
+    last_scan_raw_output: Optional[str] = None
 
     class Config:
         from_attributes = True
