@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, status
+from datetime import datetime
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from src.core.database import get_db
@@ -24,7 +25,8 @@ class CompanyResponse(BaseModel):
         from_attributes = True
 
 class ScanCreateRequest(BaseModel):
-    company_name: str
+    company_name: Optional[str] = None
+    company_id: Optional[str] = None
     target: str
     network_zone: Optional[str] = None
     scan_type: str # "DISCOVERY" or "VULNERABILITY"
@@ -102,12 +104,20 @@ def delete_company(company_id: str, db: Session = Depends(get_db), current_user:
 
 @router.post("", response_model=ScanResponse)
 def create_scan(req: ScanCreateRequest, db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)):
-    company = db.query(CompanyEntity).filter(CompanyEntity.name == req.company_name).first()
+    company = None
+    if req.company_id:
+        company = db.query(CompanyEntity).filter(CompanyEntity.id == req.company_id).first()
+    elif req.company_name:
+        normalized_company_name = req.company_name.strip()
+        company = db.query(CompanyEntity).filter(CompanyEntity.name == normalized_company_name).first()
+        if not company:
+            company = CompanyEntity(name=normalized_company_name)
+            db.add(company)
+            db.commit()
+            db.refresh(company)
+            
     if not company:
-        company = CompanyEntity(name=req.company_name)
-        db.add(company)
-        db.commit()
-        db.refresh(company)
+        raise HTTPException(status_code=400, detail="Either company_id or company_name must be provided and valid")
         
     s_type = ScanType.DISCOVERY if req.scan_type.upper() == "DISCOVERY" else ScanType.VULNERABILITY
     s_engine = ScannerEngine[req.scanner_engine.upper()] if req.scanner_engine.upper() in ScannerEngine.__members__ else ScannerEngine.OPENVAS

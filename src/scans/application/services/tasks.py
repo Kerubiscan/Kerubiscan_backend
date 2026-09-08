@@ -407,7 +407,14 @@ def run_vulnerability_scan(self, scan_id: str, asset_ip: str, asset_name: str, c
                     ).first()
                     
                     if not asset:
-                        logger.warning(f"No active AssetEntity found for IP {asset_ip} and company {scan.company_id}")
+                        logger.warning(f"No active AssetEntity found for IP {asset_ip} and company {scan.company_id}. Trying fallback without company_id...")
+                        asset = db.query(AssetEntity).filter(
+                            AssetEntity.ip_address == asset_ip,
+                            AssetEntity.is_deleted == False
+                        ).first()
+                        
+                    if not asset:
+                        logger.warning(f"Fallback failed: No active AssetEntity found for IP {asset_ip}")
                     elif not asset.ports:
                         logger.warning(f"AssetEntity for IP {asset_ip} found, but ports field is empty or None")
                     else:
