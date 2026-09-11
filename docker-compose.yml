@@ -121,6 +121,8 @@ services:
       KC_DB_PASSWORD: kimia_password
       KEYCLOAK_ADMIN: admin
       KEYCLOAK_ADMIN_PASSWORD: admin
+      KC_HOSTNAME_STRICT: "false"
+      KC_HTTP_ENABLED: "true"
     ports:
       - "1990:8080"
     volumes:

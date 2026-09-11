@@ -40,7 +40,7 @@
       "directAccessGrantsEnabled": true,
       "standardFlowEnabled": true,
       "redirectUris": [
-        "http://localhost:3000/*"
+        "*"
       ],
       "webOrigins": [
         "*"
