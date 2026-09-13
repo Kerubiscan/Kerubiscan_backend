@@ -21,11 +21,20 @@ class NucleiAdapter:
             # -as: Enable Automatic Scan mode (fingerprints ports and runs network/web templates correctly)
             cmd = ["/usr/local/bin/nuclei", "-duc", "-je", output_file, "-nc", "-as"]
             
-            if ports:
-                cmd.extend(["-p", ports])
-                
+            # Format targets with ports if ports are provided
+            # IMPORTANT: In Nuclei, '-p' is the short flag for '--proxy'!
+            # To scan specific ports, targets must be passed as 'host:port' with '-u'.
+            scan_targets = []
             for t in targets:
-                cmd.extend(["-u", t])
+                scan_targets.append(t)
+                if ports:
+                    for p in ports.split(','):
+                        p_clean = p.strip()
+                        if p_clean.isdigit():
+                            scan_targets.append(f"{t}:{p_clean}")
+                            
+            for st in list(dict.fromkeys(scan_targets)):
+                cmd.extend(["-u", st])
                 
             # Completely strip all proxy environment variables to prevent Nuclei proxy errors
             env = os.environ.copy()
