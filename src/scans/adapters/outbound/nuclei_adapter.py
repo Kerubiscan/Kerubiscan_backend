@@ -27,12 +27,10 @@ class NucleiAdapter:
             for t in targets:
                 cmd.extend(["-u", t])
                 
-            # Sanitize proxy env vars to prevent Nuclei fatal proxy exit errors
+            # Completely strip all proxy environment variables to prevent Nuclei proxy errors
             env = os.environ.copy()
-            for proxy_var in ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"]:
-                val = env.get(proxy_var, "")
-                if val and not (val.startswith("http://") or val.startswith("https://") or val.startswith("socks5://")):
-                    env.pop(proxy_var, None)
+            for proxy_var in ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy", "NO_PROXY", "no_proxy"]:
+                env.pop(proxy_var, None)
                 
             result = subprocess.run(
                 cmd, 
