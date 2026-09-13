@@ -3,6 +3,8 @@ from sqlalchemy.sql import func
 import enum
 import uuid
 from src.core.database import Base
+from src.policies.domain.entities import PolicyEntity
+from src.secrets.domain.entities import CredentialEntity
 
 class ScanType(enum.Enum):
     DISCOVERY = "DISCOVERY"
