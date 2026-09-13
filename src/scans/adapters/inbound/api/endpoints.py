@@ -31,6 +31,8 @@ class ScanCreateRequest(BaseModel):
     network_zone: Optional[str] = None
     scan_type: str # "DISCOVERY" or "VULNERABILITY"
     scanner_engine: str = "OPENVAS" # "OPENVAS", "NMAP", "NUCLEI", "NESSUS"
+    policy_id: Optional[str] = None
+    credential_id: Optional[str] = None
     scheduled_for: Optional[str] = None
     recurrence_rule: Optional[str] = None
 
@@ -39,6 +41,8 @@ class ScanUpdateRequest(BaseModel):
     target: Optional[str] = None
     network_zone: Optional[str] = None
     scanner_engine: Optional[str] = None
+    policy_id: Optional[str] = None
+    credential_id: Optional[str] = None
 
 class ScanResponse(BaseModel):
     id: str
@@ -52,6 +56,8 @@ class ScanResponse(BaseModel):
     progress: int = 0
     target_states: Optional[dict] = None
     executive_summary: Optional[str] = None
+    policy_id: Optional[str] = None
+    credential_id: Optional[str] = None
     recurrence_rule: Optional[str] = None
     next_run_at: Optional[str] = None
     created_at: Optional[str] = None
@@ -134,6 +140,8 @@ def create_scan(req: ScanCreateRequest, db: Session = Depends(get_db), current_u
         scanner_engine=s_engine,
         status=ScanStatus.PENDING if req.scheduled_for else ScanStatus.IN_PROGRESS,
         target_states=target_states,
+        policy_id=req.policy_id,
+        credential_id=req.credential_id,
         recurrence_rule=req.recurrence_rule,
         next_run_at=req.scheduled_for
     )
@@ -175,6 +183,8 @@ def create_scan(req: ScanCreateRequest, db: Session = Depends(get_db), current_u
         progress=scan.progress,
         target_states=scan.target_states,
         executive_summary=scan.executive_summary,
+        policy_id=scan.policy_id,
+        credential_id=scan.credential_id,
         recurrence_rule=scan.recurrence_rule,
         next_run_at=scan.next_run_at.isoformat() if scan.next_run_at else None,
         created_at=scan.created_at.isoformat() if scan.created_at else None
@@ -203,6 +213,8 @@ def get_scans(company_id: Optional[str] = None, network_zone: Optional[str] = No
             progress=s.progress,
             target_states=s.target_states,
             executive_summary=s.executive_summary,
+            policy_id=s.policy_id,
+            credential_id=s.credential_id,
             recurrence_rule=s.recurrence_rule,
             next_run_at=s.next_run_at.isoformat() if s.next_run_at else None,
             created_at=s.created_at.isoformat() if s.created_at else None

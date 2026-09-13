@@ -1,0 +1,628 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8"></meta>
+    <title>{{ scan_name }} - RAPPORT D'AUDIT DE VULNÉRABILITÉS - KERIBU SOC</title>
+    <style type="text/css" media="all">
+        @import url("https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700;800&display=swap");
+    </style>
+    <style type="text/css" media="all">
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        
+        body {
+            font-family: 'Inter', 'Segoe UI', Arial, sans-serif;
+            background: #0f172a;
+            color: #334155;
+            font-size: 13px;
+            line-height: 1.5;
+        }
+
+        #report {
+            width: 1080px;
+            margin: 30px auto;
+            background: #ffffff;
+            border-radius: 8px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+            overflow: hidden;
+        }
+
+        /* --- KERIBU SOC BRAND HEADER --- */
+        .brand-header {
+            background: linear-gradient(135deg, #0b101d 0%, #0f172a 100%);
+            padding: 25px 30px;
+            color: #ffffff;
+            border-bottom: 4px solid #84cc16;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .logo-container {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+
+        .logo-text {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .logo-title {
+            font-size: 26px;
+            font-weight: 800;
+            letter-spacing: 2px;
+            color: #84cc16;
+            text-transform: uppercase;
+        }
+
+        .logo-title span { color: #ffffff; }
+
+        .logo-subtitle {
+            font-size: 11px;
+            font-weight: 600;
+            color: #22c55e;
+            letter-spacing: 3px;
+            text-transform: uppercase;
+            margin-top: 2px;
+        }
+
+        .header-meta {
+            text-align: right;
+            font-size: 12px;
+            color: #94a3b8;
+        }
+
+        .header-meta strong { color: #f8fafc; }
+        .classification-badge {
+            display: inline-block;
+            background: #dc2626;
+            color: #ffffff;
+            font-weight: 700;
+            font-size: 10px;
+            padding: 4px 10px;
+            border-radius: 4px;
+            margin-top: 6px;
+            letter-spacing: 1px;
+        }
+
+        /* --- SECTION STYLES --- */
+        .content-body { padding: 30px; }
+
+        .section-header {
+            font-size: 18px;
+            font-weight: 700;
+            color: #0f172a;
+            border-bottom: 2px solid #e2e8f0;
+            padding-bottom: 8px;
+            margin-top: 35px;
+            margin-bottom: 20px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .section-header::before {
+            content: '';
+            display: inline-block;
+            width: 8px;
+            height: 20px;
+            background: #84cc16;
+            border-radius: 2px;
+        }
+
+        /* --- METADATA COVER CARDS --- */
+        .cover-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 15px;
+            margin-bottom: 25px;
+        }
+
+        .meta-card {
+            background: #f8fafc;
+            border: 1px solid #e2e8f0;
+            border-radius: 6px;
+            padding: 15px;
+        }
+
+        .meta-card .label {
+            font-size: 10px;
+            text-transform: uppercase;
+            color: #64748b;
+            font-weight: 700;
+            letter-spacing: 0.5px;
+        }
+
+        .meta-card .value {
+            font-size: 13px;
+            font-weight: 700;
+            color: #0f172a;
+            margin-top: 4px;
+            word-break: break-all;
+        }
+
+        /* --- SEVERITY BADGES & CARDS --- */
+        .severity-grid {
+            display: grid;
+            grid-template-columns: repeat(5, 1fr);
+            gap: 12px;
+            margin-bottom: 25px;
+        }
+
+        .sev-box {
+            text-align: center;
+            border-radius: 6px;
+            overflow: hidden;
+            border: 1px solid #e2e8f0;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        }
+
+        .sev-box .num {
+            font-size: 32px;
+            font-weight: 800;
+            line-height: 60px;
+            color: #ffffff;
+        }
+
+        .sev-box .lbl {
+            font-size: 11px;
+            font-weight: 700;
+            text-transform: uppercase;
+            padding: 6px 0;
+            background: #ffffff;
+            border-top: 1px solid #e2e8f0;
+        }
+
+        .sev-critical { background: #dc2626; color: #dc2626; }
+        .sev-high { background: #ea580c; color: #ea580c; }
+        .sev-medium { background: #d97706; color: #d97706; }
+        .sev-low { background: #2563eb; color: #2563eb; }
+        .sev-info { background: #64748b; color: #64748b; }
+
+        .text-crit { color: #dc2626; }
+        .text-medium { color: #d97706; }
+        .text-low { color: #2563eb; }
+
+        .badge-crit { background: #dc2626; color: #fff; padding: 3px 8px; border-radius: 4px; font-weight: 700; font-size: 10px; text-transform: uppercase; }
+        .badge-high { background: #ea580c; color: #fff; padding: 3px 8px; border-radius: 4px; font-weight: 700; font-size: 10px; text-transform: uppercase; }
+        .badge-medium { background: #d97706; color: #fff; padding: 3px 8px; border-radius: 4px; font-weight: 700; font-size: 10px; text-transform: uppercase; }
+        .badge-low { background: #2563eb; color: #fff; padding: 3px 8px; border-radius: 4px; font-weight: 700; font-size: 10px; text-transform: uppercase; }
+        .badge-info { background: #64748b; color: #fff; padding: 3px 8px; border-radius: 4px; font-weight: 700; font-size: 10px; text-transform: uppercase; }
+
+        /* --- EXECUTIVE SUMMARY BOX --- */
+        .summary-box {
+            background: #f8fafc;
+            border-left: 4px solid #84cc16;
+            border-radius: 6px;
+            padding: 20px;
+            margin-bottom: 25px;
+        }
+
+        .summary-box h4 {
+            font-size: 15px;
+            font-weight: 700;
+            color: #0f172a;
+            margin-bottom: 12px;
+        }
+
+        .summary-box p, .summary-box div {
+            color: #334155;
+            line-height: 1.6;
+        }
+
+        /* --- TABLES --- */
+        table.report-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 20px;
+            font-size: 12px;
+        }
+
+        table.report-table th {
+            background: #0f172a;
+            color: #ffffff;
+            font-weight: 600;
+            text-align: left;
+            padding: 10px 12px;
+            border: 1px solid #1e293b;
+        }
+
+        table.report-table td {
+            padding: 10px 12px;
+            border: 1px solid #e2e8f0;
+            vertical-align: top;
+        }
+
+        table.report-table tr:nth-child(even) {
+            background: #f8fafc;
+        }
+
+        /* --- FINDING CARD STYLES --- */
+        .finding-card {
+            border: 1px solid #cbd5e1;
+            border-radius: 6px;
+            margin-bottom: 20px;
+            overflow: hidden;
+        }
+
+        .finding-header {
+            background: #f1f5f9;
+            padding: 12px 15px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid #cbd5e1;
+            cursor: pointer;
+        }
+
+        .finding-title {
+            font-weight: 700;
+            font-size: 14px;
+            color: #0f172a;
+        }
+
+        .finding-body {
+            padding: 15px;
+            background: #ffffff;
+        }
+
+        .detail-row {
+            display: grid;
+            grid-template-columns: 140px 1fr;
+            margin-bottom: 8px;
+        }
+
+        .detail-row .detail-label {
+            font-weight: 700;
+            color: #475569;
+        }
+
+        .code-block {
+            background: #0f172a;
+            color: #a3e635;
+            font-family: monospace;
+            padding: 10px;
+            border-radius: 4px;
+            font-size: 11px;
+            overflow-x: auto;
+            white-space: pre-wrap;
+            margin-top: 4px;
+        }
+
+        .btn-toggle {
+            background: #e2e8f0;
+            border: none;
+            padding: 4px 10px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 600;
+            cursor: pointer;
+            color: #334155;
+        }
+
+        .btn-toggle:hover { background: #cbd5e1; }
+
+        .footer-banner {
+            text-align: center;
+            padding: 20px;
+            background: #0b101d;
+            color: #94a3b8;
+            font-size: 11px;
+            border-top: 2px solid #84cc16;
+        }
+    </style>
+    <script type="text/javascript">
+        function toggleDetail(id) {
+            var el = document.getElementById(id);
+            if (el.style.display === 'none' || el.style.display === '') {
+                el.style.display = 'block';
+            } else {
+                el.style.display = 'none';
+            }
+        }
+        function toggleAllFindings(show) {
+            var elements = document.getElementsByClassName('finding-body');
+            for (var i = 0; i < elements.length; i++) {
+                elements[i].style.display = show ? 'block' : 'none';
+            }
+        }
+    </script>
+</head>
+<body>
+
+    <div id="report">
+        
+        <!-- HEADER WITH KERIBU SOC BRANDING -->
+        <div class="brand-header">
+            <div class="logo-container">
+                <!-- SVG Shield Logo -->
+                <svg width="50" height="50" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M50 5 L90 20 V50 C90 75 50 95 50 95 C50 95 10 75 10 50 V20 Z" fill="#0b101d" stroke="#84cc16" stroke-width="4"/>
+                    <path d="M50 15 L82 27 V48 C82 68 50 84 50 84 C50 84 18 68 18 48 V27 Z" fill="#0f172a"/>
+                    <circle cx="50" cy="48" r="22" stroke="#22c55e" stroke-width="3" stroke-dasharray="4 2"/>
+                    <path d="M42 34 V62 M42 48 L58 34 M42 48 L58 62" stroke="#a3e635" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+                <div class="logo-text">
+                    <div class="logo-title">KERIBU <span>SOC</span></div>
+                    <div class="logo-subtitle">HAVE PEACE OF MIND</div>
+                </div>
+            </div>
+            <div class="header-meta">
+                <div>AUDIT DE SÉCURITÉ INFORMATEUR</div>
+                <div>Généré pour : <strong>{{ target_company_name }}</strong></div>
+                <div>Organisme : <strong>{{ scanner_company_name }}</strong></div>
+                <div class="classification-badge">{{ classification }}</div>
+            </div>
+        </div>
+
+        <div class="content-body">
+
+            <!-- 1. PAGE DE GARDE / COVER METADATA -->
+            <div class="cover-grid">
+                <div class="meta-card">
+                    <div class="label">Nom du Scan</div>
+                    <div class="value">{{ scan_name }}</div>
+                </div>
+                <div class="meta-card">
+                    <div class="label">Date de Génération</div>
+                    <div class="value">{{ report_date }}</div>
+                </div>
+                <div class="meta-card">
+                    <div class="label">Profil de Scan</div>
+                    <div class="value">{{ scan_profile }}</div>
+                </div>
+                <div class="meta-card">
+                    <div class="label">Score de Risque Moyen</div>
+                    <div class="value {% if overall_cvss_avg >= 7.0 %}text-crit{% elif overall_cvss_avg >= 4.0 %}text-medium{% else %}text-low{% endif %}" style="font-size: 16px;">
+                        {{ overall_cvss_avg }} / 10 (CVSS)
+                    </div>
+                </div>
+            </div>
+
+            <!-- 2. RÉSUMÉ EXÉCUTIF (AI GENERATED & PARSED) -->
+            <div class="section-header">1. Résumé Exécutif & Posture de Sécurité (IA)</div>
+            <div class="summary-box">
+                <h4>Synthèse Managériale et Plan de Remédiation</h4>
+                {% if executive_summary %}
+                    <div>{{ executive_summary | replace('\n', '<br/>') | safe }}</div>
+                {% else %}
+                    <p style="color: #64748b; font-style: italic;">Aucun résumé exécutif IA n'a été fourni.</p>
+                {% endif %}
+            </div>
+
+            <!-- 3. STATISTIQUES ET VUE D'ENSEMBLE -->
+            <div class="section-header">2. Statistiques et Vue d'Ensemble</div>
+            
+            <div class="severity-grid">
+                <div class="sev-box">
+                    <div class="num sev-critical">{{ total_crit }}</div>
+                    <div class="lbl">Critiques</div>
+                </div>
+                <div class="sev-box">
+                    <div class="num sev-high">{{ total_high }}</div>
+                    <div class="lbl">Hautes</div>
+                </div>
+                <div class="sev-box">
+                    <div class="num sev-medium">{{ total_med }}</div>
+                    <div class="lbl">Moyennes</div>
+                </div>
+                <div class="sev-box">
+                    <div class="num sev-low">{{ total_low }}</div>
+                    <div class="lbl">Basses</div>
+                </div>
+                <div class="sev-box">
+                    <div class="num sev-info">{{ total_info }}</div>
+                    <div class="lbl">Infos</div>
+                </div>
+            </div>
+
+            <!-- TOP 10 HOSTS -->
+            <h4 style="font-size: 14px; font-weight: 700; margin-bottom: 10px; color: #0f172a;">Top Hosts les Plus Vulnérables</h4>
+            <table class="report-table">
+                <thead>
+                    <tr>
+                        <th width="30%">Host / Adresse IP</th>
+                        <th width="25%">OS Détecté</th>
+                        <th width="15%">Critiques</th>
+                        <th width="15%">Hautes</th>
+                        <th width="15%">Moyennes</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for h in top_hosts %}
+                    <tr>
+                        <td><strong>{{ h.ip_address }}</strong> ({{ h.name }})</td>
+                        <td>{{ h.operating_system }}</td>
+                        <td><span class="badge-crit">{{ h.crit_count }}</span></td>
+                        <td><span class="badge-high">{{ h.high_count }}</span></td>
+                        <td><span class="badge-medium">{{ h.med_count }}</span></td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+
+            <!-- TOP 10 VULNERABILITIES -->
+            <h4 style="font-size: 14px; font-weight: 700; margin-top: 20px; margin-bottom: 10px; color: #0f172a;">Top 10 des Vulnérabilités les Plus Critiques</h4>
+            <table class="report-table">
+                <thead>
+                    <tr>
+                        <th width="12%">Sévérité</th>
+                        <th width="10%">CVSS</th>
+                        <th width="18%">CVE / Identifiant</th>
+                        <th width="20%">Cible Affectée</th>
+                        <th width="40%">Titre de la Vulnérabilité</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for tv in top_vulnerabilities %}
+                    <tr>
+                        <td>
+                            {% if tv.severity == 'Critical' %}<span class="badge-crit">Critical</span>
+                            {% elif tv.severity == 'High' %}<span class="badge-high">High</span>
+                            {% elif tv.severity == 'Medium' %}<span class="badge-medium">Medium</span>
+                            {% elif tv.severity == 'Low' %}<span class="badge-low">Low</span>
+                            {% else %}<span class="badge-info">Info</span>{% endif %}
+                        </td>
+                        <td><strong>{{ tv.cvss }}</strong></td>
+                        <td><a href="{{ tv.ref_url }}" target="_blank" style="color: #2563eb; font-weight: 600;">{{ tv.cve }}</a></td>
+                        <td>{{ tv.asset_name }}</td>
+                        <td>{{ tv.title }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+
+            <!-- 4. DÉTAIL PAR HOST / ASSET -->
+            <div class="section-header">3. Synthèse des Assets / Hosts Scannés</div>
+            <table class="report-table">
+                <thead>
+                    <tr>
+                        <th width="20%">IP / Nom</th>
+                        <th width="25%">Système d'Exploitation</th>
+                        <th width="30%">Ports Ouverts Détectés</th>
+                        <th width="25%">Répartition Vulnérabilités</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for asset in assets %}
+                    <tr>
+                        <td><strong>{{ asset.ip_address }}</strong></td>
+                        <td>{{ asset.operating_system }}</td>
+                        <td><span style="font-family: monospace; font-size: 11px;">{{ asset.ports }}</span></td>
+                        <td>
+                            <span class="badge-crit">{{ asset.crit_count }}</span>
+                            <span class="badge-high">{{ asset.high_count }}</span>
+                            <span class="badge-medium">{{ asset.med_count }}</span>
+                            <span class="badge-low">{{ asset.low_count }}</span>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+
+            <!-- 5. DÉTAIL PAR VULNÉRABILITÉ (FINDINGS) -->
+            <div class="section-header" style="justify-content: space-between;">
+                <span>4. Détail par Vulnérabilité (Findings)</span>
+                <div>
+                    <button class="btn-toggle" onclick="toggleAllFindings(true)">Tout Déplier</button>
+                    <button class="btn-toggle" onclick="toggleAllFindings(false)">Tout Replier</button>
+                </div>
+            </div>
+
+            {% for asset in assets %}
+                <h3 style="font-size: 15px; font-weight: 700; color: #0f172a; margin-top: 20px; margin-bottom: 12px; padding: 6px 12px; background: #e2e8f0; border-radius: 4px;">
+                    Host : {{ asset.ip_address }} ({{ asset.vulnerabilities | length }} vulnérabilités)
+                </h3>
+
+                {% for vuln in asset.vulnerabilities %}
+                <div class="finding-card">
+                    <div class="finding-header" onclick="toggleDetail('finding_{{ vuln.id }}')">
+                        <div>
+                            {% if vuln.severity == 'Critical' %}<span class="badge-crit">Critical</span>
+                            {% elif vuln.severity == 'High' %}<span class="badge-high">High</span>
+                            {% elif vuln.severity == 'Medium' %}<span class="badge-medium">Medium</span>
+                            {% elif vuln.severity == 'Low' %}<span class="badge-low">Low</span>
+                            {% else %}<span class="badge-info">Info</span>{% endif %}
+                            <strong style="margin-left: 10px;">{{ vuln.title }}</strong>
+                        </div>
+                        <div>
+                            <span style="font-weight: 700; color: #475569; margin-right: 15px;">CVSS: {{ vuln.cvss }}</span>
+                            <button class="btn-toggle">Détails ▼</button>
+                        </div>
+                    </div>
+
+                    <div id="finding_{{ vuln.id }}" class="finding-body">
+                        <div class="detail-row">
+                            <div class="detail-label">CVE / ID :</div>
+                            <div><a href="{{ vuln.ref_url }}" target="_blank" style="color: #2563eb; font-weight: 600;">{{ vuln.cve }}</a></div>
+                        </div>
+                        <div class="detail-row">
+                            <div class="detail-label">Moteur Scanner :</div>
+                            <div>{{ vuln.engine }} (Qualité de détection QoD : {{ vuln.qod }})</div>
+                        </div>
+                        <div class="detail-row">
+                            <div class="detail-label">Vecteur CVSS v3 :</div>
+                            <td><span style="font-family: monospace; background: #f1f5f9; padding: 2px 6px; border-radius: 3px;">{{ vuln.cvss_vector }}</span></td>
+                        </div>
+                        <div class="detail-row">
+                            <div class="detail-label">Impact CIA :</div>
+                            <div><strong style="color: #dc2626;">{{ vuln.impact_cia }}</strong></div>
+                        </div>
+                        <div class="detail-row">
+                            <div class="detail-label">Description :</div>
+                            <div>{{ vuln.description | replace('\n', '<br/>') | safe }}</div>
+                        </div>
+                        <div class="detail-row">
+                            <div class="detail-label">Preuve Détection :</div>
+                            <div class="code-block">{{ vuln.proof }}</div>
+                        </div>
+                        <div class="detail-row" style="margin-top: 10px;">
+                            <div class="detail-label">Remédiation (IA) :</div>
+                            <div style="color: #15803d; font-weight: 600;">{{ vuln.remediation | replace('\n', '<br/>') | safe }}</div>
+                        </div>
+                    </div>
+                </div>
+                {% endfor %}
+
+                {% if not asset.vulnerabilities %}
+                <p style="color: #64748b; font-style: italic; padding: 10px 0;">Aucune vulnérabilité n'a été détectée pour ce host.</p>
+                {% endif %}
+            {% endfor %}
+
+            <!-- 6. ANNEXES -->
+            <div class="section-header">5. Annexes</div>
+            
+            <h4 style="font-size: 13px; font-weight: 700; margin-bottom: 6px; color: #0f172a;">A. Méthodologie du Scan</h4>
+            <p style="margin-bottom: 15px; color: #475569;">
+                Ce scan a été exécuté par l'orchestrateur **KERIBU SOC Multi-Engine**. Les moteurs <strong>OpenVAS (Greenbone)</strong>, <strong>Nuclei (ProjectDiscovery)</strong> et <strong>Nmap</strong> sont combinés. 
+                Les résultats sont consolidés, dé-doublonnés et corrélés avec les scores CVSSv3 et l'intelligence de vulnérabilités NVD.
+            </p>
+
+            <h4 style="font-size: 13px; font-weight: 700; margin-bottom: 6px; color: #0f172a;">B. Glossaire des Termes Technique</h4>
+            <table class="report-table">
+                <thead>
+                    <tr>
+                        <th width="20%">Terme</th>
+                        <th width="80%">Définition et Description</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><strong>CVSS</strong></td>
+                        <td>Common Vulnerability Scoring System — Norme ouverte d'évaluation de la sévérité des vulnérabilités (de 0.0 à 10.0).</td>
+                    </tr>
+                    <tr>
+                        <td><strong>CVE</strong></td>
+                        <td>Common Vulnerabilities and Exposures — Dictionnaire public de référence des failles de sécurité connues.</td>
+                    </tr>
+                    <tr>
+                        <td><strong>QoD</strong></td>
+                        <td>Quality of Detection — Indicateur spécifique à OpenVAS mesurant la fiabilité de la détection (ex: 80% à 100%).</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Impact CIA</strong></td>
+                        <td>Confidentialité, Intégrité, Disponibilité (Triade fondamentale de la sécurité de l'information).</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <h4 style="font-size: 13px; font-weight: 700; margin-bottom: 6px; color: #0f172a;">C. Liste Complète des Cibles Audités</h4>
+            <ul style="list-style-type: square; margin-left: 20px; color: #475569;">
+                {% for asset in assets %}
+                <li><strong>{{ asset.ip_address }}</strong> ({{ asset.name }}) - {{ asset.operating_system }}</li>
+                {% endfor %}
+            </ul>
+
+        </div>
+
+        <!-- FOOTER BANNER WITH KERIBU SOC BRANDING -->
+        <div class="footer-banner">
+            <div>KERIBU SOC SECURITY PLATFORM &copy; 2026 — ALL RIGHTS RESERVED</div>
+            <div style="font-size: 10px; margin-top: 4px; color: #64748b;">CONFIDENTIEL - RAPPORT RÉSERVÉ À L'USAGE EXCLUSIF DU CLIENT</div>
+        </div>
+
+    </div>
+
+</body>
+</html>

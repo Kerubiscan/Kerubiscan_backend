@@ -39,6 +39,8 @@ class ScanEntity(Base):
     target_states = Column(JSON, default=dict, nullable=False)
     recurrence_rule = Column(String, nullable=True)
     next_run_at = Column(DateTime(timezone=True), nullable=True)
+    policy_id = Column(String(36), ForeignKey("policies.id"), nullable=True)
+    credential_id = Column(String(36), ForeignKey("credentials.id"), nullable=True)
     is_deleted = Column(Boolean, default=False, nullable=False)
 
     

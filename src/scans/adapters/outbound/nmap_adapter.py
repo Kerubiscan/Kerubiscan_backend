@@ -71,17 +71,29 @@ class NmapAdapter:
                 raise Exception(f"Nmap detailed scan failed: {e.stderr}")
 
     @staticmethod
-    def run_vulnerability_scan(target: str) -> List[Dict]:
-        """Runs an Nmap deep scan (ports, OS, versions) and returns structured data."""
-        logger.info(f"Running Nmap deep scan on {target}")
+    def run_vulnerability_scan(target: str, ports: str = None) -> List[Dict]:
+        """Runs an Nmap deep scan (ports, OS, versions) with optional custom port ranges / exclusions."""
+        logger.info(f"Running Nmap deep scan on {target} with ports option: {ports}")
         
         try:
-            # -sT: TCP Connect scan (works better in Docker/Windows than SYN scan -sS)
-            # -sV: Version detection
-            # -Pn: Disable ping (fixes Docker NAT dropping ICMP)
-            # -oX -: Output XML to stdout
+            cmd = ["nmap", "-sT", "-sV", "-Pn"]
+            
+            if ports:
+                # Handle exclusion ranges if specified in format "1-65535,!7000" or "--exclude-ports 7000"
+                if "!" in ports:
+                    p_parts = ports.split("!")
+                    scan_p = p_parts[0].rstrip(",")
+                    exclude_p = p_parts[1]
+                    if scan_p:
+                        cmd.extend(["-p", scan_p])
+                    cmd.extend(["--exclude-ports", exclude_p])
+                else:
+                    cmd.extend(["-p", ports])
+            
+            cmd.extend(["--script", "vuln,vulners", "-oX", "-", target])
+            
             result = subprocess.run(
-                ["nmap", "-sT", "-sV", "-Pn", "--script", "vuln,vulners", "-oX", "-", target], 
+                cmd, 
                 capture_output=True, text=True, check=True, timeout=86400, stdin=subprocess.DEVNULL
             )
             logger.info(f"Nmap vulnerability scan raw output for {target}:\n{result.stdout}")

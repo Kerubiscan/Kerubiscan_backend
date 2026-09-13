@@ -345,6 +345,9 @@ def run_vulnerability_scan(self, scan_id: str, asset_ip: str, asset_name: str, c
     logger.info(f"Starting vulnerability scan for scan_id: {scan_id}, target: {asset_ip}")
     db: Session = SessionLocal()
     scan_engine = ScannerEngine.OPENVAS
+    policy = None
+    credential = None
+    vault_secret = {}
     
     try:
         scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
@@ -360,14 +363,48 @@ def run_vulnerability_scan(self, scan_id: str, asset_ip: str, asset_name: str, c
             if scan.status != ScanStatus.IN_PROGRESS:
                 scan.status = ScanStatus.IN_PROGRESS
             scan_engine = scan.scanner_engine
+            
+            from src.policies.domain.entities import PolicyEntity
+            from src.secrets.domain.entities import CredentialEntity
+            from src.assets.domain.entities import AssetEntity
+            from src.secrets.adapters.outbound.vault import VaultAdapter
+
+            # 1. Fetch policy (explicit policy_id OR automatic lookup for company_id)
+            if scan.policy_id:
+                policy = db.query(PolicyEntity).filter(PolicyEntity.id == scan.policy_id).first()
+            elif scan.company_id:
+                policy = db.query(PolicyEntity).filter(PolicyEntity.company_id == scan.company_id).first()
+                
+            # 2. Fetch credential (explicit credential_id OR automatic lookup for asset/company_id)
+            if scan.credential_id:
+                credential = db.query(CredentialEntity).filter(CredentialEntity.id == scan.credential_id).first()
+            elif scan.company_id:
+                asset = db.query(AssetEntity).filter(
+                    AssetEntity.ip_address == asset_ip,
+                    AssetEntity.company_id == scan.company_id,
+                    AssetEntity.is_deleted == False
+                ).first()
+                if asset:
+                    credential = db.query(CredentialEntity).filter(CredentialEntity.asset_id == asset.id).first()
+                    
+            if credential:
+                try:
+                    vault = VaultAdapter()
+                    vault_secret = vault.get_secret(credential.vault_path)
+                except Exception as ve:
+                    logger.warning(f"Could not fetch secret from Vault at {credential.vault_path}: {ve}")
+                    vault_secret = {}
+            
             db.commit()
     finally:
         db.close()
 
+    port_range = policy.port_scanning_range if policy and policy.port_scanning_range else None
+
     if scan_engine == ScannerEngine.NMAP:
         try:
             from src.scans.adapters.outbound.nmap_adapter import NmapAdapter
-            hosts = NmapAdapter.run_vulnerability_scan(asset_ip)
+            hosts = NmapAdapter.run_vulnerability_scan(asset_ip, ports=port_range)
             logger.info(f"Nmap vulnerability scan completed. Hosts found: {len(hosts)}")
             
             # Nmap runs synchronously, so we pass to parser. 
@@ -430,6 +467,10 @@ def run_vulnerability_scan(self, scan_id: str, asset_ip: str, asset_name: str, c
                             logger.warning(f"Failed to parse any ports from asset.ports: {asset.ports}")
             finally:
                 db.close()
+                
+            if port_range:
+                # If policy port range is specified (e.g. 1-65535 or custom), use it
+                target_ports = port_range.split("!")[0].rstrip(",")
                         
             from src.scans.adapters.outbound.nuclei_adapter import NucleiAdapter
             vulns = NucleiAdapter.run_scan(target=asset_ip, ports=target_ports)
@@ -514,7 +555,14 @@ def run_vulnerability_scan(self, scan_id: str, asset_ip: str, asset_name: str, c
         return
         
     try:
-        target_id = adapter.create_target(f"Target_{asset_name}_{scan_id}", [asset_ip])
+        gvm_port_range = "T:1-65535,U:1-65535"
+        if port_range:
+            # Clean port range for GVM format, e.g. "1-65535,!7000" or "80,443"
+            clean_ports = port_range.split("!")[0].rstrip(",")
+            if clean_ports:
+                gvm_port_range = f"T:{clean_ports}"
+                
+        target_id = adapter.create_target(f"Target_{asset_name}_{scan_id}", [asset_ip], port_range=gvm_port_range)
         task_id = adapter.create_task(f"Task_{asset_name}_{scan_id}", target_id, DEFAULT_SCANNER_ID, config_id)
         report_id = adapter.start_task(task_id)
         

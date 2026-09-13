@@ -39,7 +39,7 @@ async def get_reports(
     )
 
 @router.post("/{asset_id}/html", response_class=Response)
-async def generate_executive_report(
+async def generate_executive_report_html(
     asset_id: str, 
     request_data: ReportGenerationRequest,
     db: Session = Depends(get_db)
@@ -50,17 +50,71 @@ async def generate_executive_report(
         
     vulnerabilities = db.query(VulnerabilityEntity).filter(VulnerabilityEntity.asset_id == asset_id).all()
     
+    exec_summary = request_data.executive_summary
+    if not exec_summary:
+        from src.ai.application.services.nlp import generate_executive_summary
+        vuln_dicts = [
+            {
+                "title": v.title,
+                "severity": getattr(v.severity, "value", str(v.severity)),
+                "cvss": v.cvss_base_score,
+                "cve": v.cve_id
+            } for v in vulnerabilities[:10]
+        ]
+        exec_summary = await generate_executive_summary(vuln_dicts, language=request_data.language or "French")
+
     from src.reporting.application.services.html_generator import generate_vulnerability_html
     
     html_bytes = generate_vulnerability_html(
         assets=[asset],
         all_vulnerabilities={str(asset.id): vulnerabilities},
-        executive_summary=request_data.executive_summary,
-        scanner_company_name=request_data.scanner_company_name,
-        target_company_name=request_data.target_company_name,
-        scan_name=f"Asset Report: {asset.name}"
+        executive_summary=exec_summary,
+        scanner_company_name=request_data.scanner_company_name or "KERIBU SOC Security",
+        target_company_name=request_data.target_company_name or "Client Company",
+        scan_name=f"Rapport d'Audit : {asset.name} ({asset.ip_address})",
+        scan_profile=request_data.scan_profile or "Audit de Sécurité Multi-Moteurs (Full Audit)",
+        classification=request_data.classification or "CONFIDENTIEL - USAGE INTERNE"
     )
     
     return Response(content=html_bytes, media_type="text/html", headers={
         "Content-Disposition": f"attachment; filename=report_{asset.name.replace(' ', '_')}.html"
+    })
+
+@router.post("/{asset_id}/pdf", response_class=Response)
+async def generate_executive_report_pdf(
+    asset_id: str, 
+    request_data: ReportGenerationRequest,
+    db: Session = Depends(get_db)
+):
+    asset = db.query(AssetEntity).filter(AssetEntity.id == asset_id).first()
+    if not asset:
+        raise HTTPException(status_code=404, detail="Asset not found")
+        
+    vulnerabilities = db.query(VulnerabilityEntity).filter(VulnerabilityEntity.asset_id == asset_id).all()
+    
+    exec_summary = request_data.executive_summary
+    if not exec_summary:
+        from src.ai.application.services.nlp import generate_executive_summary
+        vuln_dicts = [
+            {
+                "title": v.title,
+                "severity": getattr(v.severity, "value", str(v.severity)),
+                "cvss": v.cvss_base_score,
+                "cve": v.cve_id
+            } for v in vulnerabilities[:10]
+        ]
+        exec_summary = await generate_executive_summary(vuln_dicts, language=request_data.language or "French")
+
+    from src.reporting.application.services.pdf_generator import generate_vulnerability_pdf
+    
+    pdf_bytes = generate_vulnerability_pdf(
+        asset=asset,
+        vulnerabilities=vulnerabilities,
+        executive_summary=exec_summary,
+        scanner_company_name=request_data.scanner_company_name or "KERIBU SOC Security",
+        target_company_name=request_data.target_company_name or "Client Company"
+    )
+    
+    return Response(content=pdf_bytes, media_type="application/pdf", headers={
+        "Content-Disposition": f"attachment; filename=report_{asset.name.replace(' ', '_')}.pdf"
     })

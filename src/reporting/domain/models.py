@@ -24,5 +24,8 @@ class ReportResponse(BaseModel):
 
 class ReportGenerationRequest(BaseModel):
     executive_summary: Optional[str] = None
-    scanner_company_name: Optional[str] = "Kerubiscan Security"
+    scanner_company_name: Optional[str] = "KERIBU SOC Security"
     target_company_name: Optional[str] = "Client Company"
+    language: Optional[str] = "French"
+    scan_profile: Optional[str] = "Audit de Sécurité Multi-Moteurs (Full Audit)"
+    classification: Optional[str] = "CONFIDENTIEL - USAGE INTERNE"

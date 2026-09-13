@@ -4,6 +4,11 @@ services:
   api:
     restart: unless-stopped
     build: .
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100k"
+        max-file: "1"
     ports:
       - "9445:8000"
     volumes:
@@ -19,8 +24,11 @@ services:
       - KEYCLOAK_SERVER_URL=http://keycloak:8080
       - KEYCLOAK_CLIENT_SECRET=kimia-backend-secret
       - TZ=Africa/Lagos
-      # Replace 192.168.x.x with your Windows PC's IP address (run 'ipconfig' to find it)
-      - AI_ENDPOINT=http://192.168.x.x:11434/api/chat
+      # AI Service Configuration (ollama, gemini, or openai)
+      - AI_PROVIDER=${AI_PROVIDER:-ollama}
+      - AI_MODEL=${AI_MODEL:-gemini-1.5-flash}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - AI_ENDPOINT=${AI_ENDPOINT:-http://192.168.1.56:11434/api/chat}
     depends_on:
       - db
       - redis
@@ -41,8 +49,8 @@ services:
     logging:
       driver: "json-file"
       options:
-        max-size: "10m"
-        max-file: "3"
+        max-size: "100k"
+        max-file: "1"
     volumes:
       - ./src:/app/src
       - openvas_sock:/run/gvmd
@@ -69,8 +77,8 @@ services:
     logging:
       driver: "json-file"
       options:
-        max-size: "10m"
-        max-file: "3"
+        max-size: "100k"
+        max-file: "1"
     volumes:
       - ./src:/app/src
     environment:
@@ -86,6 +94,11 @@ services:
   db:
     restart: unless-stopped
     image: postgres:15-alpine
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100k"
+        max-file: "1"
     environment:
       POSTGRES_USER: kimia
       POSTGRES_PASSWORD: kimia_password
@@ -98,12 +111,22 @@ services:
   redis:
     restart: unless-stopped
     image: redis:7-alpine
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100k"
+        max-file: "1"
     ports:
       - "6379:6379"
 
   rabbitmq:
     restart: unless-stopped
     image: rabbitmq:3-management-alpine
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100k"
+        max-file: "1"
     ports:
       - "5672:5672"
       - "15672:15672"
@@ -112,6 +135,11 @@ services:
     restart: unless-stopped
     image: quay.io/keycloak/keycloak:24.0.0
     command: start-dev --import-realm
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100k"
+        max-file: "1"
     environment:
       KC_DB: postgres
       KC_DB_URL_HOST: db
@@ -139,6 +167,11 @@ services:
   vault:
     restart: unless-stopped
     image: hashicorp/vault:1.15
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100k"
+        max-file: "1"
     environment:
       VAULT_DEV_ROOT_TOKEN_ID: "root"
       VAULT_DEV_LISTEN_ADDRESS: "0.0.0.0:8200"
@@ -150,6 +183,11 @@ services:
   openvas:
     restart: unless-stopped
     image: immauss/openvas:latest
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100k"
+        max-file: "1"
     ports:
       - "9392:9392"
       - "9390:9390"
