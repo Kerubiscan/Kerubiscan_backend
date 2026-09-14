@@ -1,3 +1,4 @@
+import os
 from celery import Celery
 from src.core.config import settings
 
@@ -11,8 +12,8 @@ celery_app.conf.update(
     task_serializer="json",
     accept_content=["json"],
     result_serializer="json",
-    timezone="UTC",
-    enable_utc=True,
+    timezone=os.getenv("TZ", "UTC"),
+    enable_utc=(os.getenv("TZ", "UTC") == "UTC"),
     task_track_started=True,
     task_time_limit=3600 * 24, # 24 hours max for scans
     task_ignore_result=True, # Prevent Redis memory bloat from useless task returns

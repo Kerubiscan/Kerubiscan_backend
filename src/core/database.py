@@ -2,7 +2,12 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import declarative_base, sessionmaker
 from src.core.config import settings
 
-engine = create_engine(settings.POSTGRES_URL)
+engine = create_engine(
+    settings.POSTGRES_URL, 
+    pool_size=20, 
+    max_overflow=10, 
+    pool_pre_ping=True
+)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 Base = declarative_base()

@@ -108,6 +108,10 @@ class NmapAdapter:
     @staticmethod
     def _parse_nmap_xml(xml_output: str) -> List[Dict]:
         """Parses Nmap XML output and returns a list of dictionaries with host data."""
+        if not xml_output or not xml_output.strip():
+            logger.error("Nmap XML output is empty.")
+            raise ValueError("Nmap generated empty output.")
+            
         hosts_data = []
         try:
             root = etree.fromstring(xml_output.encode('utf-8'))
@@ -189,6 +193,7 @@ class NmapAdapter:
                 
         except Exception as e:
             logger.error(f"Failed to parse Nmap XML: {str(e)}")
+            raise e
             
         import json
         logger.info(f"Nmap parsed result:\n{json.dumps(hosts_data, indent=2)}")
