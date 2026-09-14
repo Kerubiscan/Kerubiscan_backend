@@ -2,627 +2,423 @@
 <html xmlns="http://www.w3.org/1999/xhtml">
 <head>
     <meta http-equiv="Content-Type" content="text/html; charset=utf-8"></meta>
-    <title>{{ scan_name }} - RAPPORT D'AUDIT DE VULNÉRABILITÉS - KERIBU SOC</title>
+    <title>{{ scan_name }}</title>
     <style type="text/css" media="all">
-        @import url("https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700;800&display=swap");
+        @import url("https://fonts.googleapis.com/css?family=Open+Sans:300,400,600,700,800");
     </style>
     <style type="text/css" media="all">
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        
-        body {
-            font-family: 'Inter', 'Segoe UI', Arial, sans-serif;
-            background: #0f172a;
-            color: #334155;
+        html, body, div, span, applet, object, iframe, h1, h2, h3, h4, h5, h6, p, blockquote, pre, a, abbr, acronym, address, big, cite, code, del, dfn, em, img, ins, kbd, q, s, samp, small, strike, strong, sub, sup, tt, var, b, u, i, center, dl, dt, dd, ol, ul, li, fieldset, form, label, legend, table, caption, tbody, tfoot, thead, tr, th, td, article, aside, canvas, details, embed, figure, figcaption, footer, header, hgroup, menu, nav, output, ruby, section, summary, time, mark, audio, video {
+            margin: 0;
+            padding: 0;
+            border: 0;
+            font-size: 100%;
+            font: inherit;
+            vertical-align: baseline;
+            -webkit-text-size-adjust: none;
+        }
+
+        h3, h6 {
+            font-weight: 300 !important;
+        }
+
+        html, body {
+            font-family: 'Open Sans', 'Helvetica Neue', 'Segoe UI', helvetica, arial, sans-serif;
+            width: 100%;
+            color: #333;
             font-size: 13px;
-            line-height: 1.5;
+            background: #efefef;
         }
 
-        #report {
-            width: 1080px;
-            margin: 30px auto;
-            background: #ffffff;
-            border-radius: 8px;
-            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
-            overflow: hidden;
+        a, a:visited, a:active {
+            color: #67ACE1;
+            text-decoration: none;
         }
 
-        /* --- KERIBU SOC BRAND HEADER --- */
-        .brand-header {
-            background: linear-gradient(135deg, #0b101d 0%, #0f172a 100%);
-            padding: 25px 30px;
-            color: #ffffff;
-            border-bottom: 4px solid #84cc16;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
+        a:hover {
+            color: #67ACE1;
+            text-decoration: underline;
         }
 
-        .logo-container {
-            display: flex;
-            align-items: center;
-            gap: 15px;
+        .clear {
+            clear: both;
+            width: 0 !important;
+            height: 0 !important;
+            margin: 0 !important;
+            padding: 0 !important;
         }
 
-        .logo-text {
-            display: flex;
-            flex-direction: column;
-        }
-
-        .logo-title {
-            font-size: 26px;
-            font-weight: 800;
-            letter-spacing: 2px;
-            color: #84cc16;
-            text-transform: uppercase;
-        }
-
-        .logo-title span { color: #ffffff; }
-
-        .logo-subtitle {
-            font-size: 11px;
-            font-weight: 600;
-            color: #22c55e;
-            letter-spacing: 3px;
-            text-transform: uppercase;
-            margin-top: 2px;
-        }
-
-        .header-meta {
-            text-align: right;
-            font-size: 12px;
-            color: #94a3b8;
-        }
-
-        .header-meta strong { color: #f8fafc; }
-        .classification-badge {
-            display: inline-block;
-            background: #dc2626;
-            color: #ffffff;
-            font-weight: 700;
-            font-size: 10px;
-            padding: 4px 10px;
-            border-radius: 4px;
-            margin-top: 6px;
-            letter-spacing: 1px;
-        }
-
-        /* --- SECTION STYLES --- */
-        .content-body { padding: 30px; }
-
-        .section-header {
-            font-size: 18px;
-            font-weight: 700;
-            color: #0f172a;
-            border-bottom: 2px solid #e2e8f0;
-            padding-bottom: 8px;
-            margin-top: 35px;
-            margin-bottom: 20px;
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }
-
-        .section-header::before {
-            content: '';
-            display: inline-block;
-            width: 8px;
-            height: 20px;
-            background: #84cc16;
-            border-radius: 2px;
-        }
-
-        /* --- METADATA COVER CARDS --- */
-        .cover-grid {
-            display: grid;
-            grid-template-columns: repeat(4, 1fr);
-            gap: 15px;
-            margin-bottom: 25px;
-        }
-
-        .meta-card {
-            background: #f8fafc;
-            border: 1px solid #e2e8f0;
-            border-radius: 6px;
-            padding: 15px;
-        }
-
-        .meta-card .label {
-            font-size: 10px;
-            text-transform: uppercase;
-            color: #64748b;
-            font-weight: 700;
-            letter-spacing: 0.5px;
-        }
-
-        .meta-card .value {
-            font-size: 13px;
-            font-weight: 700;
-            color: #0f172a;
-            margin-top: 4px;
-            word-break: break-all;
-        }
-
-        /* --- SEVERITY BADGES & CARDS --- */
-        .severity-grid {
-            display: grid;
-            grid-template-columns: repeat(5, 1fr);
-            gap: 12px;
-            margin-bottom: 25px;
-        }
-
-        .sev-box {
-            text-align: center;
-            border-radius: 6px;
-            overflow: hidden;
-            border: 1px solid #e2e8f0;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
-        }
-
-        .sev-box .num {
-            font-size: 32px;
-            font-weight: 800;
-            line-height: 60px;
-            color: #ffffff;
-        }
-
-        .sev-box .lbl {
-            font-size: 11px;
-            font-weight: 700;
-            text-transform: uppercase;
-            padding: 6px 0;
-            background: #ffffff;
-            border-top: 1px solid #e2e8f0;
-        }
-
-        .sev-critical { background: #dc2626; color: #dc2626; }
-        .sev-high { background: #ea580c; color: #ea580c; }
-        .sev-medium { background: #d97706; color: #d97706; }
-        .sev-low { background: #2563eb; color: #2563eb; }
-        .sev-info { background: #64748b; color: #64748b; }
-
-        .text-crit { color: #dc2626; }
-        .text-medium { color: #d97706; }
-        .text-low { color: #2563eb; }
-
-        .badge-crit { background: #dc2626; color: #fff; padding: 3px 8px; border-radius: 4px; font-weight: 700; font-size: 10px; text-transform: uppercase; }
-        .badge-high { background: #ea580c; color: #fff; padding: 3px 8px; border-radius: 4px; font-weight: 700; font-size: 10px; text-transform: uppercase; }
-        .badge-medium { background: #d97706; color: #fff; padding: 3px 8px; border-radius: 4px; font-weight: 700; font-size: 10px; text-transform: uppercase; }
-        .badge-low { background: #2563eb; color: #fff; padding: 3px 8px; border-radius: 4px; font-weight: 700; font-size: 10px; text-transform: uppercase; }
-        .badge-info { background: #64748b; color: #fff; padding: 3px 8px; border-radius: 4px; font-weight: 700; font-size: 10px; text-transform: uppercase; }
-
-        /* --- EXECUTIVE SUMMARY BOX --- */
-        .summary-box {
-            background: #f8fafc;
-            border-left: 4px solid #84cc16;
-            border-radius: 6px;
-            padding: 20px;
-            margin-bottom: 25px;
-        }
-
-        .summary-box h4 {
-            font-size: 15px;
-            font-weight: 700;
-            color: #0f172a;
-            margin-bottom: 12px;
-        }
-
-        .summary-box p, .summary-box div {
-            color: #334155;
-            line-height: 1.6;
-        }
-
-        /* --- TABLES --- */
-        table.report-table {
+        table {
+            table-layout: fixed;
             width: 100%;
             border-collapse: collapse;
+            border-spacing: 0;
             margin-bottom: 20px;
+            margin-top: 20px;
+        }
+
+        .plugin-row-header {
+            height: 35px;
+            line-height: 35px;
+            background: #f5f5f5;
             font-size: 12px;
+            border: 1px solid #ddd;
         }
 
-        table.report-table th {
-            background: #0f172a;
-            color: #ffffff;
-            font-weight: 600;
-            text-align: left;
-            padding: 10px 12px;
-            border: 1px solid #1e293b;
+        .plugin-row {
+            height: 40px;
+            border: 1px solid #ddd;
+            transition: background 0.15s ease;
         }
 
-        table.report-table td {
-            padding: 10px 12px;
-            border: 1px solid #e2e8f0;
-            vertical-align: top;
-        }
-
-        table.report-table tr:nth-child(even) {
+        .plugin-row:hover {
             background: #f8fafc;
         }
 
-        /* --- FINDING CARD STYLES --- */
-        .finding-card {
-            border: 1px solid #cbd5e1;
-            border-radius: 6px;
-            margin-bottom: 20px;
-            overflow: hidden;
+        .plugin-row td {
+            padding: 10px 0;
+            line-height: 20px;
         }
 
-        .finding-header {
-            background: #f1f5f9;
-            padding: 12px 15px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            border-bottom: 1px solid #cbd5e1;
+        .table-wrapper.details,
+        .table-wrapper.see-also {
+            margin: 0 0 20px 0;
+        }
+
+        .table-wrapper.details > table > tbody > tr > td {
+            padding: 5px 0;
+        }
+
+        .button {
+            display: block;
+            float: left;
+            line-height: 30px;
+            background: #eee;
+            border-radius: 3px;
             cursor: pointer;
-        }
-
-        .finding-title {
-            font-weight: 700;
-            font-size: 14px;
-            color: #0f172a;
-        }
-
-        .finding-body {
-            padding: 15px;
-            background: #ffffff;
-        }
-
-        .detail-row {
-            display: grid;
-            grid-template-columns: 140px 1fr;
-            margin-bottom: 8px;
-        }
-
-        .detail-row .detail-label {
-            font-weight: 700;
-            color: #475569;
-        }
-
-        .code-block {
-            background: #0f172a;
-            color: #a3e635;
-            font-family: monospace;
-            padding: 10px;
-            border-radius: 4px;
-            font-size: 11px;
-            overflow-x: auto;
-            white-space: pre-wrap;
-            margin-top: 4px;
-        }
-
-        .btn-toggle {
-            background: #e2e8f0;
-            border: none;
-            padding: 4px 10px;
-            border-radius: 4px;
-            font-size: 11px;
+            padding: 0 15px;
+            font-size: 12px;
             font-weight: 600;
-            cursor: pointer;
-            color: #334155;
+            user-select: none;
         }
 
-        .btn-toggle:hover { background: #cbd5e1; }
+        .button:hover {
+            background: #ccc;
+        }
 
-        .footer-banner {
+        .expand {
+            display: block;
+            float: right;
+            font-size: 12px;
+            color: #67ACE1;
+            cursor: pointer;
+            font-weight: 400;
+            line-height: 20px;
+            margin: 0 0 0 10px;
+            user-select: none;
+        }
+
+        .expand:hover {
+            text-decoration: underline;
+        }
+
+        .expand-spacer {
+            display: block;
+            float: right;
+            font-size: 12px;
+            font-weight: 400;
+            line-height: 20px;
+            margin: 0 0 0 10px;
+        }
+
+        .badge {
+            display: inline-block;
+            width: 65px;
             text-align: center;
-            padding: 20px;
-            background: #0b101d;
-            color: #94a3b8;
-            font-size: 11px;
-            border-top: 2px solid #84cc16;
+            text-transform: uppercase;
+            font-size: 10px;
+            color: #fff;
+            border-radius: 3px;
+            line-height: 20px;
+            font-weight: 700;
+        }
+
+        .badge-critical { background: #91243E; }
+        .badge-high { background: #DD4B50; }
+        .badge-medium { background: #F18C43; }
+        .badge-low { background: #F8C851; color: #222; }
+        .badge-info { background: #67ACE1; }
+
+        .details-box {
+            background: #fafafa;
+            border: 1px solid #e2e8f0;
+            border-left: 3px solid #67ACE1;
+            padding: 12px 16px;
+            margin: 8px 10px 12px 10px;
+            font-size: 12px;
+            line-height: 1.6;
+        }
+        .details-box strong {
+            color: #1e293b;
         }
     </style>
     <script type="text/javascript">
-        function toggleDetail(id) {
-            var el = document.getElementById(id);
-            if (el.style.display === 'none' || el.style.display === '') {
-                el.style.display = 'block';
+        var toggle = function (id) {
+            var div = document.getElementById(id);
+            var button = document.getElementById(id + '-show');
+
+            if (!div) {
+                return;
+            }
+
+            if (div.style.display === '' || div.style.display === 'block') {
+                if (button) button.style.display = 'block';
+                div.style.display = 'none';
+                return;
+            }
+
+            if (button) button.style.display = 'none';
+            div.style.display = 'block';
+        };
+
+        var toggleAll = function (hide) {
+            var divs = document.querySelectorAll('div.vuln-table-wrapper');
+
+            for (var i = 0; i < divs.length; i++) {
+                var id = divs[i].getAttribute('id');
+                var div = document.getElementById(id);
+                var button = document.getElementById(id + '-show');
+
+                if (div) {
+                    if (hide) {
+                        if (button) button.style.display = 'block';
+                        div.style.display = 'none';
+                    } else {
+                        if (button) button.style.display = 'none';
+                        div.style.display = 'block';
+                    }
+                }
+            }
+        };
+
+        var toggleRow = function (id) {
+            var row = document.getElementById(id);
+            if (!row) return;
+            if (row.style.display === 'none' || row.style.display === '') {
+                row.style.display = 'table-row';
             } else {
-                el.style.display = 'none';
+                row.style.display = 'none';
             }
-        }
-        function toggleAllFindings(show) {
-            var elements = document.getElementsByClassName('finding-body');
-            for (var i = 0; i < elements.length; i++) {
-                elements[i].style.display = show ? 'block' : 'none';
-            }
-        }
+        };
     </script>
 </head>
 <body>
+    <div id="report" style="width: 1024px; box-sizing: border-box; margin: 0 auto; background: #fff; padding: 0 20px 20px 20px; border-top: #263746 solid 3px; box-shadow: 0 2px 10px rgba(0, 0, 0, .2); margin-bottom: 20px; border-radius: 0 0 3px 3px;">
+        <header style="width: 100%; border-bottom: 1px dotted #ccc; padding: 20px 0; margin: 0 0 20px 0;">
+            <div style="float: left;">
+                <h1>
+                    {% if logo_base64 %}
+                    <img src="data:image/png;base64,{{ logo_base64 }}" height="50" border="0" alt="KERIBU SOC" style="display: block;" />
+                    {% else %}
+                    <span style="font-size: 24px; font-weight: 800; color: #84cc16; letter-spacing: 2px;">KERIBU<span style="color: #0f172a;">SOC</span></span>
+                    {% endif %}
+                </h1>
+            </div>
+            <div style="float: right;">
+                <h1 style="font-size: 18px;"></h1>
+                <h2 style="color: #999; text-align: right; font-size: 13px;">Report generated by KerubiSOC™</h2>
+            </div>
+            <div class="clear"></div>
+        </header>
 
-    <div id="report">
-        
-        <!-- HEADER WITH KERIBU SOC BRANDING -->
-        <div class="brand-header">
-            <div class="logo-container">
-                <!-- SVG Shield Logo -->
-                <svg width="50" height="50" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
-                    <path d="M50 5 L90 20 V50 C90 75 50 95 50 95 C50 95 10 75 10 50 V20 Z" fill="#0b101d" stroke="#84cc16" stroke-width="4"/>
-                    <path d="M50 15 L82 27 V48 C82 68 50 84 50 84 C50 84 18 68 18 48 V27 Z" fill="#0f172a"/>
-                    <circle cx="50" cy="48" r="22" stroke="#22c55e" stroke-width="3" stroke-dasharray="4 2"/>
-                    <path d="M42 34 V62 M42 48 L58 34 M42 48 L58 62" stroke="#a3e635" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
-                </svg>
-                <div class="logo-text">
-                    <div class="logo-title">KERIBU <span>SOC</span></div>
-                    <div class="logo-subtitle">HAVE PEACE OF MIND</div>
-                </div>
-            </div>
-            <div class="header-meta">
-                <div>AUDIT DE SÉCURITÉ INFORMATEUR</div>
-                <div>Généré pour : <strong>{{ target_company_name }}</strong></div>
-                <div>Organisme : <strong>{{ scanner_company_name }}</strong></div>
-                <div class="classification-badge">{{ classification }}</div>
-            </div>
+        <div class="clear"></div>
+
+        <h3 style="font-size: 24px; font-weight: 300;">{{ scan_name }}</h3>
+        <h4 style="color: #999; border-bottom: 1px dotted #ccc; padding: 0 0 20px 0; margin: 0 0 20px 0;">{{ report_date }}</h4>
+
+        <div class="clear"></div>
+
+        {% if executive_summary %}
+        <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-left: 4px solid #84cc16; padding: 15px 20px; border-radius: 4px; margin-bottom: 25px;">
+            <h5 style="font-size: 14px; font-weight: 700; color: #0f172a; margin-bottom: 6px;">EXECUTIVE SUMMARY</h5>
+            <p style="color: #475569; font-size: 12px; line-height: 1.6;">{{ executive_summary }}</p>
         </div>
+        {% endif %}
 
-        <div class="content-body">
-
-            <!-- 1. PAGE DE GARDE / COVER METADATA -->
-            <div class="cover-grid">
-                <div class="meta-card">
-                    <div class="label">Nom du Scan</div>
-                    <div class="value">{{ scan_name }}</div>
-                </div>
-                <div class="meta-card">
-                    <div class="label">Date de Génération</div>
-                    <div class="value">{{ report_date }}</div>
-                </div>
-                <div class="meta-card">
-                    <div class="label">Profil de Scan</div>
-                    <div class="value">{{ scan_profile }}</div>
-                </div>
-                <div class="meta-card">
-                    <div class="label">Score de Risque Moyen</div>
-                    <div class="value {% if overall_cvss_avg >= 7.0 %}text-crit{% elif overall_cvss_avg >= 4.0 %}text-medium{% else %}text-low{% endif %}" style="font-size: 16px;">
-                        {{ overall_cvss_avg }} / 10 (CVSS)
-                    </div>
-                </div>
-            </div>
-
-            <!-- 2. RÉSUMÉ EXÉCUTIF (AI GENERATED & PARSED) -->
-            <div class="section-header">1. Résumé Exécutif & Posture de Sécurité (IA)</div>
-            <div class="summary-box">
-                <h4>Synthèse Managériale et Plan de Remédiation</h4>
-                {% if executive_summary %}
-                    <div>{{ executive_summary | replace('\n', '<br/>') | safe }}</div>
-                {% else %}
-                    <p style="color: #64748b; font-style: italic;">Aucun résumé exécutif IA n'a été fourni.</p>
-                {% endif %}
-            </div>
-
-            <!-- 3. STATISTIQUES ET VUE D'ENSEMBLE -->
-            <div class="section-header">2. Statistiques et Vue d'Ensemble</div>
-            
-            <div class="severity-grid">
-                <div class="sev-box">
-                    <div class="num sev-critical">{{ total_crit }}</div>
-                    <div class="lbl">Critiques</div>
-                </div>
-                <div class="sev-box">
-                    <div class="num sev-high">{{ total_high }}</div>
-                    <div class="lbl">Hautes</div>
-                </div>
-                <div class="sev-box">
-                    <div class="num sev-medium">{{ total_med }}</div>
-                    <div class="lbl">Moyennes</div>
-                </div>
-                <div class="sev-box">
-                    <div class="num sev-low">{{ total_low }}</div>
-                    <div class="lbl">Basses</div>
-                </div>
-                <div class="sev-box">
-                    <div class="num sev-info">{{ total_info }}</div>
-                    <div class="lbl">Infos</div>
-                </div>
-            </div>
-
-            <!-- TOP 10 HOSTS -->
-            <h4 style="font-size: 14px; font-weight: 700; margin-bottom: 10px; color: #0f172a;">Top Hosts les Plus Vulnérables</h4>
-            <table class="report-table">
-                <thead>
-                    <tr>
-                        <th width="30%">Host / Adresse IP</th>
-                        <th width="25%">OS Détecté</th>
-                        <th width="15%">Critiques</th>
-                        <th width="15%">Hautes</th>
-                        <th width="15%">Moyennes</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for h in top_hosts %}
-                    <tr>
-                        <td><strong>{{ h.ip_address }}</strong> ({{ h.name }})</td>
-                        <td>{{ h.operating_system }}</td>
-                        <td><span class="badge-crit">{{ h.crit_count }}</span></td>
-                        <td><span class="badge-high">{{ h.high_count }}</span></td>
-                        <td><span class="badge-medium">{{ h.med_count }}</span></td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
-
-            <!-- TOP 10 VULNERABILITIES -->
-            <h4 style="font-size: 14px; font-weight: 700; margin-top: 20px; margin-bottom: 10px; color: #0f172a;">Top 10 des Vulnérabilités les Plus Critiques</h4>
-            <table class="report-table">
-                <thead>
-                    <tr>
-                        <th width="12%">Sévérité</th>
-                        <th width="10%">CVSS</th>
-                        <th width="18%">CVE / Identifiant</th>
-                        <th width="20%">Cible Affectée</th>
-                        <th width="40%">Titre de la Vulnérabilité</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for tv in top_vulnerabilities %}
-                    <tr>
-                        <td>
-                            {% if tv.severity == 'Critical' %}<span class="badge-crit">Critical</span>
-                            {% elif tv.severity == 'High' %}<span class="badge-high">High</span>
-                            {% elif tv.severity == 'Medium' %}<span class="badge-medium">Medium</span>
-                            {% elif tv.severity == 'Low' %}<span class="badge-low">Low</span>
-                            {% else %}<span class="badge-info">Info</span>{% endif %}
-                        </td>
-                        <td><strong>{{ tv.cvss }}</strong></td>
-                        <td><a href="{{ tv.ref_url }}" target="_blank" style="color: #2563eb; font-weight: 600;">{{ tv.cve }}</a></td>
-                        <td>{{ tv.asset_name }}</td>
-                        <td>{{ tv.title }}</td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
-
-            <!-- 4. DÉTAIL PAR HOST / ASSET -->
-            <div class="section-header">3. Synthèse des Assets / Hosts Scannés</div>
-            <table class="report-table">
-                <thead>
-                    <tr>
-                        <th width="20%">IP / Nom</th>
-                        <th width="25%">Système d'Exploitation</th>
-                        <th width="30%">Ports Ouverts Détectés</th>
-                        <th width="25%">Répartition Vulnérabilités</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for asset in assets %}
-                    <tr>
-                        <td><strong>{{ asset.ip_address }}</strong></td>
-                        <td>{{ asset.operating_system }}</td>
-                        <td><span style="font-family: monospace; font-size: 11px;">{{ asset.ports }}</span></td>
-                        <td>
-                            <span class="badge-crit">{{ asset.crit_count }}</span>
-                            <span class="badge-high">{{ asset.high_count }}</span>
-                            <span class="badge-medium">{{ asset.med_count }}</span>
-                            <span class="badge-low">{{ asset.low_count }}</span>
-                        </td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
-
-            <!-- 5. DÉTAIL PAR VULNÉRABILITÉ (FINDINGS) -->
-            <div class="section-header" style="justify-content: space-between;">
-                <span>4. Détail par Vulnérabilité (Findings)</span>
-                <div>
-                    <button class="btn-toggle" onclick="toggleAllFindings(true)">Tout Déplier</button>
-                    <button class="btn-toggle" onclick="toggleAllFindings(false)">Tout Replier</button>
-                </div>
-            </div>
-
-            {% for asset in assets %}
-                <h3 style="font-size: 15px; font-weight: 700; color: #0f172a; margin-top: 20px; margin-bottom: 12px; padding: 6px 12px; background: #e2e8f0; border-radius: 4px;">
-                    Host : {{ asset.ip_address }} ({{ asset.vulnerabilities | length }} vulnérabilités)
-                </h3>
-
-                {% for vuln in asset.vulnerabilities %}
-                <div class="finding-card">
-                    <div class="finding-header" onclick="toggleDetail('finding_{{ vuln.id }}')">
-                        <div>
-                            {% if vuln.severity == 'Critical' %}<span class="badge-crit">Critical</span>
-                            {% elif vuln.severity == 'High' %}<span class="badge-high">High</span>
-                            {% elif vuln.severity == 'Medium' %}<span class="badge-medium">Medium</span>
-                            {% elif vuln.severity == 'Low' %}<span class="badge-low">Low</span>
-                            {% else %}<span class="badge-info">Info</span>{% endif %}
-                            <strong style="margin-left: 10px;">{{ vuln.title }}</strong>
-                        </div>
-                        <div>
-                            <span style="font-weight: 700; color: #475569; margin-right: 15px;">CVSS: {{ vuln.cvss }}</span>
-                            <button class="btn-toggle">Détails ▼</button>
-                        </div>
-                    </div>
-
-                    <div id="finding_{{ vuln.id }}" class="finding-body">
-                        <div class="detail-row">
-                            <div class="detail-label">CVE / ID :</div>
-                            <div><a href="{{ vuln.ref_url }}" target="_blank" style="color: #2563eb; font-weight: 600;">{{ vuln.cve }}</a></div>
-                        </div>
-                        <div class="detail-row">
-                            <div class="detail-label">Moteur Scanner :</div>
-                            <div>{{ vuln.engine }} (Qualité de détection QoD : {{ vuln.qod }})</div>
-                        </div>
-                        <div class="detail-row">
-                            <div class="detail-label">Vecteur CVSS v3 :</div>
-                            <td><span style="font-family: monospace; background: #f1f5f9; padding: 2px 6px; border-radius: 3px;">{{ vuln.cvss_vector }}</span></td>
-                        </div>
-                        <div class="detail-row">
-                            <div class="detail-label">Impact CIA :</div>
-                            <div><strong style="color: #dc2626;">{{ vuln.impact_cia }}</strong></div>
-                        </div>
-                        <div class="detail-row">
-                            <div class="detail-label">Description :</div>
-                            <div>{{ vuln.description | replace('\n', '<br/>') | safe }}</div>
-                        </div>
-                        <div class="detail-row">
-                            <div class="detail-label">Preuve Détection :</div>
-                            <div class="code-block">{{ vuln.proof }}</div>
-                        </div>
-                        <div class="detail-row" style="margin-top: 10px;">
-                            <div class="detail-label">Remédiation (IA) :</div>
-                            <div style="color: #15803d; font-weight: 600;">{{ vuln.remediation | replace('\n', '<br/>') | safe }}</div>
-                        </div>
-                    </div>
-                </div>
-                {% endfor %}
-
-                {% if not asset.vulnerabilities %}
-                <p style="color: #64748b; font-style: italic; padding: 10px 0;">Aucune vulnérabilité n'a été détectée pour ce host.</p>
-                {% endif %}
-            {% endfor %}
-
-            <!-- 6. ANNEXES -->
-            <div class="section-header">5. Annexes</div>
-            
-            <h4 style="font-size: 13px; font-weight: 700; margin-bottom: 6px; color: #0f172a;">A. Méthodologie du Scan</h4>
-            <p style="margin-bottom: 15px; color: #475569;">
-                Ce scan a été exécuté par l'orchestrateur **KERIBU SOC Multi-Engine**. Les moteurs <strong>OpenVAS (Greenbone)</strong>, <strong>Nuclei (ProjectDiscovery)</strong> et <strong>Nmap</strong> sont combinés. 
-                Les résultats sont consolidés, dé-doublonnés et corrélés avec les scores CVSSv3 et l'intelligence de vulnérabilités NVD.
-            </p>
-
-            <h4 style="font-size: 13px; font-weight: 700; margin-bottom: 6px; color: #0f172a;">B. Glossaire des Termes Technique</h4>
-            <table class="report-table">
-                <thead>
-                    <tr>
-                        <th width="20%">Terme</th>
-                        <th width="80%">Définition et Description</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    <tr>
-                        <td><strong>CVSS</strong></td>
-                        <td>Common Vulnerability Scoring System — Norme ouverte d'évaluation de la sévérité des vulnérabilités (de 0.0 à 10.0).</td>
-                    </tr>
-                    <tr>
-                        <td><strong>CVE</strong></td>
-                        <td>Common Vulnerabilities and Exposures — Dictionnaire public de référence des failles de sécurité connues.</td>
-                    </tr>
-                    <tr>
-                        <td><strong>QoD</strong></td>
-                        <td>Quality of Detection — Indicateur spécifique à OpenVAS mesurant la fiabilité de la détection (ex: 80% à 100%).</td>
-                    </tr>
-                    <tr>
-                        <td><strong>Impact CIA</strong></td>
-                        <td>Confidentialité, Intégrité, Disponibilité (Triade fondamentale de la sécurité de l'information).</td>
-                    </tr>
-                </tbody>
-            </table>
-
-            <h4 style="font-size: 13px; font-weight: 700; margin-bottom: 6px; color: #0f172a;">C. Liste Complète des Cibles Audités</h4>
-            <ul style="list-style-type: square; margin-left: 20px; color: #475569;">
-                {% for asset in assets %}
-                <li><strong>{{ asset.ip_address }}</strong> ({{ asset.name }}) - {{ asset.operating_system }}</li>
-                {% endfor %}
+        <div style="width: 100%;">
+            <h5 style="font-size: 16px; font-weight: 700; margin-bottom: 20px;">TABLE OF CONTENTS</h5>
+            <ul style="list-style-type: none; margin-bottom: 20px;">
+                <li style="font-size: 14px;">
+                    <a href="#vulnerabilities-by-host" style="font-weight: 700;">Vulnerabilities by Host</a>
+                    <ul style="list-style-type: disc; margin: 10px 0 0 20px;">
+                        {% for asset in assets %}
+                        <li style="margin: 0 0 10px 0; color: #000000;">
+                            <a href="#id-host-{{ loop.index }}">{{ asset.ip_address }}{% if asset.name and asset.name != asset.ip_address %} ({{ asset.name }}){% endif %}</a>
+                        </li>
+                        {% endfor %}
+                    </ul>
+                </li>
             </ul>
 
+            <h6 id="vulnerabilities-by-host" style="padding: 20px 0; border-top: 1px dotted #ccc; border-bottom: 1px dotted #ccc; font-size: 20px; font-weight: 400; line-height: 20px;">
+                Vulnerabilities by Host
+                <span onclick="toggleAll();" class="expand">Expand All</span>
+                <span class="expand-spacer"> | </span>
+                <span onclick="toggleAll(true);" class="expand">Collapse All</span>
+            </h6>
+
+            {% for asset in assets %}
+            <div id="id-host-{{ loop.index }}" style="font-size: 22px; font-weight: 700; padding: 10px 0; overflow-wrap: break-word">
+                {{ asset.ip_address }}{% if asset.name and asset.name != asset.ip_address %} - {{ asset.name }}{% endif %}
+                <div class="clear"></div>
+            </div>
+
+            <!-- Severity Counters Header for Host -->
+            <div id="id-summary-{{ loop.index }}" style="display: block;" class="table-wrapper">
+                <table cellpadding="0" cellspacing="0">
+                    <thead>
+                        <tr>
+                            <th width="20%"></th>
+                            <th width="20%"></th>
+                            <th width="20%"></th>
+                            <th width="20%"></th>
+                            <th width="20%"></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td colspan="1">
+                                <div style="box-sizing: border-box; font-size: 45px; font-weight: 300; line-height: 80px; color: #fff; text-align: center; background: #91243E; border-radius: 3px 3px 0 0; width: 98%; margin: 0;">{{ asset.crit_count }}</div>
+                            </td>
+                            <td colspan="1">
+                                <div style="box-sizing: border-box; font-size: 45px; font-weight: 300; line-height: 80px; color: #fff; text-align: center; background: #DD4B50; border-radius: 3px 3px 0 0; width: 98%; margin: 0 1%;">{{ asset.high_count }}</div>
+                            </td>
+                            <td colspan="1">
+                                <div style="box-sizing: border-box; font-size: 45px; font-weight: 300; line-height: 80px; color: #fff; text-align: center; background: #F18C43; border-radius: 3px 3px 0 0; width: 98%; margin: 0 1%;">{{ asset.med_count }}</div>
+                            </td>
+                            <td colspan="1">
+                                <div style="box-sizing: border-box; font-size: 45px; font-weight: 300; line-height: 80px; color: #fff; text-align: center; background: #F8C851; border-radius: 3px 3px 0 0; width: 98%; margin: 0 1%;">{{ asset.low_count }}</div>
+                            </td>
+                            <td colspan="1">
+                                <div style="box-sizing: border-box; font-size: 45px; font-weight: 300; line-height: 80px; color: #fff; text-align: center; background: #67ACE1; border-radius: 3px 3px 0 0; width: 98%; margin: 0 0 0 2%;">{{ asset.info_count }}</div>
+                            </td>
+                        </tr>
+                        <tr>
+                            <td colspan="1">
+                                <div style="font-size: 10px; text-transform: uppercase; padding: 5px 0; text-align: center; width: 98%; box-sizing: border-box; border-left: 1px solid #ddd; border-right: 1px solid #ddd; border-bottom: 1px solid #ddd; border-radius: 0 0 3px 3px; margin: 0; margin-bottom: 15px;">Critical</div>
+                            </td>
+                            <td colspan="1">
+                                <div style="font-size: 10px; text-transform: uppercase; padding: 5px 0; text-align: center; width: 98%; box-sizing: border-box; border-left: 1px solid #ddd; border-right: 1px solid #ddd; border-bottom: 1px solid #ddd; border-radius: 0 0 3px 3px; margin: 0 1%; margin-bottom: 15px;">High</div>
+                            </td>
+                            <td colspan="1">
+                                <div style="font-size: 10px; text-transform: uppercase; padding: 5px 0; text-align: center; width: 98%; box-sizing: border-box; border-left: 1px solid #ddd; border-right: 1px solid #ddd; border-bottom: 1px solid #ddd; border-radius: 0 0 3px 3px; margin: 0 1%; margin-bottom: 15px;">Medium</div>
+                            </td>
+                            <td colspan="1">
+                                <div style="font-size: 10px; text-transform: uppercase; padding: 5px 0; text-align: center; width: 98%; box-sizing: border-box; border-left: 1px solid #ddd; border-right: 1px solid #ddd; border-bottom: 1px solid #ddd; border-radius: 0 0 3px 3px; margin: 0 1%; margin-bottom: 15px;">Low</div>
+                            </td>
+                            <td colspan="1">
+                                <div style="font-size: 10px; text-transform: uppercase; padding: 5px 0; text-align: center; width: 98%; box-sizing: border-box; border-left: 1px solid #ddd; border-right: 1px solid #ddd; border-bottom: 1px solid #ddd; border-radius: 0 0 3px 3px; margin: 0 0 0 2%; margin-bottom: 15px;">Info</div>
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+                <div class="clear"></div>
+            </div>
+
+            <!-- Show Button -->
+            <span id="id-table-{{ loop.index }}-show" onclick="toggle('id-table-{{ loop.index }}');" class="button">Show</span>
+            <div class="clear"></div>
+
+            <!-- Vulnerability Table for Host -->
+            <div id="id-table-{{ loop.index }}" style="display: none;" class="table-wrapper vuln-table-wrapper">
+                <table cellpadding="0" cellspacing="0">
+                    <thead>
+                        <tr>
+                            <th width="12%"></th>
+                            <th width="10%"></th>
+                            <th width="18%"></th>
+                            <th width="60%"></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr class="plugin-row-header">
+                            <td style="padding-left: 10px; font-weight: 700;">Severity</td>
+                            <td style="font-weight: 700;">CVSS v3.0</td>
+                            <td style="font-weight: 700;">Scanner / Plugin</td>
+                            <td style="font-weight: 700;">Name</td>
+                        </tr>
+                        {% if asset.vulnerabilities %}
+                            {% for v in asset.vulnerabilities %}
+                            <tr class="plugin-row" style="cursor: pointer;" onclick="toggleRow('id-vulndetail-{{ loop.index0 }}-{{ asset.id }}');" title="Click to expand/collapse details">
+                                <td style="padding-left: 10px;">
+                                    <span class="badge badge-{{ v.severity|lower }}">{{ v.severity }}</span>
+                                </td>
+                                <td style="font-weight: 600; color: #1e293b;">{{ v.cvss }}</td>
+                                <td>
+                                    <span style="font-size: 11px; font-weight: 600; color: #475569;">{{ v.engine }}</span>
+                                    {% if v.cve and v.cve != 'N/A' %}
+                                    <br><a href="{{ v.ref_url }}" target="_blank" style="font-size: 10px;" onclick="event.stopPropagation();">{{ v.cve }}</a>
+                                    {% endif %}
+                                </td>
+                                <td style="font-weight: 600; color: #1e293b;">
+                                    {{ v.title }}
+                                </td>
+                            </tr>
+                            <tr id="id-vulndetail-{{ loop.index0 }}-{{ asset.id }}" style="display: none;">
+                                <td colspan="4" style="padding: 0; background: #f8fafc; border: 1px solid #ddd; border-top: none;">
+                                    <div class="details-box">
+                                        <div style="margin-bottom: 8px;">
+                                            <strong>Description:</strong> 
+                                            <span style="color: #475569;">{{ v.description }}</span>
+                                        </div>
+                                        <div style="margin-bottom: 8px;">
+                                            <strong style="color: #166534;">Solution / Remediation:</strong> 
+                                            <span style="color: #166534; font-weight: 600;">{{ v.remediation }}</span>
+                                        </div>
+                                        {% if v.cvss_vector %}
+                                        <div style="margin-bottom: 4px; font-size: 11px; color: #64748b;">
+                                            <strong>CVSS Vector:</strong> <code>{{ v.cvss_vector }}</code>
+                                        </div>
+                                        {% endif %}
+                                        {% if v.impact_cia %}
+                                        <div style="margin-bottom: 4px; font-size: 11px; color: #64748b;">
+                                            <strong>Impact CIA:</strong> {{ v.impact_cia }}
+                                        </div>
+                                        {% endif %}
+                                        {% if v.proof %}
+                                        <div style="margin-top: 4px; font-size: 11px; color: #94a3b8;">
+                                            <em>{{ v.proof }}</em>
+                                        </div>
+                                        {% endif %}
+                                    </div>
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        {% else %}
+                            <tr class="plugin-row">
+                                <td colspan="4" style="text-align: center; color: #94a3b8; font-style: italic;">
+                                    No vulnerabilities identified on this host.
+                                </td>
+                            </tr>
+                        {% endif %}
+                    </tbody>
+                </table>
+
+                <span onclick="toggle('id-table-{{ loop.index }}');" class="button" style="margin-top: 15px; margin-bottom: 10px;">Hide</span>
+                <div class="clear"></div>
+            </div>
+
+            <div style="height: 35px;"></div>
+            <div class="clear"></div>
+            {% endfor %}
+
+            <div class="clear"></div>
         </div>
 
-        <!-- FOOTER BANNER WITH KERIBU SOC BRANDING -->
-        <div class="footer-banner">
-            <div>KERIBU SOC SECURITY PLATFORM &copy; 2026 — ALL RIGHTS RESERVED</div>
-            <div style="font-size: 10px; margin-top: 4px; color: #64748b;">CONFIDENTIEL - RAPPORT RÉSERVÉ À L'USAGE EXCLUSIF DU CLIENT</div>
-        </div>
-
+        <div class="clear"></div>
     </div>
 
+    <div style="width: 1024px; box-sizing: border-box; text-align: center; font-size: 12px; color: #999; padding: 10px 0 20px 0; margin: 0 auto;">
+        © 2026 KerubiSOC™ Security. All rights reserved.
+    </div>
 </body>
 </html>

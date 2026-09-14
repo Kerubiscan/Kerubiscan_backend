@@ -136,10 +136,24 @@ def generate_vulnerability_html(
         "top_vulnerabilities": top_vulnerabilities
     }
     
-    # Render Jinja2 Template
+    # Load KerubiSOC logo base64
     current_dir = os.path.dirname(os.path.abspath(__file__))
     templates_dir = os.path.join(current_dir, "..", "..", "templates")
     
+    logo_base64 = ""
+    logo_b64_path = os.path.join(templates_dir, "logo_b64.txt")
+    if os.path.exists(logo_b64_path):
+        with open(logo_b64_path, "r", encoding="utf-8") as f:
+            logo_base64 = f.read().strip()
+    else:
+        logo_png_path = os.path.join(templates_dir, "keribusoc_logo.png")
+        if os.path.exists(logo_png_path):
+            import base64
+            with open(logo_png_path, "rb") as f:
+                logo_base64 = base64.b64encode(f.read()).decode("utf-8")
+
+    template_data["logo_base64"] = logo_base64
+
     env = Environment(loader=FileSystemLoader(templates_dir))
     template = env.get_template("keribusoc_report.html")
     
