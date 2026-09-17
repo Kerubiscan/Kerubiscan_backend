@@ -143,7 +143,8 @@ def create_scan(req: ScanCreateRequest, db: Session = Depends(get_db), current_u
         policy_id=req.policy_id,
         credential_id=req.credential_id,
         recurrence_rule=req.recurrence_rule,
-        next_run_at=req.scheduled_for
+        next_run_at=req.scheduled_for,
+        notify_email=current_user.get("email")
     )
     db.add(scan)
     db.commit()

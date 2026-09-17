@@ -48,4 +48,5 @@ async def create_schedule(
     repo: ScheduleRepository = Depends(get_schedule_repository),
     current_user: dict = Depends(require_permissions([Permission.ASSET_WRITE]))
 ):
+    schedule_in.notify_email = current_user.get("email")
     return repo.create(schedule_in)

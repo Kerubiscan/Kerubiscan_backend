@@ -44,6 +44,7 @@ class ScanEntity(Base):
     policy_id = Column(String(36), ForeignKey("policies.id"), nullable=True)
     credential_id = Column(String(36), ForeignKey("credentials.id"), nullable=True)
     is_deleted = Column(Boolean, default=False, nullable=False)
+    notify_email = Column(String, nullable=True)
 
     
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)

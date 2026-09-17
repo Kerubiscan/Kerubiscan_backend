@@ -12,6 +12,7 @@ class ScheduleBase(BaseModel):
     scan_type: str = "VULNERABILITY"
     network_zone: Optional[str] = None
     scanner_engine: str = "OPENVAS"
+    notify_email: Optional[str] = None
 
 class ScheduleCreate(ScheduleBase):
     pass

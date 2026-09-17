@@ -38,6 +38,26 @@ async def get_reports(
         pages=pages
     )
 
+async def enrich_vulnerabilities_with_ai(db: Session, vulnerabilities: list, language: str):
+    import asyncio
+    from src.ai.application.services.nlp import generate_vulnerability_remediation
+    
+    sorted_vulns = sorted(vulnerabilities, key=lambda x: x.cvss_base_score or 0.0, reverse=True)
+    
+    async def enrich(v):
+        if not v.remediation or v.remediation.strip() == "":
+            try:
+                ai_rem = await generate_vulnerability_remediation(v.title, v.description or "", language)
+                if ai_rem:
+                    v.remediation = ai_rem
+                    db.add(v)
+            except Exception:
+                pass
+
+    # Enrich top 10 vulnerabilities concurrently to keep report generation reasonably fast
+    await asyncio.gather(*(enrich(v) for v in sorted_vulns[:10]))
+    db.commit()
+
 @router.post("/{asset_id}/html", response_class=Response)
 async def generate_executive_report_html(
     asset_id: str, 
@@ -49,6 +69,9 @@ async def generate_executive_report_html(
         raise HTTPException(status_code=404, detail="Asset not found")
         
     vulnerabilities = db.query(VulnerabilityEntity).filter(VulnerabilityEntity.asset_id == asset_id).all()
+    
+    # Generate missing AI remediations before creating the report
+    await enrich_vulnerabilities_with_ai(db, vulnerabilities, request_data.language or "French")
     
     exec_summary = request_data.executive_summary
     if not exec_summary:
@@ -91,6 +114,9 @@ async def generate_executive_report_pdf(
         raise HTTPException(status_code=404, detail="Asset not found")
         
     vulnerabilities = db.query(VulnerabilityEntity).filter(VulnerabilityEntity.asset_id == asset_id).all()
+    
+    # Generate missing AI remediations before creating the report
+    await enrich_vulnerabilities_with_ai(db, vulnerabilities, request_data.language or "French")
     
     exec_summary = request_data.executive_summary
     if not exec_summary:

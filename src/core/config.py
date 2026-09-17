@@ -18,7 +18,7 @@ class Settings(BaseSettings):
     KEYCLOAK_CLIENT_SECRET: str = ""
     
     class Config:
-
+        extra = 'ignore'
         case_sensitive = True
         env_file = ".env"
 

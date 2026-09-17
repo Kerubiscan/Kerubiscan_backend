@@ -63,7 +63,7 @@ def check_scheduled_scans():
                     db.commit()
                     db.refresh(scan)
                     
-                    admin_email = "admin@kerubiscan.local"
+                    admin_email = sched.notify_email if getattr(sched, 'notify_email', None) else "admin@kerubiscan.local"
                     try:
                         send_alert_email(
                             to_email=admin_email,
@@ -77,7 +77,9 @@ def check_scheduled_scans():
                         run_discovery_scan.delay(scan.id, sched.target, sched.network_zone or "Internal", sched.company_id)
                     else:
                         config_id = "daba56c8-73ec-11df-a475-002264764cea"
-                        run_vulnerability_scan.delay(scan.id, sched.target, sched.target, config_id)
+                        targets = [t.strip() for t in sched.target.split(",") if t.strip()]
+                        for ip in targets:
+                            run_vulnerability_scan.delay(scan.id, ip, ip, config_id)
 
                     if sched.frequency.startswith("Daily"):
                         sched.next_run = f"Tomorrow, {time_part}"
@@ -111,7 +113,7 @@ def check_scheduled_scans():
                 scan.target_states = target_states
                 db.commit()
 
-                admin_email = "aghet87@gmail.com"
+                admin_email = scan.notify_email if getattr(scan, 'notify_email', None) else "admin@kerubiscan.local"
                 try:
                     send_alert_email(
                         to_email=admin_email,
@@ -125,7 +127,8 @@ def check_scheduled_scans():
                     run_discovery_scan.delay(scan.id, scan.target, scan.network_zone or "Internal", scan.company_id)
                 else:
                     config_id = "daba56c8-73ec-11df-a475-002264764cea"
-                    run_vulnerability_scan.delay(scan.id, scan.target, scan.target, config_id)
+                    for ip in targets:
+                        run_vulnerability_scan.delay(scan.id, ip, ip, config_id)
 
             except Exception as e:
                 logger.error(f"Failed to fire one-off scan {scan.id}: {e}")

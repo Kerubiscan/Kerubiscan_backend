@@ -22,6 +22,18 @@ def upgrade_db():
             print("Added scanner_engine")
         except Exception as e:
             print(f"Error adding scanner_engine: {e}")
+            
+        try:
+            conn.execute(text("ALTER TABLE scans ADD COLUMN notify_email VARCHAR;"))
+            print("Added notify_email to scans")
+        except Exception as e:
+            print(f"Error adding notify_email to scans: {e}")
+
+        try:
+            conn.execute(text("ALTER TABLE schedules ADD COLUMN notify_email VARCHAR;"))
+            print("Added notify_email to schedules")
+        except Exception as e:
+            print(f"Error adding notify_email to schedules: {e}")
 
 if __name__ == "__main__":
     upgrade_db()

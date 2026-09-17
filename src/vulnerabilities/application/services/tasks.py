@@ -134,6 +134,12 @@ def parse_scan_report(report_xml: str, target_ip: str, scan_id: str = None):
             remediation = nvt.findtext("solution")
             
             severity = map_threat_to_severity(threat)
+            if severity == VulnSeverity.INFO and cvss_base_score:
+                if cvss_base_score >= 9.0: severity = VulnSeverity.CRITICAL
+                elif cvss_base_score >= 7.0: severity = VulnSeverity.HIGH
+                elif cvss_base_score >= 4.0: severity = VulnSeverity.MEDIUM
+                elif cvss_base_score > 0.0: severity = VulnSeverity.LOW
+
             contextual_risk = calculate_contextual_risk(cvss_base_score, asset.criticality)
             
             # 2. In-memory deduplication
@@ -196,7 +202,7 @@ def parse_scan_report(report_xml: str, target_ip: str, scan_id: str = None):
         
         # Send Email Alerts
         from src.notifications.application.services.smtp import send_alert_email
-        admin_email = "admin@kerubiscan.local" # Or fetch from a config
+        admin_email = scan.notify_email if getattr(scan, 'notify_email', None) else "admin@kerubiscan.local"
         
         # 1. Email for finished scan
         send_alert_email(
@@ -277,9 +283,19 @@ def parse_nmap_report(host_data: dict, target_ip: str, scan_id: str = None):
             cve_id = v.get("cve_id")
             cvss_score = safe_float(v.get("cvss"))
             
-            # Simple Nmap deduction
+            # Determine severity based on CVSS score if available
             severity = VulnSeverity.INFO
-            if "VULNERABLE" in output or "State: VULNERABLE" in output:
+            if cvss_score:
+                if cvss_score >= 9.0:
+                    severity = VulnSeverity.CRITICAL
+                elif cvss_score >= 7.0:
+                    severity = VulnSeverity.HIGH
+                elif cvss_score >= 4.0:
+                    severity = VulnSeverity.MEDIUM
+                elif cvss_score > 0.0:
+                    severity = VulnSeverity.LOW
+            
+            if severity == VulnSeverity.INFO and ("VULNERABLE" in output or "State: VULNERABLE" in output):
                 severity = VulnSeverity.HIGH
             
             # 2. In-memory deduplication
@@ -318,7 +334,7 @@ def parse_nmap_report(host_data: dict, target_ip: str, scan_id: str = None):
 
         # Send Email Alerts
         from src.notifications.application.services.smtp import send_alert_email
-        admin_email = "admin@kerubiscan.local" # Or fetch from a config
+        admin_email = scan.notify_email if getattr(scan, 'notify_email', None) else "admin@kerubiscan.local"
         
         # 1. Email for finished scan
         send_alert_email(
@@ -406,6 +422,12 @@ def parse_nuclei_report(vuln_data_list: list, target_ip: str, scan_id: str = Non
             remediation = v.get("remediation", "")
             cvss_score = safe_float(v.get("cvss_score"))
             
+            if severity == VulnSeverity.INFO and cvss_score:
+                if cvss_score >= 9.0: severity = VulnSeverity.CRITICAL
+                elif cvss_score >= 7.0: severity = VulnSeverity.HIGH
+                elif cvss_score >= 4.0: severity = VulnSeverity.MEDIUM
+                elif cvss_score > 0.0: severity = VulnSeverity.LOW
+
             contextual_risk = calculate_contextual_risk(cvss_score, asset.criticality)
 
             # 2. In-memory deduplication
@@ -446,7 +468,7 @@ def parse_nuclei_report(vuln_data_list: list, target_ip: str, scan_id: str = Non
 
         # Send Email Alerts
         from src.notifications.application.services.smtp import send_alert_email
-        admin_email = "admin@kerubiscan.local" # Or fetch from a config
+        admin_email = scan.notify_email if getattr(scan, 'notify_email', None) else "admin@kerubiscan.local"
         
         # 1. Email for finished scan
         send_alert_email(
@@ -520,7 +542,8 @@ def parse_zap_report(vuln_data_list: list, target_ip: str, scan_id: str = None):
             # Map severity
             sev_str = v.get("severity", "info").lower()
             severity = VulnSeverity.INFO
-            if sev_str == "high": severity = VulnSeverity.HIGH
+            if sev_str == "critical": severity = VulnSeverity.CRITICAL
+            elif sev_str == "high": severity = VulnSeverity.HIGH
             elif sev_str == "medium": severity = VulnSeverity.MEDIUM
             elif sev_str == "low": severity = VulnSeverity.LOW
 
@@ -531,6 +554,12 @@ def parse_zap_report(vuln_data_list: list, target_ip: str, scan_id: str = None):
             remediation = v.get("remediation", "")
             cvss_score = safe_float(v.get("cvss_score"))
             
+            if severity == VulnSeverity.INFO and cvss_score:
+                if cvss_score >= 9.0: severity = VulnSeverity.CRITICAL
+                elif cvss_score >= 7.0: severity = VulnSeverity.HIGH
+                elif cvss_score >= 4.0: severity = VulnSeverity.MEDIUM
+                elif cvss_score > 0.0: severity = VulnSeverity.LOW
+
             contextual_risk = calculate_contextual_risk(cvss_score, asset.criticality)
 
             # 2. In-memory deduplication
@@ -580,7 +609,7 @@ def parse_zap_report(vuln_data_list: list, target_ip: str, scan_id: str = None):
 
         # Send Email Alerts
         from src.notifications.application.services.smtp import send_alert_email
-        admin_email = "admin@kerubiscan.local" # Or fetch from a config
+        admin_email = scan.notify_email if getattr(scan, 'notify_email', None) else "admin@kerubiscan.local"
         
         # 1. Email for finished scan
         send_alert_email(

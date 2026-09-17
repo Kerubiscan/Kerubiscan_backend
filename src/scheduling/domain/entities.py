@@ -15,5 +15,6 @@ class ScheduleEntity(Base):
     scan_type = Column(String, default="VULNERABILITY", nullable=False)
     network_zone = Column(String, nullable=True)
     scanner_engine = Column(String, default="OPENVAS", nullable=False)
+    notify_email = Column(String, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

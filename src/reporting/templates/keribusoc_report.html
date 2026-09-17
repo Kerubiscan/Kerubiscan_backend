@@ -8,186 +8,54 @@
     </style>
     <style type="text/css" media="all">
         html, body, div, span, applet, object, iframe, h1, h2, h3, h4, h5, h6, p, blockquote, pre, a, abbr, acronym, address, big, cite, code, del, dfn, em, img, ins, kbd, q, s, samp, small, strike, strong, sub, sup, tt, var, b, u, i, center, dl, dt, dd, ol, ul, li, fieldset, form, label, legend, table, caption, tbody, tfoot, thead, tr, th, td, article, aside, canvas, details, embed, figure, figcaption, footer, header, hgroup, menu, nav, output, ruby, section, summary, time, mark, audio, video {
-            margin: 0;
-            padding: 0;
-            border: 0;
-            font-size: 100%;
-            font: inherit;
-            vertical-align: baseline;
-            -webkit-text-size-adjust: none;
+            margin: 0; padding: 0; border: 0; font-size: 100%; font: inherit; vertical-align: baseline; -webkit-text-size-adjust: none;
         }
-
-        h3, h6 {
-            font-weight: 300 !important;
-        }
-
-        html, body {
-            font-family: 'Open Sans', 'Helvetica Neue', 'Segoe UI', helvetica, arial, sans-serif;
-            width: 100%;
-            color: #333;
-            font-size: 13px;
-            background: #efefef;
-        }
-
-        a, a:visited, a:active {
-            color: #67ACE1;
-            text-decoration: none;
-        }
-
-        a:hover {
-            color: #67ACE1;
-            text-decoration: underline;
-        }
-
-        .clear {
-            clear: both;
-            width: 0 !important;
-            height: 0 !important;
-            margin: 0 !important;
-            padding: 0 !important;
-        }
-
-        table {
-            table-layout: fixed;
-            width: 100%;
-            border-collapse: collapse;
-            border-spacing: 0;
-            margin-bottom: 20px;
-            margin-top: 20px;
-        }
-
-        .plugin-row-header {
-            height: 35px;
-            line-height: 35px;
-            background: #f5f5f5;
-            font-size: 12px;
-            border: 1px solid #ddd;
-        }
-
-        .plugin-row {
-            height: 40px;
-            border: 1px solid #ddd;
-            transition: background 0.15s ease;
-        }
-
-        .plugin-row:hover {
-            background: #f8fafc;
-        }
-
-        .plugin-row td {
-            padding: 10px 0;
-            line-height: 20px;
-        }
-
-        .table-wrapper.details,
-        .table-wrapper.see-also {
-            margin: 0 0 20px 0;
-        }
-
-        .table-wrapper.details > table > tbody > tr > td {
-            padding: 5px 0;
-        }
-
-        .button {
-            display: block;
-            float: left;
-            line-height: 30px;
-            background: #eee;
-            border-radius: 3px;
-            cursor: pointer;
-            padding: 0 15px;
-            font-size: 12px;
-            font-weight: 600;
-            user-select: none;
-        }
-
-        .button:hover {
-            background: #ccc;
-        }
-
-        .expand {
-            display: block;
-            float: right;
-            font-size: 12px;
-            color: #67ACE1;
-            cursor: pointer;
-            font-weight: 400;
-            line-height: 20px;
-            margin: 0 0 0 10px;
-            user-select: none;
-        }
-
-        .expand:hover {
-            text-decoration: underline;
-        }
-
-        .expand-spacer {
-            display: block;
-            float: right;
-            font-size: 12px;
-            font-weight: 400;
-            line-height: 20px;
-            margin: 0 0 0 10px;
-        }
-
-        .badge {
-            display: inline-block;
-            width: 65px;
-            text-align: center;
-            text-transform: uppercase;
-            font-size: 10px;
-            color: #fff;
-            border-radius: 3px;
-            line-height: 20px;
-            font-weight: 700;
-        }
-
+        h3, h6 { font-weight: 300 !important; }
+        html, body { font-family: 'Open Sans', 'Helvetica Neue', 'Segoe UI', helvetica, arial, sans-serif; width: 100%; color: #333; font-size: 13px; background: #efefef; }
+        a, a:visited, a:active { color: #67ACE1; text-decoration: none; }
+        a:hover { color: #67ACE1; text-decoration: underline; }
+        .clear { clear: both; width: 0 !important; height: 0 !important; margin: 0 !important; padding: 0 !important; }
+        table { table-layout: fixed; width: 100%; border-collapse: collapse; border-spacing: 0; margin-bottom: 20px; margin-top: 20px; }
+        .plugin-row-header { height: 35px; line-height: 35px; background: #f5f5f5; font-size: 12px; border: 1px solid #ddd; }
+        .plugin-row { height: 40px; border: 1px solid #ddd; transition: background 0.15s ease; }
+        .plugin-row:hover { background: #f8fafc; }
+        .plugin-row td { padding: 10px 0; line-height: 20px; }
+        .table-wrapper.details, .table-wrapper.see-also { margin: 0 0 20px 0; }
+        .table-wrapper.details > table > tbody > tr > td { padding: 5px 0; }
+        .button { display: block; float: left; line-height: 30px; background: #eee; border-radius: 3px; cursor: pointer; padding: 0 15px; font-size: 12px; font-weight: 600; user-select: none; }
+        .button:hover { background: #ccc; }
+        .expand { display: block; float: right; font-size: 12px; color: #67ACE1; cursor: pointer; font-weight: 400; line-height: 20px; margin: 0 0 0 10px; user-select: none; }
+        .expand:hover { text-decoration: underline; }
+        .expand-spacer { display: block; float: right; font-size: 12px; font-weight: 400; line-height: 20px; margin: 0 0 0 10px; }
+        .badge { display: inline-block; width: 65px; text-align: center; text-transform: uppercase; font-size: 10px; color: #fff; border-radius: 3px; line-height: 20px; font-weight: 700; }
         .badge-critical { background: #91243E; }
         .badge-high { background: #DD4B50; }
         .badge-medium { background: #F18C43; }
         .badge-low { background: #F8C851; color: #222; }
         .badge-info { background: #67ACE1; }
-
-        .details-box {
-            background: #fafafa;
-            border: 1px solid #e2e8f0;
-            border-left: 3px solid #67ACE1;
-            padding: 12px 16px;
-            margin: 8px 10px 12px 10px;
-            font-size: 12px;
-            line-height: 1.6;
-        }
-        .details-box strong {
-            color: #1e293b;
-        }
+        .details-box { background: #fafafa; border: 1px solid #e2e8f0; border-left: 3px solid #67ACE1; padding: 12px 16px; margin: 8px 10px 12px 10px; font-size: 12px; line-height: 1.6; }
+        .details-box strong { color: #1e293b; }
     </style>
     <script type="text/javascript">
         var toggle = function (id) {
             var div = document.getElementById(id);
             var button = document.getElementById(id + '-show');
-
-            if (!div) {
-                return;
-            }
-
+            if (!div) return;
             if (div.style.display === '' || div.style.display === 'block') {
                 if (button) button.style.display = 'block';
                 div.style.display = 'none';
                 return;
             }
-
             if (button) button.style.display = 'none';
             div.style.display = 'block';
         };
 
         var toggleAll = function (hide) {
             var divs = document.querySelectorAll('div.vuln-table-wrapper');
-
             for (var i = 0; i < divs.length; i++) {
                 var id = divs[i].getAttribute('id');
                 var div = document.getElementById(id);
                 var button = document.getElementById(id + '-show');
-
                 if (div) {
                     if (hide) {
                         if (button) button.style.display = 'block';
@@ -210,22 +78,66 @@
             }
         };
     </script>
+
+<style id="keribusoc-brand-overrides">
+:root{
+ --k-dark:#0D1F16; --k-emerald:#00963C; --k-lime:#BEF000;
+ --k-text:#17231d; --k-muted:#66756d; --k-line:#dce7e1;
+}
+html,body{font-family:"Segoe UI",Inter,Arial,sans-serif!important;background:#eef3f0!important;color:var(--k-text)!important}
+body:before{content:"";display:block;height:5px;background:linear-gradient(90deg,var(--k-dark),var(--k-emerald),var(--k-lime),var(--k-emerald),var(--k-dark));position:fixed;top:0;left:0;right:0;z-index:9999}
+#report{margin-top:5px!important;background:#fff!important;border-top:0!important;box-shadow:0 8px 35px rgba(13,31,22,.13)!important;border-radius:0 0 10px 10px!important;padding:0 28px 28px!important}
+header{border-bottom:1px solid var(--k-line)!important;padding:24px 0 18px!important}
+header:after{content:"KERUBISCAN  •  VULNERABILITY ASSESSMENT";display:block;clear:both;margin-top:10px;font-size:10px;letter-spacing:1.8px;font-weight:700;color:var(--k-emerald)}
+h1,h2,h3,h4,h5,h6{color:var(--k-dark)!important}
+h3{font-size:23px!important;font-weight:600!important;line-height:1.35!important;border-left:4px solid var(--k-emerald);padding-left:14px}
+h4{font-size:12px!important;color:var(--k-muted)!important;letter-spacing:.4px;border-bottom:1px solid var(--k-line)!important}
+h5{letter-spacing:.5px}
+a,a:visited,a:active{color:var(--k-emerald)!important}
+a:hover{color:#00752f!important}
+.table-wrapper{border:1px solid var(--k-line);border-radius:8px;overflow:hidden;background:#fff}
+table{margin:0!important}
+.plugin-row-header{background:var(--k-dark)!important;color:#fff!important;border-color:var(--k-dark)!important;text-transform:uppercase;letter-spacing:.45px}
+.plugin-row{border-color:var(--k-line)!important;background:#fff}
+.plugin-row:hover{background:#f3faf5!important}
+.button{background:var(--k-emerald)!important;color:#fff!important;border-radius:6px!important;font-weight:700!important;box-shadow:0 2px 7px rgba(0,150,60,.18);transition:.15s ease}
+.button:hover{background:#007c32!important;transform:translateY(-1px)}
+.expand{color:var(--k-emerald)!important}
+.badge{border-radius:999px!important;letter-spacing:.4px}
+.badge-critical{background:#8b1733!important}.badge-high{background:#d93d45!important}.badge-medium{background:#e8842d!important}.badge-low{background:#a8cf00!important;color:#102015!important}.badge-info{background:#159bb0!important}
+.details-box{background:#f5faf7!important;border:1px solid #d9e9df!important;border-left:4px solid var(--k-emerald)!important;border-radius:6px!important;box-shadow:0 2px 8px rgba(13,31,22,.04)}
+.details-box strong{color:var(--k-dark)!important}
+/* Severity summary cards retain the original report structure while using KERUBISOC accents. */
+#report div[id^="id-summary-"] table td>div{border-radius:8px!important}
+/* Lime is used sparingly for highlights/positive states, not as body text. */
+#report [style*="#84cc16"],#report [style*="#84CC16"]{border-left-color:var(--k-lime)!important}
+/* Print-ready A4 presentation */
+@page{size:A4;margin:12mm}
+@media print{
+ html,body{background:#fff!important}
+ body:before{position:static;height:3px}
+ #report{width:100%!important;margin:0!important;box-shadow:none!important;padding:0!important}
+ .button{box-shadow:none!important}
+ .plugin-row:hover{background:#fff!important}
+ a{text-decoration:none!important}
+}
+</style>
 </head>
 <body>
-    <div id="report" style="width: 1024px; box-sizing: border-box; margin: 0 auto; background: #fff; padding: 0 20px 20px 20px; border-top: #263746 solid 3px; box-shadow: 0 2px 10px rgba(0, 0, 0, .2); margin-bottom: 20px; border-radius: 0 0 3px 3px;">
-        <header style="width: 100%; border-bottom: 1px dotted #ccc; padding: 20px 0; margin: 0 0 20px 0;">
+    <div id="report">
+        <header>
             <div style="float: left;">
                 <h1>
                     {% if logo_base64 %}
                     <img src="data:image/png;base64,{{ logo_base64 }}" height="50" border="0" alt="KERIBU SOC" style="display: block;" />
                     {% else %}
-                    <span style="font-size: 24px; font-weight: 800; color: #84cc16; letter-spacing: 2px;">KERIBU<span style="color: #0f172a;">SOC</span></span>
+                    <span style="font-size: 24px; font-weight: 800; color: #00963C; letter-spacing: 2px;">KERIBU<span style="color: #0D1F16;">SOC</span></span>
                     {% endif %}
                 </h1>
             </div>
             <div style="float: right;">
                 <h1 style="font-size: 18px;"></h1>
-                <h2 style="color: #999; text-align: right; font-size: 13px;">Report generated by KerubiSOC™</h2>
+                <h2 style="color: #999; text-align: right; font-size: 13px;">Report generated by KERUBISCAN™ · KerubiSOC</h2>
             </div>
             <div class="clear"></div>
         </header>
@@ -238,9 +150,9 @@
         <div class="clear"></div>
 
         {% if executive_summary %}
-        <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-left: 4px solid #84cc16; padding: 15px 20px; border-radius: 4px; margin-bottom: 25px;">
-            <h5 style="font-size: 14px; font-weight: 700; color: #0f172a; margin-bottom: 6px;">EXECUTIVE SUMMARY</h5>
-            <p style="color: #475569; font-size: 12px; line-height: 1.6;">{{ executive_summary }}</p>
+        <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-left: 4px solid #00963C; padding: 15px 20px; border-radius: 4px; margin-bottom: 25px;">
+            <h5 style="font-size: 14px; font-weight: 700; color: #0D1F16; margin-bottom: 6px;">EXECUTIVE SUMMARY</h5>
+            <p style="color: #17231d; font-size: 12px; line-height: 1.6; white-space: pre-line;">{{ executive_summary }}</p>
         </div>
         {% endif %}
 
@@ -303,28 +215,17 @@
                             </td>
                         </tr>
                         <tr>
-                            <td colspan="1">
-                                <div style="font-size: 10px; text-transform: uppercase; padding: 5px 0; text-align: center; width: 98%; box-sizing: border-box; border-left: 1px solid #ddd; border-right: 1px solid #ddd; border-bottom: 1px solid #ddd; border-radius: 0 0 3px 3px; margin: 0; margin-bottom: 15px;">Critical</div>
-                            </td>
-                            <td colspan="1">
-                                <div style="font-size: 10px; text-transform: uppercase; padding: 5px 0; text-align: center; width: 98%; box-sizing: border-box; border-left: 1px solid #ddd; border-right: 1px solid #ddd; border-bottom: 1px solid #ddd; border-radius: 0 0 3px 3px; margin: 0 1%; margin-bottom: 15px;">High</div>
-                            </td>
-                            <td colspan="1">
-                                <div style="font-size: 10px; text-transform: uppercase; padding: 5px 0; text-align: center; width: 98%; box-sizing: border-box; border-left: 1px solid #ddd; border-right: 1px solid #ddd; border-bottom: 1px solid #ddd; border-radius: 0 0 3px 3px; margin: 0 1%; margin-bottom: 15px;">Medium</div>
-                            </td>
-                            <td colspan="1">
-                                <div style="font-size: 10px; text-transform: uppercase; padding: 5px 0; text-align: center; width: 98%; box-sizing: border-box; border-left: 1px solid #ddd; border-right: 1px solid #ddd; border-bottom: 1px solid #ddd; border-radius: 0 0 3px 3px; margin: 0 1%; margin-bottom: 15px;">Low</div>
-                            </td>
-                            <td colspan="1">
-                                <div style="font-size: 10px; text-transform: uppercase; padding: 5px 0; text-align: center; width: 98%; box-sizing: border-box; border-left: 1px solid #ddd; border-right: 1px solid #ddd; border-bottom: 1px solid #ddd; border-radius: 0 0 3px 3px; margin: 0 0 0 2%; margin-bottom: 15px;">Info</div>
-                            </td>
+                            <td colspan="1"><div style="font-size: 10px; text-transform: uppercase; padding: 5px 0; text-align: center; width: 98%; box-sizing: border-box; border-left: 1px solid #ddd; border-right: 1px solid #ddd; border-bottom: 1px solid #ddd; border-radius: 0 0 3px 3px; margin: 0; margin-bottom: 15px;">Critical</div></td>
+                            <td colspan="1"><div style="font-size: 10px; text-transform: uppercase; padding: 5px 0; text-align: center; width: 98%; box-sizing: border-box; border-left: 1px solid #ddd; border-right: 1px solid #ddd; border-bottom: 1px solid #ddd; border-radius: 0 0 3px 3px; margin: 0 1%; margin-bottom: 15px;">High</div></td>
+                            <td colspan="1"><div style="font-size: 10px; text-transform: uppercase; padding: 5px 0; text-align: center; width: 98%; box-sizing: border-box; border-left: 1px solid #ddd; border-right: 1px solid #ddd; border-bottom: 1px solid #ddd; border-radius: 0 0 3px 3px; margin: 0 1%; margin-bottom: 15px;">Medium</div></td>
+                            <td colspan="1"><div style="font-size: 10px; text-transform: uppercase; padding: 5px 0; text-align: center; width: 98%; box-sizing: border-box; border-left: 1px solid #ddd; border-right: 1px solid #ddd; border-bottom: 1px solid #ddd; border-radius: 0 0 3px 3px; margin: 0 1%; margin-bottom: 15px;">Low</div></td>
+                            <td colspan="1"><div style="font-size: 10px; text-transform: uppercase; padding: 5px 0; text-align: center; width: 98%; box-sizing: border-box; border-left: 1px solid #ddd; border-right: 1px solid #ddd; border-bottom: 1px solid #ddd; border-radius: 0 0 3px 3px; margin: 0 0 0 2%; margin-bottom: 15px;">Info</div></td>
                         </tr>
                     </tbody>
                 </table>
                 <div class="clear"></div>
             </div>
 
-            <!-- Show Button -->
             <span id="id-table-{{ loop.index }}-show" onclick="toggle('id-table-{{ loop.index }}');" class="button">Show</span>
             <div class="clear"></div>
 
@@ -371,8 +272,8 @@
                                             <span style="color: #475569;">{{ v.description }}</span>
                                         </div>
                                         <div style="margin-bottom: 8px;">
-                                            <strong style="color: #166534;">Solution / Remediation:</strong> 
-                                            <span style="color: #166534; font-weight: 600;">{{ v.remediation }}</span>
+                                            <strong style="color: #00963C;">Solution / Remediation:</strong> 
+                                            <span style="color: #00963C; font-weight: 600;">{{ v.remediation }}</span>
                                         </div>
                                         {% if v.cvss_vector %}
                                         <div style="margin-bottom: 4px; font-size: 11px; color: #64748b;">
@@ -418,7 +319,7 @@
     </div>
 
     <div style="width: 1024px; box-sizing: border-box; text-align: center; font-size: 12px; color: #999; padding: 10px 0 20px 0; margin: 0 auto;">
-        © 2026 KerubiSOC™ Security. All rights reserved.
+        © 2026 KERUBISCAN™ · KerubiSOC Security. All rights reserved.
     </div>
 </body>
 </html>
