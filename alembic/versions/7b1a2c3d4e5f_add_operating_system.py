@@ -20,7 +20,7 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     # Pure SQL migration to add operating_system column
-    op.execute("ALTER TABLE assets ADD COLUMN operating_system VARCHAR;")
+    op.execute("ALTER TABLE assets ADD COLUMN IF NOT EXISTS operating_system VARCHAR;")
 
 
 def downgrade() -> None:
