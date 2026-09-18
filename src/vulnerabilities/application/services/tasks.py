@@ -47,11 +47,12 @@ def parse_scan_report(report_xml: str, target_ip: str, scan_id: str = None):
     new_alerts = []
     
     try:
+        scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first() if scan_id else None
+        
         # Find the asset
         asset = db.query(AssetEntity).filter(AssetEntity.ip_address == target_ip).first()
         if not asset:
             logger.info(f"Asset with IP {target_ip} not found. Creating it automatically.")
-            scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
             if not scan:
                 logger.error(f"Scan {scan_id} not found. Cannot create asset.")
                 return
@@ -239,10 +240,11 @@ def parse_nmap_report(host_data: dict, target_ip: str, scan_id: str = None):
     db: Session = SessionLocal()
     new_alerts = []
     try:
+        scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first() if scan_id else None
+        
         asset = db.query(AssetEntity).filter(AssetEntity.ip_address == target_ip).first()
         if not asset:
             logger.info(f"Asset with IP {target_ip} not found. Creating it automatically.")
-            scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
             if not scan:
                 logger.error(f"Scan {scan_id} not found. Cannot create asset.")
                 return
@@ -371,10 +373,11 @@ def parse_nuclei_report(vuln_data_list: list, target_ip: str, scan_id: str = Non
     db: Session = SessionLocal()
     new_alerts = []
     try:
+        scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first() if scan_id else None
+        
         asset = db.query(AssetEntity).filter(AssetEntity.ip_address == target_ip).first()
         if not asset:
             logger.info(f"Asset with IP {target_ip} not found. Creating it automatically.")
-            scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
             if not scan:
                 logger.error(f"Scan {scan_id} not found. Cannot create asset.")
                 return
@@ -505,10 +508,11 @@ def parse_zap_report(vuln_data_list: list, target_ip: str, scan_id: str = None):
     db: Session = SessionLocal()
     new_alerts = []
     try:
+        scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first() if scan_id else None
+        
         asset = db.query(AssetEntity).filter(AssetEntity.ip_address == target_ip).first()
         if not asset:
             logger.info(f"Asset with IP {target_ip} not found. Creating it automatically.")
-            scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
             if not scan:
                 logger.error(f"Scan {scan_id} not found. Cannot create asset.")
                 return
