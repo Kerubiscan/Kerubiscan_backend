@@ -90,7 +90,7 @@ class NmapAdapter:
                 else:
                     cmd.extend(["-p", ports])
             
-            cmd.extend(["--script", "vuln,vulners", "-oX", "-", target])
+            cmd.extend(["--script", "vuln,vulners,vulscan", "-oX", "-", target])
             
             result = subprocess.run(
                 cmd, 

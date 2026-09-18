@@ -14,6 +14,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     nmap \
     wget \
     unzip \
+    git \
     default-jre \
     && rm -rf /var/lib/apt/lists/*
 
@@ -28,8 +29,9 @@ RUN wget https://github.com/zaproxy/zaproxy/releases/download/v2.17.0/ZAP_2.17.0
 COPY --from=projectdiscovery/nuclei:latest /usr/local/bin/nuclei /usr/local/bin/nuclei
 RUN nuclei -ut || true
 
-# Install Nmap vulners script
+# Install Nmap vulners and vulscan scripts
 RUN wget https://raw.githubusercontent.com/vulnersCom/nmap-vulners/master/vulners.nse -O /usr/share/nmap/scripts/vulners.nse \
+    && git clone https://github.com/scipag/vulscan.git /usr/share/nmap/scripts/vulscan \
     && nmap --script-updatedb
 
 # Install python dependencies
