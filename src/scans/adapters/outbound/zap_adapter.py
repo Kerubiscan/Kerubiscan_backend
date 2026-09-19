@@ -15,12 +15,35 @@ class ZAPAdapter:
         output_file = f"/tmp/zap_{target.replace('.', '_').replace('/', '_').replace(':', '_')}.json"
         
         try:
+            import requests
+            import urllib3
+            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+            
             # ZAP expects a URL.
             formatted_target = target
             if not target.startswith("http://") and not target.startswith("https://"):
-                formatted_target = f"http://{target}"
+                logger.info(f"Probing {target} to determine correct HTTP/HTTPS prefix...")
+                use_https = False
+                
+                # Fast Probe: Try HTTPS first
+                try:
+                    requests.get(f"https://{target}", timeout=3, verify=False)
+                    use_https = True
+                    logger.info(f"Fast Probe: HTTPS connection successful for {target}")
+                except requests.RequestException:
+                    # If HTTPS fails, try HTTP
+                    try:
+                        requests.get(f"http://{target}", timeout=3)
+                        use_https = False
+                        logger.info(f"Fast Probe: HTTP connection successful for {target}")
+                    except requests.RequestException:
+                        # If both fail, default to http but log warning
+                        logger.warning(f"Fast Probe: Both HTTP and HTTPS failed for {target}. Defaulting to HTTP.")
+                        use_https = False
+                        
+                formatted_target = f"https://{target}" if use_https else f"http://{target}"
+                
             logger.info(f"ZAP target formatted to: {formatted_target}")
-
             # -cmd: Run inline without GUI or daemon
             # -quickurl: Spider and Active Scan the target
             # -quickout: Save the results to this file
