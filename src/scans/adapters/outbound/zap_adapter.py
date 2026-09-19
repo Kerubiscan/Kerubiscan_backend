@@ -8,7 +8,7 @@ logger = logging.getLogger(__name__)
 
 class ZAPAdapter:
     @staticmethod
-    def run_scan(target: str) -> List[Dict]:
+    def run_scan(target: str, credentials: Dict = None) -> List[Dict]:
         """Runs an OWASP ZAP active scan and returns structured JSON data."""
         logger.info(f"Running OWASP ZAP full scan on {target}")
         
@@ -50,9 +50,30 @@ class ZAPAdapter:
             # -quickprogress: Print progress
             if os.path.exists(output_file):
                 os.remove(output_file)
+                
+            cmd = ["/usr/local/bin/zap", "-cmd", "-quickurl", formatted_target, "-quickout", output_file, "-quickprogress"]
+            
+            if credentials and credentials.get("credential_type") == "HTTP":
+                import base64
+                user = credentials.get("username", "")
+                pwd = credentials.get("password", "")
+                if user or pwd:
+                    auth_str = f"{user}:{pwd}"
+                    b64_auth = base64.b64encode(auth_str.encode("utf-8")).decode("utf-8")
+                    
+                    # Inject Authorization header using ZAP Replacer
+                    cmd.extend([
+                        "-config", "replacer.full_list(0).description=auth1",
+                        "-config", "replacer.full_list(0).enabled=true",
+                        "-config", "replacer.full_list(0).matchtype=REQ_HEADER",
+                        "-config", "replacer.full_list(0).matchstr=Authorization",
+                        "-config", "replacer.full_list(0).regex=false",
+                        "-config", f"replacer.full_list(0).replacement=Basic {b64_auth}"
+                    ])
+                    logger.info("Injected HTTP Basic Auth into ZAP Replacer config.")
 
             result = subprocess.run(
-                ["/usr/local/bin/zap", "-cmd", "-quickurl", formatted_target, "-quickout", output_file, "-quickprogress"], 
+                cmd, 
                 capture_output=True, 
                 text=True, 
                 check=False,

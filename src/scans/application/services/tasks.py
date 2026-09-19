@@ -408,7 +408,7 @@ def run_vulnerability_scan(self, scan_id: str, asset_ip: str, asset_name: str, c
             
             # --- PHASE 1: Ports, Services, OS ---
             logger.info(f"Phase 1: Running detailed discovery on {asset_ip}")
-            discovery_hosts = NmapAdapter.run_detailed_discovery_scan(asset_ip, ports=port_range)
+            discovery_hosts = NmapAdapter.run_detailed_discovery_scan(asset_ip, ports=port_range, credentials=vault_secret)
             
             open_ports_list = []
             
@@ -443,7 +443,7 @@ def run_vulnerability_scan(self, scan_id: str, asset_ip: str, asset_name: str, c
             
             # --- PHASE 2: Vulnerability Scripts ---
             logger.info(f"Phase 2: Running vulnerability scripts on open ports {open_ports_str} for {asset_ip}")
-            vuln_hosts = NmapAdapter.run_vulnerability_scan(asset_ip, ports=open_ports_str)
+            vuln_hosts = NmapAdapter.run_vulnerability_scan(asset_ip, ports=open_ports_str, credentials=vault_secret)
             logger.info(f"Nmap vulnerability scan completed. Hosts found: {len(vuln_hosts)}")
             
             # Save Phase 2 results and mark COMPLETED
@@ -477,7 +477,7 @@ def run_vulnerability_scan(self, scan_id: str, asset_ip: str, asset_name: str, c
             
             # --- PHASE 1: Ports, Services, OS ---
             logger.info(f"Phase 1: Running Nmap detailed discovery on {asset_ip} for Nuclei")
-            discovery_hosts = NmapAdapter.run_detailed_discovery_scan(asset_ip, ports=port_range)
+            discovery_hosts = NmapAdapter.run_detailed_discovery_scan(asset_ip, ports=port_range, credentials=vault_secret)
             
             nuclei_targets = []
             
@@ -521,7 +521,7 @@ def run_vulnerability_scan(self, scan_id: str, asset_ip: str, asset_name: str, c
             # --- PHASE 2: Nuclei Vulnerability Scan ---
             logger.info(f"Phase 2: Running Nuclei on mapped targets: {nuclei_targets}")
             from src.scans.adapters.outbound.nuclei_adapter import NucleiAdapter
-            vulns = NucleiAdapter.run_scan(target=nuclei_targets, ports=None)
+            vulns = NucleiAdapter.run_scan(target=nuclei_targets, ports=None, credentials=vault_secret)
             
             # Nuclei runs synchronously, pass to parser.
             from src.vulnerabilities.application.services.tasks import parse_nuclei_report
@@ -578,7 +578,7 @@ def run_vulnerability_scan(self, scan_id: str, asset_ip: str, asset_name: str, c
     if scan_engine == ScannerEngine.OWASP_ZAP:
         try:
             from src.scans.adapters.outbound.zap_adapter import ZAPAdapter
-            vulns = ZAPAdapter.run_scan(asset_ip)
+            vulns = ZAPAdapter.run_scan(asset_ip, credentials=vault_secret)
             from src.vulnerabilities.application.services.tasks import parse_zap_report
             parse_zap_report.delay(vulns, asset_ip, scan_id)
             return True

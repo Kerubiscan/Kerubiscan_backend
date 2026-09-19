@@ -8,7 +8,7 @@ logger = logging.getLogger(__name__)
 
 class NucleiAdapter:
     @staticmethod
-    def run_scan(target: str | List[str], ports: str = None) -> List[Dict]:
+    def run_scan(target: str | List[str], ports: str = None, credentials: Dict = None) -> List[Dict]:
         """Runs a Nuclei vulnerability scan and returns structured JSON data."""
         targets = [target] if isinstance(target, str) else target
         target_name = targets[0].replace('.', '_').replace(':', '_').replace('/', '_')
@@ -21,6 +21,16 @@ class NucleiAdapter:
             # We removed -as (Automatic Scan) so Nuclei runs ALL default templates 
             # (cves, vulnerabilities, exposures, misconfiguration, etc.) as requested.
             cmd = ["/usr/local/bin/nuclei", "-duc", "-je", output_file, "-nc"]
+            
+            if credentials and credentials.get("credential_type") == "HTTP":
+                import base64
+                user = credentials.get("username", "")
+                pwd = credentials.get("password", "")
+                if user or pwd:
+                    auth_str = f"{user}:{pwd}"
+                    b64_auth = base64.b64encode(auth_str.encode("utf-8")).decode("utf-8")
+                    cmd.extend(["-H", f"Authorization: Basic {b64_auth}"])
+                    logger.info("Injected HTTP Basic Auth into Nuclei headers.")
             
             # Format targets with ports if ports are provided
             # IMPORTANT: In Nuclei, '-p' is the short flag for '--proxy'!

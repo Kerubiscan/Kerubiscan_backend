@@ -29,7 +29,36 @@ class NmapAdapter:
             raise Exception(f"Nmap discovery failed: {e.stderr}")
 
     @staticmethod
-    def run_detailed_discovery_scan(target: str, ports: str = None) -> List[Dict]:
+    def _build_nmap_auth_args(credentials: Dict = None) -> List[str]:
+        if not credentials:
+            return []
+        
+        args = []
+        if credentials.get("credential_type") == "SMB":
+            args.append(f"smbusername={credentials.get('username','')}")
+            if credentials.get("password"):
+                args.append(f"smbpassword={credentials.get('password','')}")
+            if credentials.get("domain"):
+                args.append(f"smbdomain={credentials.get('domain','')}")
+        elif credentials.get("credential_type") == "SSH":
+            args.append(f"ssh.username={credentials.get('username','')}")
+            if credentials.get("password"):
+                args.append(f"ssh.password={credentials.get('password','')}")
+        elif credentials.get("credential_type") == "HTTP":
+            args.append(f"http.user={credentials.get('username','')}")
+            if credentials.get("password"):
+                args.append(f"http.password={credentials.get('password','')}")
+        elif credentials.get("credential_type") == "DATABASE":
+            args.append(f"mysqluser={credentials.get('username','')}")
+            if credentials.get("password"):
+                args.append(f"mysqlpass={credentials.get('password','')}")
+                
+        if args:
+            return ["--script-args", ",".join(args)]
+        return []
+
+    @staticmethod
+    def run_detailed_discovery_scan(target: str, ports: str = None, credentials: Dict = None) -> List[Dict]:
         """Runs a detailed Nmap scan to get OS, hostnames, and ports without full vulnerability scripts.
            Falls back to -sV if -O fails (e.g. due to lack of root privileges)."""
         logger.info(f"Running Nmap detailed discovery scan on {target} with ports option: {ports}")
@@ -50,7 +79,9 @@ class NmapAdapter:
             else:
                 cmd.extend(["-p-"])
                 
-            cmd.extend(["-T4", "--script", "nbstat,smb-os-discovery", "-oX", "-"])
+            cmd.extend(["-T4", "--script", "nbstat,smb-os-discovery"])
+            cmd.extend(NmapAdapter._build_nmap_auth_args(credentials))
+            cmd.extend(["-oX", "-"])
             
             result = subprocess.run(
                 cmd + target.split(','), 
@@ -82,7 +113,7 @@ class NmapAdapter:
                 raise Exception(f"Nmap detailed scan failed: {e.stderr}")
 
     @staticmethod
-    def run_vulnerability_scan(target: str, ports: str = None) -> List[Dict]:
+    def run_vulnerability_scan(target: str, ports: str = None, credentials: Dict = None) -> List[Dict]:
         """Runs an Nmap deep scan (ports, OS, versions) with optional custom port ranges / exclusions."""
         logger.info(f"Running Nmap deep scan on {target} with ports option: {ports}")
         
@@ -103,7 +134,9 @@ class NmapAdapter:
             else:
                 cmd.extend(["-p-"])
             
-            cmd.extend(["--script", "vuln,vulners,vulscan/", "-oX", "-", target])
+            cmd.extend(["--script", "vuln,vulners,vulscan/"])
+            cmd.extend(NmapAdapter._build_nmap_auth_args(credentials))
+            cmd.extend(["-oX", "-", target])
             
             result = subprocess.run(
                 cmd, 
