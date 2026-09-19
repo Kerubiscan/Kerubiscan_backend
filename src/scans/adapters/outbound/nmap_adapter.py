@@ -29,20 +29,31 @@ class NmapAdapter:
             raise Exception(f"Nmap discovery failed: {e.stderr}")
 
     @staticmethod
-    def run_detailed_discovery_scan(target: str) -> List[Dict]:
+    def run_detailed_discovery_scan(target: str, ports: str = None) -> List[Dict]:
         """Runs a detailed Nmap scan to get OS, hostnames, and ports without full vulnerability scripts.
            Falls back to -sV if -O fails (e.g. due to lack of root privileges)."""
-        logger.info(f"Running Nmap detailed discovery scan on {target}")
+        logger.info(f"Running Nmap detailed discovery scan on {target} with ports option: {ports}")
         
         try:
-            # -sT: TCP Connect scan
-            # -sV: Version detection
-            # -O: OS detection (Requires root)
-            # -p-: Scan all 65,535 ports
-            # -T4: Aggressive timing to speed up the massive port scan
-            # -oX -: Output XML
+            cmd = ["nmap", "-sT", "-sV", "-O", "-Pn"]
+            
+            if ports:
+                if "!" in ports:
+                    p_parts = ports.split("!")
+                    scan_p = p_parts[0].rstrip(",")
+                    exclude_p = p_parts[1]
+                    if scan_p:
+                        cmd.extend(["-p", scan_p])
+                    cmd.extend(["--exclude-ports", exclude_p])
+                else:
+                    cmd.extend(["-p", ports])
+            else:
+                cmd.extend(["-p-"])
+                
+            cmd.extend(["-T4", "--script", "nbstat,smb-os-discovery", "-oX", "-"])
+            
             result = subprocess.run(
-                ["nmap", "-sT", "-sV", "-O", "-Pn", "-p-", "-T4", "--script", "nbstat,smb-os-discovery", "-oX", "-"] + target.split(','), 
+                cmd + target.split(','), 
                 capture_output=True, text=True, check=True, timeout=86400
             )
             logger.info(f"Nmap detailed scan raw output for {target}:\n{result.stdout}")

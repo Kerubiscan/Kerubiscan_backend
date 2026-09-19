@@ -404,16 +404,57 @@ def run_vulnerability_scan(self, scan_id: str, asset_ip: str, asset_name: str, c
     if scan_engine == ScannerEngine.NMAP:
         try:
             from src.scans.adapters.outbound.nmap_adapter import NmapAdapter
-            hosts = NmapAdapter.run_vulnerability_scan(asset_ip, ports=port_range)
-            logger.info(f"Nmap vulnerability scan completed. Hosts found: {len(hosts)}")
+            import json
             
-            # Nmap runs synchronously, so we pass to parser. 
-            # We don't mark as COMPLETED here, the parser will do it.
-            if hosts:
+            # --- PHASE 1: Ports, Services, OS ---
+            logger.info(f"Phase 1: Running detailed discovery on {asset_ip}")
+            discovery_hosts = NmapAdapter.run_detailed_discovery_scan(asset_ip, ports=port_range)
+            
+            open_ports_list = []
+            
+            # Save Phase 1 results directly to DB without triggering COMPLETED status
+            db = SessionLocal()
+            try:
+                if discovery_hosts:
+                    for host_data in discovery_hosts:
+                        host_ip = host_data.get("ip", asset_ip)
+                        asset = db.query(AssetEntity).filter(AssetEntity.ip_address == host_ip).first()
+                        if asset:
+                            if host_data.get("os") and host_data["os"] != "Unknown":
+                                asset.operating_system = host_data["os"]
+                            if host_data.get("ports"):
+                                asset.ports = host_data["ports"]
+                                for p in host_data["ports"]:
+                                    port_num = p.split('/')[0]
+                                    open_ports_list.append(port_num)
+                            asset.last_scan_raw_output = json.dumps(host_data, indent=2)
+                    db.commit()
+            finally:
+                db.close()
+                
+            # If no open ports were found, there's no need to run vulnerability scripts
+            if not open_ports_list:
+                logger.info(f"No open ports found on {asset_ip}. Skipping Phase 2 vulnerability scripts.")
+                from src.vulnerabilities.application.services.tasks import update_scan_progress
+                update_scan_progress(scan_id, asset_ip, "COMPLETED")
+                return True
+                
+            open_ports_str = ",".join(set(open_ports_list))
+            
+            # --- PHASE 2: Vulnerability Scripts ---
+            logger.info(f"Phase 2: Running vulnerability scripts on open ports {open_ports_str} for {asset_ip}")
+            vuln_hosts = NmapAdapter.run_vulnerability_scan(asset_ip, ports=open_ports_str)
+            logger.info(f"Nmap vulnerability scan completed. Hosts found: {len(vuln_hosts)}")
+            
+            # Save Phase 2 results and mark COMPLETED
+            if vuln_hosts:
                 from src.vulnerabilities.application.services.tasks import parse_nmap_report
-                for host_data in hosts:
-                    # Queue task to parse report for each host and mark it as COMPLETED
+                for host_data in vuln_hosts:
                     parse_nmap_report.delay(host_data, host_data.get("ip", asset_ip), scan_id)
+            else:
+                from src.vulnerabilities.application.services.tasks import update_scan_progress
+                update_scan_progress(scan_id, asset_ip, "COMPLETED")
+                
             return True
         except Exception as e:
             logger.error(f"Nmap scan failed: {str(e)}")
