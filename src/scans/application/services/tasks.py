@@ -472,49 +472,56 @@ def run_vulnerability_scan(self, scan_id: str, asset_ip: str, asset_name: str, c
 
     if scan_engine == ScannerEngine.NUCLEI:
         try:
-            # Check if we have discovered ports for this asset
-            target_ports = None
+            from src.scans.adapters.outbound.nmap_adapter import NmapAdapter
+            import json
+            
+            # --- PHASE 1: Ports, Services, OS ---
+            logger.info(f"Phase 1: Running Nmap detailed discovery on {asset_ip} for Nuclei")
+            discovery_hosts = NmapAdapter.run_detailed_discovery_scan(asset_ip, ports=port_range)
+            
+            nuclei_targets = []
+            
+            # Save Phase 1 results directly to DB
             db = SessionLocal()
             try:
-                scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
-                if scan:
-                    asset = db.query(AssetEntity).filter(
-                        AssetEntity.ip_address == asset_ip, 
-                        AssetEntity.company_id == scan.company_id,
-                        AssetEntity.is_deleted == False
-                    ).first()
-                    
-                    if not asset:
-                        logger.warning(f"No active AssetEntity found for IP {asset_ip} and company {scan.company_id}. Trying fallback without company_id...")
-                        asset = db.query(AssetEntity).filter(
-                            AssetEntity.ip_address == asset_ip,
-                            AssetEntity.is_deleted == False
-                        ).first()
-                        
-                    if not asset:
-                        logger.warning(f"Fallback failed: No active AssetEntity found for IP {asset_ip}")
-                    elif not asset.ports:
-                        logger.warning(f"AssetEntity for IP {asset_ip} found, but ports field is empty or None")
-                    else:
-                        import re
-                        port_list = []
-                        for p_str in asset.ports.split(','):
-                            match = re.search(r'\d+', p_str)
-                            if match:
-                                port_list.append(match.group(0))
-                        if port_list:
-                            target_ports = ",".join(port_list)
-                        else:
-                            logger.warning(f"Failed to parse any ports from asset.ports: {asset.ports}")
+                if discovery_hosts:
+                    for host_data in discovery_hosts:
+                        host_ip = host_data.get("ip", asset_ip)
+                        asset = db.query(AssetEntity).filter(AssetEntity.ip_address == host_ip).first()
+                        if asset:
+                            if host_data.get("os") and host_data["os"] != "Unknown":
+                                asset.operating_system = host_data["os"]
+                            if host_data.get("ports"):
+                                asset.ports = host_data["ports"]
+                                # Map ports to Nuclei URIs
+                                for p in host_data["ports"]:
+                                    port_id = p.split('/')[0]
+                                    service_name = "unknown"
+                                    if "(" in p and ")" in p:
+                                        service_name = p.split('(')[1].split(')')[0].lower()
+                                    
+                                    if "http" in service_name and "ssl" not in service_name and "https" not in service_name:
+                                        nuclei_targets.append(f"http://{host_ip}:{port_id}")
+                                    elif "https" in service_name or "ssl" in service_name:
+                                        nuclei_targets.append(f"https://{host_ip}:{port_id}")
+                                    else:
+                                        nuclei_targets.append(f"{host_ip}:{port_id}")
+                                        
+                            asset.last_scan_raw_output = json.dumps(host_data, indent=2)
+                    db.commit()
             finally:
                 db.close()
                 
-            if port_range:
-                # If policy port range is specified (e.g. 1-65535 or custom), use it
-                target_ports = port_range.split("!")[0].rstrip(",")
-                        
+            if not nuclei_targets:
+                logger.info(f"No open ports found on {asset_ip}. Skipping Phase 2 Nuclei scripts.")
+                from src.vulnerabilities.application.services.tasks import update_scan_progress
+                update_scan_progress(scan_id, asset_ip, "COMPLETED")
+                return True
+                
+            # --- PHASE 2: Nuclei Vulnerability Scan ---
+            logger.info(f"Phase 2: Running Nuclei on mapped targets: {nuclei_targets}")
             from src.scans.adapters.outbound.nuclei_adapter import NucleiAdapter
-            vulns = NucleiAdapter.run_scan(target=asset_ip, ports=target_ports)
+            vulns = NucleiAdapter.run_scan(target=nuclei_targets, ports=None)
             
             # Nuclei runs synchronously, pass to parser.
             from src.vulnerabilities.application.services.tasks import parse_nuclei_report

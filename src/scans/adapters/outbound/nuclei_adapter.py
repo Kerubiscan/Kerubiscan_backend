@@ -11,15 +11,16 @@ class NucleiAdapter:
     def run_scan(target: str | List[str], ports: str = None) -> List[Dict]:
         """Runs a Nuclei vulnerability scan and returns structured JSON data."""
         targets = [target] if isinstance(target, str) else target
-        target_name = targets[0].replace('.', '_').replace(':', '_')
+        target_name = targets[0].replace('.', '_').replace(':', '_').replace('/', '_')
         logger.info(f"Running Nuclei scan on {targets} with ports {ports}")
         
         output_file = f"/tmp/nuclei_{target_name}.json"
         
         try:
-            # -duc: Disable update check to prevent interactive prompts hanging the worker
-            # -as: Enable Automatic Scan mode (fingerprints ports and runs network/web templates correctly)
-            cmd = ["/usr/local/bin/nuclei", "-duc", "-je", output_file, "-nc", "-as"]
+            # -duc: Disable update check
+            # We removed -as (Automatic Scan) so Nuclei runs ALL default templates 
+            # (cves, vulnerabilities, exposures, misconfiguration, etc.) as requested.
+            cmd = ["/usr/local/bin/nuclei", "-duc", "-je", output_file, "-nc"]
             
             # Format targets with ports if ports are provided
             # IMPORTANT: In Nuclei, '-p' is the short flag for '--proxy'!
