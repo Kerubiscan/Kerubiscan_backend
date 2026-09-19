@@ -211,8 +211,12 @@ async def generate_asset_summary(
     
     vuln_data = [{"title": v.title, "cvss": v.cvss_base_score, "severity": getattr(v.severity, "name", str(v.severity))} for v in vulns]
     
-    summary = await generate_executive_summary(vuln_data, language=req.language, extra_instructions=req.instructions)
-    return {"executive_summary": summary}
+    from src.scans.application.services.tasks import generate_ai_summary_task
+    
+    # Enqueue task
+    task = generate_ai_summary_task.delay(vuln_data, req.language, req.instructions)
+    
+    return {"task_id": task.id, "status": "processing"}
 
 @router.post("/{asset_id}/report/html")
 @limiter.limit("5/minute")

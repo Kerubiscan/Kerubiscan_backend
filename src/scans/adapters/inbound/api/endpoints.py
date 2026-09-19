@@ -298,7 +298,7 @@ class SummaryGenerateRequest(BaseModel):
 class SummaryUpdateRequest(BaseModel):
     summary: str
 
-@router.post("/{scan_id}/generate-summary", response_model=ScanResponse)
+@router.post("/{scan_id}/generate-summary")
 async def generate_scan_summary(scan_id: str, req: SummaryGenerateRequest, db: Session = Depends(get_db)):
     scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
     if not scan:
@@ -313,32 +313,14 @@ async def generate_scan_summary(scan_id: str, req: SummaryGenerateRequest, db: S
         )
     ).order_by(VulnerabilityEntity.contextual_risk_score.desc()).limit(5).all()
     
-    vuln_data = [{"title": v.title, "cvss": v.cvss_base_score, "severity": v.severity.name} for v in vulns]
+    vuln_data = [{"title": v.title, "cvss": v.cvss_base_score, "severity": getattr(v.severity, "name", str(v.severity))} for v in vulns]
     
-    from src.ai.application.services.nlp import generate_executive_summary
+    from src.scans.application.services.tasks import generate_ai_summary_task
     
-    summary = await generate_executive_summary(vuln_data, language=req.language, extra_instructions=req.instructions)
+    # Enqueue task
+    task = generate_ai_summary_task.delay(vuln_data, req.language, req.instructions)
     
-    scan.executive_summary = summary
-    db.commit()
-    db.refresh(scan)
-    
-    return ScanResponse(
-        id=scan.id,
-        company_id=scan.company_id,
-        name=scan.name,
-        target=scan.target,
-        network_zone=scan.network_zone,
-        scan_type=scan.scan_type.name,
-        scanner_engine=scan.scanner_engine.name,
-        status=scan.status.name,
-        progress=scan.progress,
-        target_states=scan.target_states,
-        executive_summary=scan.executive_summary,
-        recurrence_rule=scan.recurrence_rule,
-        next_run_at=scan.next_run_at.isoformat() if scan.next_run_at else None,
-        created_at=scan.created_at.isoformat() if scan.created_at else None
-    )
+    return {"task_id": task.id, "status": "processing"}
 
 @router.put("/{scan_id}/summary", response_model=ScanResponse)
 def update_scan_summary(scan_id: str, req: SummaryUpdateRequest, db: Session = Depends(get_db)):
@@ -426,3 +408,16 @@ def download_scan_report(
         media_type="text/html", 
         headers={"Content-Disposition": f"attachment; filename=rapport_{scan.target.split(',')[0]}.html"}
     )
+
+@router.get("/tasks/{task_id}")
+def get_task_status(task_id: str):
+    from src.core.celery_app import celery_app
+    from celery.result import AsyncResult
+    task = AsyncResult(task_id, app=celery_app)
+    
+    response = {
+        "task_id": task_id,
+        "status": task.status,
+        "result": task.result if task.ready() else None
+    }
+    return response
