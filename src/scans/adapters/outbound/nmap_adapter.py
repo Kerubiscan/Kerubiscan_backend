@@ -89,6 +89,8 @@ class NmapAdapter:
                     cmd.extend(["--exclude-ports", exclude_p])
                 else:
                     cmd.extend(["-p", ports])
+            else:
+                cmd.extend(["-p-"])
             
             cmd.extend(["--script", "vuln,vulners,vulscan/", "-oX", "-", target])
             
