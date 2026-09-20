@@ -429,10 +429,12 @@ def download_scan_report(
             scan_name=scan.name
         )
     
+    import re
+    safe_filename = re.sub(r'[^\w\-]', '_', scan.name)
     return StreamingResponse(
         io.BytesIO(html_bytes), 
         media_type="text/html", 
-        headers={"Content-Disposition": f"attachment; filename=rapport_{scan.name.replace(' ', '_')}.html"}
+        headers={"Content-Disposition": f'attachment; filename="rapport_{safe_filename}.html"'}
     )
 
 @router.get("/tasks/{task_id}")
