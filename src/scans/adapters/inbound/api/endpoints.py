@@ -242,6 +242,24 @@ def delete_scan(scan_id: str, db: Session = Depends(get_db), current_user: dict 
     db.commit()
     return None
 
+@router.delete("", status_code=status.HTTP_204_NO_CONTENT)
+def delete_all_scans(db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)):
+    scans = db.query(ScanEntity).filter(ScanEntity.is_deleted == False).all()
+    for scan in scans:
+        scan.is_deleted = True
+    
+    audit = AuditLog(
+        user_id=current_user.get("id", "unknown"),
+        username=current_user.get("username", "system"),
+        action="DELETE_ALL",
+        resource_type="SCAN",
+        resource_id="ALL",
+        details={"count": len(scans)}
+    )
+    db.add(audit)
+    db.commit()
+    return None
+
 @router.put("/{scan_id}", response_model=ScanResponse)
 def update_scan(scan_id: str, req: ScanUpdateRequest, db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)):
     scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
