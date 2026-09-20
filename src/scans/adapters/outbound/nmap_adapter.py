@@ -64,7 +64,7 @@ class NmapAdapter:
         logger.info(f"Running Nmap detailed discovery scan on {target} with ports option: {ports}")
         
         try:
-            cmd = ["nmap", "-sT", "-sV", "-O", "-Pn"]
+            cmd = ["nmap", "-sS", "-sV", "-O", "-Pn"]
             
             if ports:
                 if "!" in ports:
@@ -97,7 +97,7 @@ class NmapAdapter:
                 logger.warning(f"OS detection (-O) failed due to privileges. Falling back to -sV only for {target}")
                 try:
                     result = subprocess.run(
-                        ["nmap", "-sT", "-sV", "-Pn", "-p-", "-T4", "--script", "nbstat,smb-os-discovery", "-oX", "-"] + target.split(','), 
+                        ["nmap", "-sS", "-sV", "-Pn", "-p-", "-T4", "--script", "nbstat,smb-os-discovery", "-oX", "-"] + target.split(','), 
                         capture_output=True, text=True, check=True, timeout=86400
                     )
                     logger.info(f"Nmap detailed scan (fallback) raw output for {target}:\n{result.stdout}")
@@ -118,7 +118,7 @@ class NmapAdapter:
         logger.info(f"Running Nmap deep scan on {target} with ports option: {ports}")
         
         try:
-            cmd = ["nmap", "-sT", "-sV", "-Pn"]
+            cmd = ["nmap", "-sS", "-sV", "-Pn"]
             
             if ports:
                 # Handle exclusion ranges if specified in format "1-65535,!7000" or "--exclude-ports 7000"
