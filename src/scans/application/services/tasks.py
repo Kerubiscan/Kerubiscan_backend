@@ -461,18 +461,21 @@ def run_vulnerability_scan(self, scan_id: str, asset_ip: str, asset_name: str, c
                 if discovery_hosts:
                     for host_data in discovery_hosts:
                         host_ip = host_data.get("ip", asset_ip)
+                        
+                        if host_data.get("ports"):
+                            port_list = host_data["ports"]
+                            if isinstance(port_list, str):
+                                port_list = [p.strip() for p in port_list.split(",") if p.strip()]
+                            for p in port_list:
+                                port_num = p.split('/')[0]
+                                open_ports_list.append(port_num)
+                                
                         asset = db.query(AssetEntity).filter(AssetEntity.ip_address == host_ip).first()
                         if asset:
                             if host_data.get("os") and host_data["os"] != "Unknown":
                                 asset.operating_system = host_data["os"]
                             if host_data.get("ports"):
                                 asset.ports = host_data["ports"]
-                                port_list = host_data["ports"]
-                                if isinstance(port_list, str):
-                                    port_list = [p.strip() for p in port_list.split(",") if p.strip()]
-                                for p in port_list:
-                                    port_num = p.split('/')[0]
-                                    open_ports_list.append(port_num)
                             if host_data.get("services"):
                                 asset.services = host_data["services"]
                             asset.last_scan_raw_output = json.dumps(host_data, indent=2)
@@ -535,6 +538,25 @@ def run_vulnerability_scan(self, scan_id: str, asset_ip: str, asset_name: str, c
                 if discovery_hosts:
                     for host_data in discovery_hosts:
                         host_ip = host_data.get("ip", asset_ip)
+                        
+                        if host_data.get("ports"):
+                            port_list = host_data["ports"]
+                            if isinstance(port_list, str):
+                                port_list = [p.strip() for p in port_list.split(",") if p.strip()]
+                            # Map ports to Nuclei URIs
+                            for p in port_list:
+                                port_id = p.split('/')[0]
+                                service_name = "unknown"
+                                if "(" in p and ")" in p:
+                                    service_name = p.split('(')[1].split(')')[0].lower()
+                                
+                                if "http" in service_name and "ssl" not in service_name and "https" not in service_name:
+                                    nuclei_targets.append(f"http://{host_ip}:{port_id}")
+                                elif "https" in service_name or "ssl" in service_name:
+                                    nuclei_targets.append(f"https://{host_ip}:{port_id}")
+                                else:
+                                    nuclei_targets.append(f"{host_ip}:{port_id}")
+                                    
                         asset = db.query(AssetEntity).filter(AssetEntity.ip_address == host_ip).first()
                         if asset:
                             if host_data.get("os") and host_data["os"] != "Unknown":
@@ -543,25 +565,6 @@ def run_vulnerability_scan(self, scan_id: str, asset_ip: str, asset_name: str, c
                                 asset.ports = host_data["ports"]
                             if host_data.get("services"):
                                 asset.services = host_data["services"]
-                                
-                            if host_data.get("ports"):
-                                port_list = host_data["ports"]
-                                if isinstance(port_list, str):
-                                    port_list = [p.strip() for p in port_list.split(",") if p.strip()]
-                                # Map ports to Nuclei URIs
-                                for p in port_list:
-                                    port_id = p.split('/')[0]
-                                    service_name = "unknown"
-                                    if "(" in p and ")" in p:
-                                        service_name = p.split('(')[1].split(')')[0].lower()
-                                    
-                                    if "http" in service_name and "ssl" not in service_name and "https" not in service_name:
-                                        nuclei_targets.append(f"http://{host_ip}:{port_id}")
-                                    elif "https" in service_name or "ssl" in service_name:
-                                        nuclei_targets.append(f"https://{host_ip}:{port_id}")
-                                    else:
-                                        nuclei_targets.append(f"{host_ip}:{port_id}")
-                                        
                             asset.last_scan_raw_output = json.dumps(host_data, indent=2)
                     db.commit()
             finally:
