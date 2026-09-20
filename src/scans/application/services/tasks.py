@@ -483,6 +483,16 @@ def run_vulnerability_scan(self, scan_id: str, asset_ip: str, asset_name: str, c
                                 asset.ports = host_data["ports"]
                             if host_data.get("services"):
                                 asset.services = host_data["services"]
+                            if host_data.get("mac_address"):
+                                asset.mac_address = host_data["mac_address"]
+                            
+                            # Update IP address if the original asset was a domain name and we resolved an IP
+                            if host_ip != asset_ip and host_data.get("ip"):
+                                # Ensure we don't overwrite the original name if it's the domain
+                                if asset.name == asset.ip_address:
+                                    asset.name = asset_ip
+                                asset.ip_address = host_ip
+
                             asset.last_scan_raw_output = json.dumps(host_data, indent=2)
                     db.commit()
             finally:
@@ -575,6 +585,16 @@ def run_vulnerability_scan(self, scan_id: str, asset_ip: str, asset_name: str, c
                                 asset.ports = host_data["ports"]
                             if host_data.get("services"):
                                 asset.services = host_data["services"]
+                            if host_data.get("mac_address"):
+                                asset.mac_address = host_data["mac_address"]
+                                
+                            # Update IP address if the original asset was a domain name and we resolved an IP
+                            if host_ip != asset_ip and host_data.get("ip"):
+                                # Ensure we don't overwrite the original name if it's the domain
+                                if asset.name == asset.ip_address:
+                                    asset.name = asset_ip
+                                asset.ip_address = host_ip
+                                
                             asset.last_scan_raw_output = json.dumps(host_data, indent=2)
                     db.commit()
             finally:
@@ -646,6 +666,66 @@ def run_vulnerability_scan(self, scan_id: str, asset_ip: str, asset_name: str, c
     if scan_engine == ScannerEngine.OWASP_ZAP:
         try:
             from src.scans.adapters.outbound.zap_adapter import ZAPAdapter
+            from src.scans.adapters.outbound.nmap_adapter import NmapAdapter
+            import json
+            
+            # --- PHASE 1: Ports, Services, OS, MAC ---
+            logger.info(f"Phase 1: Running Nmap detailed discovery on {asset_ip} for ZAP")
+            discovery_hosts = NmapAdapter.run_detailed_discovery_scan(asset_ip, ports=port_range, credentials=vault_secret)
+            
+            open_ports_list = []
+            
+            # Save Phase 1 results directly to DB
+            db = SessionLocal()
+            try:
+                if discovery_hosts:
+                    for host_data in discovery_hosts:
+                        host_ip = host_data.get("ip", asset_ip)
+                        
+                        if host_data.get("ports"):
+                            port_list = host_data["ports"]
+                            if isinstance(port_list, str):
+                                port_list = [p.strip() for p in port_list.split(",") if p.strip()]
+                            for p in port_list:
+                                port_num = p.split('/')[0]
+                                open_ports_list.append(port_num)
+                                
+                        asset = db.query(AssetEntity).filter(AssetEntity.ip_address == asset_ip).first()
+                        if not asset:
+                            asset = db.query(AssetEntity).filter(AssetEntity.name == asset_ip).first()
+                        if not asset:
+                            asset = db.query(AssetEntity).filter(AssetEntity.ip_address == host_ip).first()
+                            
+                        if asset:
+                            if host_data.get("os") and host_data["os"] != "Unknown":
+                                asset.operating_system = host_data["os"]
+                            if host_data.get("ports"):
+                                asset.ports = host_data["ports"]
+                            if host_data.get("services"):
+                                asset.services = host_data["services"]
+                            if host_data.get("mac_address"):
+                                asset.mac_address = host_data["mac_address"]
+                                
+                            # Update IP address if the original asset was a domain name and we resolved an IP
+                            if host_ip != asset_ip and host_data.get("ip"):
+                                # Ensure we don't overwrite the original name if it's the domain
+                                if asset.name == asset.ip_address:
+                                    asset.name = asset_ip
+                                asset.ip_address = host_ip
+                                
+                            asset.last_scan_raw_output = json.dumps(host_data, indent=2)
+                    db.commit()
+            finally:
+                db.close()
+                
+            if not open_ports_list:
+                logger.info(f"No open ports found on {asset_ip}. Skipping Phase 2 ZAP scan.")
+                from src.vulnerabilities.application.services.tasks import update_scan_progress
+                update_scan_progress(scan_id, asset_ip, "COMPLETED")
+                return True
+                
+            # --- PHASE 2: OWASP ZAP Vulnerability Scan ---
+            logger.info(f"Phase 2: Running OWASP ZAP on {asset_ip}")
             vulns = ZAPAdapter.run_scan(asset_ip, credentials=vault_secret)
             from src.vulnerabilities.application.services.tasks import parse_zap_report
             parse_zap_report.delay(vulns, asset_ip, scan_id)
