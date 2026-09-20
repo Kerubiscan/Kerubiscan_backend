@@ -47,6 +47,7 @@ class VulnerabilityRepository:
                 company_id=asset.company_id if asset else None,
                 network_zone=asset.network_zone if asset else None,
                 last_scan_raw_output=asset.last_scan_raw_output if asset else None,
+                ai_analysis=vuln.ai_analysis
             )
             results.append(resp)
         return results, total
@@ -79,4 +80,12 @@ class VulnerabilityRepository:
 
     def get_by_id(self, vuln_id: str) -> Optional[VulnerabilityEntity]:
         return self.db.query(VulnerabilityEntity).filter(VulnerabilityEntity.id == vuln_id).first()
+
+    def update_ai_analysis(self, vuln_id: str, ai_analysis: dict) -> Optional[VulnerabilityEntity]:
+        vuln = self.db.query(VulnerabilityEntity).filter(VulnerabilityEntity.id == vuln_id).first()
+        if vuln:
+            vuln.ai_analysis = ai_analysis
+            self.db.commit()
+            self.db.refresh(vuln)
+        return vuln
 

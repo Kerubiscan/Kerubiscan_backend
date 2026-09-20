@@ -30,9 +30,14 @@ def generate_vulnerability_html(
     for asset in assets:
         vulns = all_vulnerabilities.get(str(asset.id), [])
         
+        name_str = asset.name or asset.ip_address
+        if "Auto-added Host" in name_str:
+            # Clean up the name e.g., "Auto-added Host (192.168.100.75)" -> "192.168.100.75"
+            name_str = name_str.replace("Auto-added Host", "").replace("(", "").replace(")", "").strip()
+
         asset_data = {
             "id": str(asset.id),
-            "name": asset.name or asset.ip_address,
+            "name": name_str,
             "ip_address": asset.ip_address or asset.name,
             "operating_system": asset.operating_system or "Linux / Unix (détecté via empreinte)",
             "ports": asset.ports or "80/tcp (http), 443/tcp (https), 22/tcp (ssh)",
@@ -85,6 +90,9 @@ def generate_vulnerability_html(
             cve = v.cve_id or "N/A"
             ref_url = f"https://nvd.nist.gov/vuln/detail/{cve}" if cve != "N/A" and "CVE" in cve.upper() else "https://cve.mitre.org"
 
+            # Parse AI Analysis if available
+            ai_data = getattr(v, "ai_analysis", None)
+
             vuln_obj = {
                 "id": str(v.id),
                 "asset_name": asset_data["ip_address"],
@@ -99,7 +107,8 @@ def generate_vulnerability_html(
                 "remediation": getattr(v, "remediation", "Appliquer les derniers patchs de sécurité éditeur et restreindre l'accès réseau.") or "Appliquer les patchs de sécurité.",
                 "qod": qod,
                 "impact_cia": cia_impact,
-                "proof": f"Plugin output [{v.source_engine or 'OPENVAS'}]: Match confirmé sur port d'écoute actif."
+                "proof": f"Plugin output [{v.source_engine or 'OPENVAS'}]: Match confirmé sur port d'écoute actif.",
+                "ai_analysis": ai_data
             }
             
             asset_data["vulnerabilities"].append(vuln_obj)
@@ -156,6 +165,81 @@ def generate_vulnerability_html(
 
     env = Environment(loader=FileSystemLoader(templates_dir))
     template = env.get_template("keribusoc_report.html")
+    
+    rendered_html = template.render(**template_data)
+    return rendered_html.encode('utf-8')
+
+def generate_discovery_html(
+    assets: List[AssetEntity], 
+    scanner_company_name: str = "KERIBU SOC Security",
+    target_company_name: str = "Client Company",
+    scan_name: str = "Discovery Scan Report",
+    scan_profile: str = "Host Discovery",
+    classification: str = "CONFIDENTIEL - USAGE INTERNE"
+) -> bytes:
+    template_assets = []
+
+    for asset in assets:
+        name_str = asset.name or asset.ip_address
+        if "Auto-added Host" in name_str:
+            name_str = name_str.replace("Auto-added Host", "").replace("(", "").replace(")", "").strip()
+
+        # Parse history safely
+        history_list = []
+        import json
+        if asset.history:
+            try:
+                if isinstance(asset.history, list):
+                    history_list = asset.history
+                else:
+                    history_list = json.loads(asset.history)
+            except Exception:
+                pass
+
+        asset_data = {
+            "id": str(asset.id),
+            "name": name_str,
+            "ip_address": asset.ip_address or asset.name,
+            "mac_address": asset.mac_address or "N/A",
+            "operating_system": asset.operating_system or "Unknown",
+            "network_zone": asset.network_zone or "N/A",
+            "ports": asset.ports or "None detected",
+            "running_services": asset.running_services or "None detected",
+            "history": history_list
+        }
+        template_assets.append(asset_data)
+        
+    template_data = {
+        "scan_name": scan_name,
+        "scan_profile": scan_profile,
+        "classification": classification,
+        "report_date": datetime.now().strftime("%d/%m/%Y  %H:%M:%S"),
+        "scanner_company_name": scanner_company_name,
+        "target_company_name": target_company_name,
+        "assets": template_assets,
+        "total_hosts": len(template_assets)
+    }
+    
+    # Load KerubiSOC logo base64
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    templates_dir = os.path.join(current_dir, "..", "..", "templates")
+    
+    logo_base64 = ""
+    logo_b64_path = os.path.join(templates_dir, "logo_b64.txt")
+    if os.path.exists(logo_b64_path):
+        with open(logo_b64_path, "r", encoding="utf-8") as f:
+            logo_base64 = f.read().strip()
+    else:
+        logo_png_path = os.path.join(templates_dir, "keribusoc_logo.png")
+        if os.path.exists(logo_png_path):
+            import base64
+            with open(logo_png_path, "rb") as f:
+                logo_base64 = base64.b64encode(f.read()).decode("utf-8")
+
+    template_data["logo_base64"] = logo_base64
+
+    env = Environment(loader=FileSystemLoader(templates_dir))
+    template = env.get_template("keribusoc_discovery_report.html")
     
     rendered_html = template.render(**template_data)
     return rendered_html.encode('utf-8')

@@ -185,8 +185,9 @@ class NmapAdapter:
                 os_match = host.find("os/osmatch")
                 os_name = os_match.get("name") if os_match is not None else "Unknown"
                 
-                # Ports
+                # Ports and Services
                 open_ports = []
+                running_services = []
                 for port in host.xpath("ports/port"):
                     state_elem = port.find("state")
                     if state_elem is not None and state_elem.get("state") == "open":
@@ -195,6 +196,22 @@ class NmapAdapter:
                         service = port.find("service")
                         service_name = service.get("name") if service is not None else "unknown"
                         open_ports.append(f"{port_id}/{protocol} ({service_name})")
+                        
+                        if service is not None:
+                            product = service.get("product")
+                            version = service.get("version")
+                            extrainfo = service.get("extrainfo")
+                            
+                            svc_str = service_name
+                            if product:
+                                svc_str += f": {product}"
+                            if version:
+                                svc_str += f" {version}"
+                            if extrainfo:
+                                svc_str += f" ({extrainfo})"
+                            
+                            if product or version or extrainfo:
+                                running_services.append(f"Port {port_id}/{protocol} - {svc_str}")
                 
                 # Nmap NSE Vulnerabilities (if run with --script vuln)
                 vulns = []
@@ -234,6 +251,7 @@ class NmapAdapter:
                     "mac_address": mac_address,
                     "os": os_name,
                     "ports": ", ".join(open_ports) if open_ports else None,
+                    "services": "\n".join(running_services) if running_services else None,
                     "vulns": vulns
                 })
                 

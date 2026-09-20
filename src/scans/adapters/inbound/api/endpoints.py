@@ -410,21 +410,29 @@ def download_scan_report(
                     deduped.append(v)
             all_vulns[str(a.id)] = deduped
     
-    from src.reporting.application.services.html_generator import generate_vulnerability_html
+    from src.reporting.application.services.html_generator import generate_vulnerability_html, generate_discovery_html
     
-    html_bytes = generate_vulnerability_html(
-        assets=assets,
-        all_vulnerabilities=all_vulns,
-        executive_summary=scan.executive_summary,
-        scanner_company_name=scanner_company,
-        target_company_name=target_company,
-        scan_name=scan.name
-    )
+    if scan.scan_type and scan.scan_type.lower() == "discovery":
+        html_bytes = generate_discovery_html(
+            assets=assets,
+            scanner_company_name=scanner_company,
+            target_company_name=target_company,
+            scan_name=scan.name
+        )
+    else:
+        html_bytes = generate_vulnerability_html(
+            assets=assets,
+            all_vulnerabilities=all_vulns,
+            executive_summary=scan.executive_summary,
+            scanner_company_name=scanner_company,
+            target_company_name=target_company,
+            scan_name=scan.name
+        )
     
     return StreamingResponse(
         io.BytesIO(html_bytes), 
         media_type="text/html", 
-        headers={"Content-Disposition": f"attachment; filename=rapport_{scan.target.split(',')[0]}.html"}
+        headers={"Content-Disposition": f"attachment; filename=rapport_{scan.name.replace(' ', '_')}.html"}
     )
 
 @router.get("/tasks/{task_id}")

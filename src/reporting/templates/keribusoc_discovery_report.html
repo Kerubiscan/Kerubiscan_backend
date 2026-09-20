@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8"></meta>
+    <title>{{ scan_name }}</title>
+    <style type="text/css" media="all">
+        @import url("https://fonts.googleapis.com/css?family=Open+Sans:300,400,600,700,800");
+        html, body, div, span, h1, h2, h3, h4, p, a, strong, b, i, table, tbody, tr, th, td, header {
+            margin: 0; padding: 0; border: 0; font-size: 100%; font: inherit; vertical-align: baseline;
+        }
+        html, body { font-family: 'Open Sans', 'Segoe UI', helvetica, arial, sans-serif; width: 100%; color: #17231d; font-size: 13px; background: #eef3f0; }
+        body:before { content: ""; display: block; height: 5px; background: linear-gradient(90deg, #0D1F16, #00963C, #BEF000, #00963C, #0D1F16); position: fixed; top: 0; left: 0; right: 0; z-index: 9999; }
+        #report { margin: 20px auto; width: 1024px; background: #fff; box-shadow: 0 8px 35px rgba(13,31,22,.13); border-radius: 0 0 10px 10px; padding: 0 28px 28px; box-sizing: border-box; }
+        header { border-bottom: 1px solid #dce7e1; padding: 24px 0 18px; }
+        header:after { content: "KERUBISCAN  —  HOST DISCOVERY ASSESSMENT"; display: block; clear: both; margin-top: 10px; font-size: 10px; letter-spacing: 1.8px; font-weight: 700; color: #00963C; }
+        h1, h2, h3, h4 { color: #0D1F16; }
+        h3 { font-size: 23px; font-weight: 600; line-height: 1.35; border-left: 4px solid #00963C; padding-left: 14px; margin: 25px 0 15px 0; }
+        h4 { font-size: 12px; color: #66756d; letter-spacing: .4px; border-bottom: 1px solid #dce7e1; padding-bottom: 5px; margin-bottom: 15px; }
+        table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
+        th, td { border: 1px solid #dce7e1; padding: 12px; text-align: left; }
+        th { background: #f8fafc; font-weight: 600; color: #334155; }
+        tr:hover { background: #f1f5f9; }
+        .details-box { background: #fafafa; border: 1px solid #e2e8f0; border-left: 3px solid #00963C; padding: 12px 16px; margin: 8px 0 12px 0; font-size: 12px; line-height: 1.6; }
+        .details-box strong { color: #1e293b; display: inline-block; width: 150px; }
+    </style>
+</head>
+<body>
+    <div id="report">
+        <header>
+            <div style="float: left;">
+                <h1>
+                    {% if logo_base64 %}
+                    <img src="data:image/png;base64,{{ logo_base64 }}" height="50" border="0" alt="KERIBU SOC" style="display: block;" />
+                    {% else %}
+                    <span style="font-size: 24px; font-weight: 800; color: #00963C; letter-spacing: 2px;">KERIBU<span style="color: #0D1F16;">SOC</span></span>
+                    {% endif %}
+                </h1>
+            </div>
+            <div style="float: right; text-align: right; margin-top: 10px;">
+                <h4 style="border: none; padding: 0; margin: 0; color: #00963C; font-weight: 700; letter-spacing: 1px; font-size: 16px;">DISCOVERY REPORT</h4>
+                <div style="font-size: 11px; color: #64748b; margin-top: 4px;">{{ report_date }}</div>
+            </div>
+            <div style="clear:both;"></div>
+        </header>
+
+        <div style="margin-top: 30px;">
+            <h3>Scan Meta Information</h3>
+            <div class="details-box">
+                <div><strong>Scan Name:</strong> {{ scan_name }}</div>
+                <div><strong>Scan Profile:</strong> {{ scan_profile }}</div>
+                <div><strong>Target Company:</strong> {{ target_company_name }}</div>
+                <div><strong>Scanner Provider:</strong> {{ scanner_company_name }}</div>
+                <div><strong>Total Hosts Discovered:</strong> {{ total_hosts }}</div>
+            </div>
+        </div>
+
+        <div style="margin-top: 30px;">
+            <h3>Discovered Hosts</h3>
+            
+            {% if assets %}
+                {% for asset in assets %}
+                <div style="margin-bottom: 25px; border: 1px solid #dce7e1; border-radius: 6px; overflow: hidden;">
+                    <div style="background: #0D1F16; color: #fff; padding: 10px 15px; font-weight: 600;">
+                        Host: {{ asset.name }} ({{ asset.ip_address }})
+                    </div>
+                    <div style="padding: 15px;">
+                        <table style="margin-bottom: 0;">
+                            <tbody>
+                                <tr>
+                                    <td style="width: 25%; font-weight: 600; background: #f8fafc;">IP Address</td>
+                                    <td>{{ asset.ip_address }}</td>
+                                </tr>
+                                <tr>
+                                    <td style="font-weight: 600; background: #f8fafc;">MAC Address</td>
+                                    <td>{{ asset.mac_address }}</td>
+                                </tr>
+                                <tr>
+                                    <td style="font-weight: 600; background: #f8fafc;">Operating System</td>
+                                    <td>{{ asset.operating_system }}</td>
+                                </tr>
+                                <tr>
+                                    <td style="font-weight: 600; background: #f8fafc;">Network Zone</td>
+                                    <td>{{ asset.network_zone }}</td>
+                                </tr>
+                                <tr>
+                                    <td style="font-weight: 600; background: #f8fafc;">Open Ports</td>
+                                    <td>{{ asset.ports }}</td>
+                                </tr>
+                                <tr>
+                                    <td style="font-weight: 600; background: #f8fafc;">Running Services</td>
+                                    <td>{{ asset.running_services }}</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+                {% endfor %}
+            {% else %}
+                <div style="padding: 20px; text-align: center; color: #64748b; border: 1px dashed #cbd5e1; border-radius: 4px;">
+                    No hosts were discovered during this scan.
+                </div>
+            {% endif %}
+        </div>
+        
+    </div>
+    
+    <div style="width: 1024px; box-sizing: border-box; text-align: center; font-size: 12px; color: #999; padding: 10px 0 20px 0; margin: 0 auto;">
+        © 2026 KERUBISCAN™ | KerubiSOC Security. All rights reserved.
+    </div>
+</body>
+</html>

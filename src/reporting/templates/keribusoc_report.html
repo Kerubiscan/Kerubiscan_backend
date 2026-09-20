@@ -271,10 +271,39 @@ table{margin:0!important}
                                             <strong>Description:</strong> 
                                             <span style="color: #475569;">{{ v.description }}</span>
                                         </div>
+                                        
+                                        {% if v.ai_analysis %}
+                                        <div style="margin-bottom: 12px; padding: 10px; background: #f3f4f6; border-left: 3px solid #8b5cf6; border-radius: 4px;">
+                                            <h4 style="margin-bottom: 6px; color: #6d28d9; font-weight: 700; border-bottom: none !important;">✨ AI Contextual Risk Assessment</h4>
+                                            
+                                            <div style="margin-bottom: 6px; font-size: 11px;">
+                                                <strong style="color: #4c1d95;">Severity Assessment:</strong> {{ v.ai_analysis.severity_assessment }}
+                                            </div>
+                                            
+                                            <div style="margin-bottom: 6px; font-size: 11px;">
+                                                <strong style="color: #4c1d95;">Exploitability:</strong> {{ v.ai_analysis.exploitability }}
+                                            </div>
+                                            
+                                            <div style="margin-bottom: 6px; font-size: 11px;">
+                                                <strong style="color: #4c1d95;">Business Impact:</strong> {{ v.ai_analysis.business_impact }}
+                                            </div>
+                                            
+                                            <div style="margin-top: 8px;">
+                                                <strong style="color: #4c1d95; font-size: 11px;">Recommended Remediation Steps:</strong>
+                                                <ul style="margin-top: 4px; padding-left: 16px; font-size: 11px; color: #334155; list-style-type: disc;">
+                                                    {% for step in v.ai_analysis.remediation_steps %}
+                                                    <li>{{ step }}</li>
+                                                    {% endfor %}
+                                                </ul>
+                                            </div>
+                                        </div>
+                                        {% else %}
                                         <div style="margin-bottom: 8px;">
                                             <strong style="color: #00963C;">Solution / Remediation:</strong> 
                                             <span style="color: #00963C; font-weight: 600;">{{ v.remediation }}</span>
                                         </div>
+                                        {% endif %}
+
                                         {% if v.cvss_vector %}
                                         <div style="margin-bottom: 4px; font-size: 11px; color: #64748b;">
                                             <strong>CVSS Vector:</strong> <code>{{ v.cvss_vector }}</code>

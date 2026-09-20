@@ -424,9 +424,14 @@ def run_vulnerability_scan(self, scan_id: str, asset_ip: str, asset_name: str, c
                                 asset.operating_system = host_data["os"]
                             if host_data.get("ports"):
                                 asset.ports = host_data["ports"]
-                                for p in host_data["ports"]:
+                                port_list = host_data["ports"]
+                                if isinstance(port_list, str):
+                                    port_list = [p.strip() for p in port_list.split(",") if p.strip()]
+                                for p in port_list:
                                     port_num = p.split('/')[0]
                                     open_ports_list.append(port_num)
+                            if host_data.get("services"):
+                                asset.services = host_data["services"]
                             asset.last_scan_raw_output = json.dumps(host_data, indent=2)
                     db.commit()
             finally:
@@ -493,8 +498,15 @@ def run_vulnerability_scan(self, scan_id: str, asset_ip: str, asset_name: str, c
                                 asset.operating_system = host_data["os"]
                             if host_data.get("ports"):
                                 asset.ports = host_data["ports"]
+                            if host_data.get("services"):
+                                asset.services = host_data["services"]
+                                
+                            if host_data.get("ports"):
+                                port_list = host_data["ports"]
+                                if isinstance(port_list, str):
+                                    port_list = [p.strip() for p in port_list.split(",") if p.strip()]
                                 # Map ports to Nuclei URIs
-                                for p in host_data["ports"]:
+                                for p in port_list:
                                     port_id = p.split('/')[0]
                                     service_name = "unknown"
                                     if "(" in p and ")" in p:

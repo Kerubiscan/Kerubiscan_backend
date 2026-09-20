@@ -39,12 +39,16 @@ class VulnerabilityResponse(VulnerabilityBase):
     company_id: Optional[str] = None
     network_zone: Optional[str] = None
     last_scan_raw_output: Optional[str] = None
+    ai_analysis: Optional[dict] = None
 
     class Config:
         from_attributes = True
 
 class VulnStatusUpdate(BaseModel):
     status: VulnStatus
+
+class AIAnalysisUpdate(BaseModel):
+    ai_analysis: dict
 
 class VulnerabilityHistoryResponse(BaseModel):
     id: str

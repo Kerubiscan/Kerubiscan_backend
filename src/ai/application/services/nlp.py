@@ -13,8 +13,10 @@ AI_ENDPOINT = os.getenv("AI_ENDPOINT", "http://host.docker.internal:11434/api/ch
 
 def _get_gemini_model() -> str:
     if AI_MODEL and "gemini" in AI_MODEL.lower():
+        if "1.5-flash" in AI_MODEL.lower():
+            return "gemini-2.5-flash"
         return AI_MODEL
-    return "gemini-1.5-flash"
+    return "gemini-2.5-flash"
 
 def _get_ollama_model() -> str:
     if AI_MODEL and "gemini" not in AI_MODEL.lower() and "gpt" not in AI_MODEL.lower():
@@ -41,7 +43,7 @@ async def _call_ollama(client: httpx.AsyncClient, prompt: str) -> str:
             "messages": [{"role": "user", "content": prompt}],
             "stream": False
         },
-        timeout=60.0
+        timeout=5.0
     )
     response.raise_for_status()
     data = response.json()
@@ -138,17 +140,18 @@ async def generate_executive_summary(vuln_data: List[Dict], language: str = "Fre
             logger.error(f"AI generation failed: {str(err)}")
             return "Résumé exécutif généré automatiquement : Des vulnérabilités ont été détectées. Veuillez consulter la section détaillée par host pour appliquer les correctifs prioritaires."
 
-async def generate_vulnerability_remediation(vuln_name: str, vuln_desc: str, language: str = "French") -> str:
+async def generate_vulnerability_remediation(vuln_name: str, vuln_desc: str, language: str = "French") -> dict:
     lang_name = "Français" if language.lower() in ["french", "français", "fr"] else "English"
     prompt = (
         f"You are a Cybersecurity Expert at KERIBU SOC. Respond in {lang_name}.\n"
         f"Vulnerability Title: {vuln_name}\n"
         f"Technical Description: {vuln_desc}\n\n"
-        "Return a JSON object:\n"
+        "Return ONLY a strictly valid JSON object, without any markdown formatting like ```json or anything else. Use the following schema:\n"
         "{\n"
-        '  "executive_impact": "Executive summary of management impact",\n'
-        '  "cia_impact": "Impact on Confidentiality, Integrity, and Availability",\n'
-        '  "remediation_steps": "Step-by-step remediation instructions for system administrators"\n'
+        '  "severity_assessment": "Detailed reasoning behind why this vulnerability deserves its severity rating.",\n'
+        '  "exploitability": "An assessment of how easily this can be exploited by an attacker.",\n'
+        '  "business_impact": "Potential impact to business operations and data confidentiality.",\n'
+        '  "remediation_steps": ["Step 1...", "Step 2..."]\n'
         "}"
     )
     
@@ -159,19 +162,8 @@ async def generate_vulnerability_remediation(vuln_name: str, vuln_desc: str, lan
                 raw_response = await _call_gemini(client, prompt)
             elif AI_PROVIDER == "openai":
                 raw_response = await _call_openai(client, prompt)
-            elif AI_PROVIDER == "ollama":
-                try:
-                    raw_response = await _call_ollama(client, prompt)
-                except Exception as ollama_err:
-                    if GEMINI_API_KEY:
-                        raw_response = await _call_gemini(client, prompt)
-                    else:
-                        raise ollama_err
             else:
-                if GEMINI_API_KEY:
-                    raw_response = await _call_gemini(client, prompt)
-                else:
-                    raw_response = await _call_ollama(client, prompt)
+                raw_response = await _call_ollama(client, prompt)
                     
         import json
         import re
@@ -180,16 +172,16 @@ async def generate_vulnerability_remediation(vuln_name: str, vuln_desc: str, lan
         if json_match:
             clean_json = json_match.group()
         parsed = json.loads(clean_json)
-        
-        exec_imp = parsed.get("executive_impact", "")
-        cia_imp = parsed.get("cia_impact", "")
-        rem_steps = parsed.get("remediation_steps", "")
-        
-        return f"Impact Exécutif: {exec_imp}\nImpact CIA: {cia_imp}\nÉtapes de Remédiation:\n{rem_steps}"
+        return parsed
         
     except Exception as e:
         logger.error(f"AI remediation generation failed: {str(e)}")
-        return f"Appliquer les patchs officiels recommandés pour la vulnérabilité {vuln_name} et restreindre les accès réseau."
+        return {
+            "severity_assessment": "Failed to generate assessment.",
+            "exploitability": "Unknown.",
+            "business_impact": "Unknown.",
+            "remediation_steps": ["Refer to standard remediation practices for this vulnerability."]
+        }
 
 def refine_risk_score_sync(title: str, description: str) -> float:
     """
@@ -243,7 +235,7 @@ def refine_risk_score_sync(title: str, description: str) -> float:
                         "messages": [{"role": "user", "content": prompt}],
                         "stream": False
                     },
-                    timeout=30.0
+                    timeout=5.0
                 )
                 response.raise_for_status()
                 content = response.json()["message"]["content"].strip()

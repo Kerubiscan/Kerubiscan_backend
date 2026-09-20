@@ -8,7 +8,7 @@ from src.auth.adapters.inbound.api.dependencies import require_permissions
 from src.auth.domain.entities import Permission
 from src.core.rate_limit import limiter
 
-from src.vulnerabilities.domain.models import VulnerabilityResponse, VulnStatusUpdate, VulnerabilityHistoryResponse
+from src.vulnerabilities.domain.models import VulnerabilityResponse, VulnStatusUpdate, VulnerabilityHistoryResponse, AIAnalysisUpdate
 from src.vulnerabilities.adapters.outbound.repository import VulnerabilityRepository
 from src.audit.adapters.outbound.audit_adapter import AuditService
 from typing import List
@@ -101,8 +101,44 @@ async def generate_vulnerability_remediation_endpoint(
     if not vuln:
         raise HTTPException(status_code=404, detail="Vulnerability not found")
         
+    if vuln.ai_analysis:
+        return {"ai_remediation": vuln.ai_analysis}
+        
     from src.ai.application.services.nlp import generate_vulnerability_remediation
     
     ai_content = await generate_vulnerability_remediation(vuln.title, vuln.description, req.language)
+    repo.update_ai_analysis(vuln_id, ai_content)
     
     return {"ai_remediation": ai_content}
+
+@router.patch("/{vuln_id}/ai-analysis", response_model=VulnerabilityResponse)
+@limiter.limit("20/minute")
+async def update_vulnerability_ai_analysis(
+    request: Request,
+    vuln_id: str,
+    analysis_update: AIAnalysisUpdate,
+    repo: VulnerabilityRepository = Depends(get_vuln_repository),
+    current_user: dict = Depends(require_permissions([Permission.ASSET_WRITE]))
+):
+    vuln = repo.update_ai_analysis(vuln_id, analysis_update.ai_analysis)
+    if not vuln:
+        raise HTTPException(status_code=404, detail="Vulnerability not found")
+        
+    # We return the mapped response
+    return VulnerabilityResponse(
+        id=vuln.id,
+        asset_id=vuln.asset_id,
+        cve_id=vuln.cve_id,
+        title=vuln.title,
+        description=vuln.description,
+        remediation=vuln.remediation,
+        cvss_base_score=vuln.cvss_base_score,
+        cvss_vector=vuln.cvss_vector,
+        contextual_risk_score=vuln.contextual_risk_score,
+        source_engine=vuln.source_engine,
+        severity=vuln.severity,
+        status=vuln.status,
+        first_detected_at=vuln.first_detected_at,
+        last_seen_at=vuln.last_seen_at,
+        ai_analysis=vuln.ai_analysis
+    )

@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, ForeignKey, DateTime, Text, Enum as SQLEnum
+from sqlalchemy import Column, Integer, String, Float, ForeignKey, DateTime, Text, JSON, Enum as SQLEnum
 from sqlalchemy.sql import func
 import uuid
 from src.core.database import Base
@@ -19,6 +19,8 @@ class VulnerabilityEntity(Base):
     contextual_risk_score = Column(Float, nullable=True)
     
     source_engine = Column(String, default="OPENVAS", nullable=False)
+    
+    ai_analysis = Column(JSON, nullable=True)
     
     severity = Column(SQLEnum(VulnSeverity), default=VulnSeverity.INFO, nullable=False)
     status = Column(SQLEnum(VulnStatus), default=VulnStatus.NEW, nullable=False)

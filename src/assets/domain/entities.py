@@ -19,6 +19,7 @@ class AssetEntity(Base):
     cpe = Column(String, nullable=True)
     description = Column(Text, nullable=True)
     ports = Column(String, nullable=True)
+    services = Column(Text, nullable=True)
     mac_address = Column(String, nullable=True)
     last_scan_raw_output = Column(Text, nullable=True)
     

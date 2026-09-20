@@ -265,6 +265,8 @@ def parse_nmap_report(host_data: dict, target_ip: str, scan_id: str = None):
             asset.operating_system = host_data["os"]
         if host_data.get("ports"):
             asset.ports = host_data["ports"]
+        if host_data.get("services"):
+            asset.services = host_data["services"]
             
         import json
         asset.last_scan_raw_output = json.dumps(host_data, indent=2)

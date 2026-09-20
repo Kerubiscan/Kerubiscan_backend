@@ -22,6 +22,7 @@ class AssetBase(BaseModel):
     cpe: Optional[str] = Field(None, max_length=255, description="Common Platform Enumeration string")
     description: Optional[str] = None
     ports: Optional[str] = None
+    services: Optional[str] = None
     mac_address: Optional[str] = None
 
 class AssetCreate(AssetBase):
@@ -38,6 +39,7 @@ class AssetUpdate(BaseModel):
     cpe: Optional[str] = Field(None, max_length=255)
     description: Optional[str] = None
     ports: Optional[str] = None
+    services: Optional[str] = None
     mac_address: Optional[str] = None
 
 class AssetResponse(AssetBase):
