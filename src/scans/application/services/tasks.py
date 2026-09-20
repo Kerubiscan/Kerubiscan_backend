@@ -30,6 +30,49 @@ def update_nuclei_templates():
     except Exception as e:
         logger.error(f"Error during Nuclei template update: {str(e)}")
 
+@celery_app.task(name="update_nmap_scripts")
+def update_nmap_scripts():
+    """Background task to update Nmap vulners and vulscan databases."""
+    logger.info("Running Nmap scripts update...")
+    import subprocess
+    try:
+        # Update vulners
+        subprocess.run(
+            ["wget", "https://raw.githubusercontent.com/vulnersCom/nmap-vulners/master/vulners.nse", "-O", "/usr/share/nmap/scripts/vulners.nse"],
+            capture_output=True, text=True, check=True
+        )
+        # Update vulscan
+        subprocess.run(
+            ["git", "-C", "/usr/share/nmap/scripts/vulscan", "pull"],
+            capture_output=True, text=True, check=True
+        )
+        # Update nmap script DB
+        subprocess.run(
+            ["nmap", "--script-updatedb"],
+            capture_output=True, text=True, check=True
+        )
+        logger.info("Nmap scripts updated successfully")
+    except subprocess.CalledProcessError as e:
+        logger.error(f"Failed to update Nmap scripts: {e.stderr}")
+    except Exception as e:
+        logger.error(f"Error during Nmap scripts update: {str(e)}")
+
+@celery_app.task(name="update_zap_addons")
+def update_zap_addons():
+    """Background task to update ZAP add-ons."""
+    logger.info("Running ZAP add-ons update...")
+    import subprocess
+    try:
+        result = subprocess.run(
+            ["/opt/zaproxy/zap.sh", "-cmd", "-addonupdate"],
+            capture_output=True, text=True, check=True
+        )
+        logger.info(f"ZAP add-ons updated successfully: {result.stdout}")
+    except subprocess.CalledProcessError as e:
+        logger.error(f"Failed to update ZAP add-ons: {e.stderr}")
+    except Exception as e:
+        logger.error(f"Error during ZAP add-ons update: {str(e)}")
+
 def update_scan_progress(scan_id: str, ip: str, target_status: str):
     db: Session = SessionLocal()
     try:

@@ -447,3 +447,41 @@ def get_task_status(task_id: str):
         "result": task.result if task.ready() else None
     }
     return response
+
+class ScannerUpdateRequest(BaseModel):
+    engine: str
+
+@router.post("/scanners/update")
+def trigger_scanner_update(req: ScannerUpdateRequest, db: Session = Depends(get_db), user=Depends(get_current_user)):
+    """Triggers an asynchronous update of the scanner database/templates."""
+    engine = req.engine.upper()
+    
+    if engine == "NUCLEI":
+        from src.scans.application.services.tasks import update_nuclei_templates
+        update_nuclei_templates.delay()
+    elif engine == "NMAP":
+        from src.scans.application.services.tasks import update_nmap_scripts
+        update_nmap_scripts.delay()
+    elif engine == "ZAP":
+        from src.scans.application.services.tasks import update_zap_addons
+        update_zap_addons.delay()
+    elif engine == "ALL":
+        from src.scans.application.services.tasks import update_nuclei_templates, update_nmap_scripts, update_zap_addons
+        update_nuclei_templates.delay()
+        update_nmap_scripts.delay()
+        update_zap_addons.delay()
+    else:
+        raise HTTPException(status_code=400, detail=f"Unsupported scanner engine for update: {engine}")
+    
+    db.add(AuditLog(
+        user_id=str(user.id) if user else "system",
+        username=user.username if user else "system",
+        action="TRIGGER_SCANNER_UPDATE",
+        resource_type="SCANNER",
+        resource_id=engine,
+        details={"status": "STARTED"}
+    ))
+    db.commit()
+    
+    return {"message": f"Update triggered for {engine}", "status": "STARTED"}
+
