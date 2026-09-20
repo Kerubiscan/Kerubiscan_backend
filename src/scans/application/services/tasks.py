@@ -470,7 +470,12 @@ def run_vulnerability_scan(self, scan_id: str, asset_ip: str, asset_name: str, c
                                 port_num = p.split('/')[0]
                                 open_ports_list.append(port_num)
                                 
-                        asset = db.query(AssetEntity).filter(AssetEntity.ip_address == host_ip).first()
+                        asset = db.query(AssetEntity).filter(AssetEntity.ip_address == asset_ip).first()
+                        if not asset:
+                            asset = db.query(AssetEntity).filter(AssetEntity.name == asset_ip).first()
+                        if not asset:
+                            asset = db.query(AssetEntity).filter(AssetEntity.ip_address == host_ip).first()
+                            
                         if asset:
                             if host_data.get("os") and host_data["os"] != "Unknown":
                                 asset.operating_system = host_data["os"]
@@ -557,7 +562,12 @@ def run_vulnerability_scan(self, scan_id: str, asset_ip: str, asset_name: str, c
                                 else:
                                     nuclei_targets.append(f"{host_ip}:{port_id}")
                                     
-                        asset = db.query(AssetEntity).filter(AssetEntity.ip_address == host_ip).first()
+                        asset = db.query(AssetEntity).filter(AssetEntity.ip_address == asset_ip).first()
+                        if not asset:
+                            asset = db.query(AssetEntity).filter(AssetEntity.name == asset_ip).first()
+                        if not asset:
+                            asset = db.query(AssetEntity).filter(AssetEntity.ip_address == host_ip).first()
+                            
                         if asset:
                             if host_data.get("os") and host_data["os"] != "Unknown":
                                 asset.operating_system = host_data["os"]
