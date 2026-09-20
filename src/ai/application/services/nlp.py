@@ -43,7 +43,7 @@ async def _call_ollama(client: httpx.AsyncClient, prompt: str) -> str:
             "messages": [{"role": "user", "content": prompt}],
             "stream": False
         },
-        timeout=5.0
+        timeout=120.0
     )
     response.raise_for_status()
     data = response.json()
@@ -235,7 +235,7 @@ def refine_risk_score_sync(title: str, description: str) -> float:
                         "messages": [{"role": "user", "content": prompt}],
                         "stream": False
                     },
-                    timeout=5.0
+                    timeout=120.0
                 )
                 response.raise_for_status()
                 content = response.json()["message"]["content"].strip()
