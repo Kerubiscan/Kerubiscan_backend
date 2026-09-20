@@ -412,7 +412,7 @@ def download_scan_report(
     
     from src.reporting.application.services.html_generator import generate_vulnerability_html, generate_discovery_html
     
-    if scan.scan_type and scan.scan_type.lower() == "discovery":
+    if scan.scan_type and getattr(scan.scan_type, 'value', str(scan.scan_type)).lower() == "discovery":
         html_bytes = generate_discovery_html(
             assets=assets,
             scanner_company_name=scanner_company,
