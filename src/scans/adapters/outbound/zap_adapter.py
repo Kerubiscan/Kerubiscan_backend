@@ -51,7 +51,10 @@ class ZAPAdapter:
             if os.path.exists(output_file):
                 os.remove(output_file)
                 
-            cmd = ["/usr/local/bin/zap", "-cmd", "-quickurl", formatted_target, "-quickout", output_file, "-quickprogress"]
+            import tempfile
+            zap_home_dir = tempfile.mkdtemp(prefix="zap_home_")
+                
+            cmd = ["/usr/local/bin/zap", "-dir", zap_home_dir, "-cmd", "-quickurl", formatted_target, "-quickout", output_file, "-quickprogress"]
             
             if credentials and credentials.get("credential_type") == "HTTP":
                 import base64
@@ -94,6 +97,12 @@ class ZAPAdapter:
         finally:
             if os.path.exists(output_file):
                 os.remove(output_file)
+            try:
+                import shutil
+                if 'zap_home_dir' in locals() and os.path.exists(zap_home_dir):
+                    shutil.rmtree(zap_home_dir, ignore_errors=True)
+            except Exception:
+                pass
 
     @staticmethod
     def _parse_zap_json(filepath: str) -> List[Dict]:
