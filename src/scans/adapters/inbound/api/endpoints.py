@@ -131,9 +131,14 @@ def create_scan(req: ScanCreateRequest, db: Session = Depends(get_db), current_u
     targets = [t.strip() for t in req.target.split(",") if t.strip()]
     target_states = {t: "PENDING" for t in targets}
     
+    if len(targets) > 1:
+        scan_name = f"Multi-Target Scan ({len(targets)} targets)"
+    else:
+        scan_name = f"Scan for {req.target}"
+    
     scan = ScanEntity(
         company_id=company.id,
-        name=f"Scan for {req.target}",
+        name=scan_name,
         target=req.target,
         network_zone=req.network_zone,
         scan_type=s_type,
@@ -412,12 +417,16 @@ def download_scan_report(
     
     from src.reporting.application.services.html_generator import generate_vulnerability_html, generate_discovery_html
     
+    display_name = scan.name
+    if "," in display_name and len(display_name) > 40:
+        display_name = "Multi-Target Scan Batch"
+    
     if scan.scan_type and getattr(scan.scan_type, 'value', str(scan.scan_type)).lower() == "discovery":
         html_bytes = generate_discovery_html(
             assets=assets,
             scanner_company_name=scanner_company,
             target_company_name=target_company,
-            scan_name=scan.name
+            scan_name=display_name
         )
     else:
         html_bytes = generate_vulnerability_html(
@@ -426,7 +435,7 @@ def download_scan_report(
             executive_summary=scan.executive_summary,
             scanner_company_name=scanner_company,
             target_company_name=target_company,
-            scan_name=scan.name
+            scan_name=display_name
         )
     
     # Use a short, clean filename using the scan ID to avoid any browser encoding issues
