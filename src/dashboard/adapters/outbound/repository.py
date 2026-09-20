@@ -46,7 +46,7 @@ class DashboardRepository:
 
     def get_over_time_chart(self) -> List[Dict[str, Any]]:
         # In a real app, we'd query historical snapshots or aggregate VulnerabilityHistoryEntity.
-        # For simplicity, we'll group by the date part of first_detected_at for the last 7 days.
+        # For simplicity, we'll group by the date part of first_detected_at for the last 7 days + today + tomorrow.
         seven_days_ago = datetime.utcnow() - timedelta(days=7)
         
         # We need a raw query to extract date in sqlite/postgres compatible way, 
@@ -63,7 +63,7 @@ class DashboardRepository:
 
         # Build time series dictionary
         time_series = {}
-        for d in range(7):
+        for d in range(9):
             dt = (seven_days_ago + timedelta(days=d)).date().isoformat()
             # We map to the french keys because the frontend expects it or we can change frontend to english
             # Let's change frontend to english later, and output english here.
