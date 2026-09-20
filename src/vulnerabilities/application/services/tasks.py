@@ -59,7 +59,7 @@ def parse_scan_report(report_xml: str, target_ip: str, scan_id: str = None):
             
             asset = AssetEntity(
                 company_id=scan.company_id,
-                name=f"Auto-added Host ({target_ip})",
+                name=target_ip,
                 ip_address=target_ip,
                 asset_type="Unknown",
                 network_zone=scan.network_zone or "Internal",
@@ -251,7 +251,7 @@ def parse_nmap_report(host_data: dict, target_ip: str, scan_id: str = None):
             
             asset = AssetEntity(
                 company_id=scan.company_id,
-                name=f"Auto-added Host ({target_ip})",
+                name=target_ip,
                 ip_address=target_ip,
                 asset_type="Unknown",
                 network_zone=scan.network_zone or "Internal",
@@ -386,7 +386,7 @@ def parse_nuclei_report(vuln_data_list: list, target_ip: str, scan_id: str = Non
             
             asset = AssetEntity(
                 company_id=scan.company_id,
-                name=f"Auto-added Host ({target_ip})",
+                name=target_ip,
                 ip_address=target_ip,
                 asset_type="Unknown",
                 network_zone=scan.network_zone or "Internal",
@@ -521,7 +521,7 @@ def parse_zap_report(vuln_data_list: list, target_ip: str, scan_id: str = None):
             
             asset = AssetEntity(
                 company_id=scan.company_id,
-                name=f"Auto-added Web Host ({target_ip})",
+                name=target_ip,
                 ip_address=target_ip,
                 asset_type="Unknown",
                 network_zone=scan.network_zone or "Internal",

@@ -31,9 +31,9 @@ def generate_vulnerability_html(
         vulns = all_vulnerabilities.get(str(asset.id), [])
         
         name_str = asset.name or asset.ip_address
-        if "Auto-added Host" in name_str:
-            # Clean up the name e.g., "Auto-added Host (192.168.100.75)" -> "192.168.100.75"
-            name_str = name_str.replace("Auto-added Host", "").replace("(", "").replace(")", "").strip()
+        if "Auto-added" in name_str:
+            # Clean up the name e.g., "Auto-added Host (192.168.100.75)" or "Auto-added Web Host (...)" -> "192.168.100.75"
+            name_str = name_str.replace("Auto-added Host", "").replace("Auto-added Web Host", "").replace("(", "").replace(")", "").strip()
 
         asset_data = {
             "id": str(asset.id),
@@ -181,8 +181,8 @@ def generate_discovery_html(
 
     for asset in assets:
         name_str = asset.name or asset.ip_address
-        if "Auto-added Host" in name_str:
-            name_str = name_str.replace("Auto-added Host", "").replace("(", "").replace(")", "").strip()
+        if "Auto-added" in name_str:
+            name_str = name_str.replace("Auto-added Host", "").replace("Auto-added Web Host", "").replace("(", "").replace(")", "").strip()
 
         # Parse history safely
         history_list = []
