@@ -429,12 +429,12 @@ def download_scan_report(
             scan_name=scan.name
         )
     
-    import re
-    safe_filename = re.sub(r'[^\w\-]', '_', scan.name)
+    # Use a short, clean filename using the scan ID to avoid any browser encoding issues
+    short_id = str(scan.id)[:8]
     return StreamingResponse(
         io.BytesIO(html_bytes), 
         media_type="text/html", 
-        headers={"Content-Disposition": f'attachment; filename="rapport_{safe_filename}.html"'}
+        headers={"Content-Disposition": f'attachment; filename="rapport_{short_id}.html"'}
     )
 
 @router.get("/tasks/{task_id}")
