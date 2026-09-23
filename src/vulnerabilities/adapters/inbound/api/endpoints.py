@@ -142,3 +142,48 @@ async def update_vulnerability_ai_analysis(
         last_seen_at=vuln.last_seen_at,
         ai_analysis=vuln.ai_analysis
     )
+
+@router.delete("/{vuln_id}", status_code=status.HTTP_204_NO_CONTENT)
+@limiter.limit("20/minute")
+async def delete_vulnerability(
+    request: Request,
+    vuln_id: str,
+    repo: VulnerabilityRepository = Depends(get_vuln_repository),
+    audit: AuditService = Depends(get_audit_service),
+    current_user: dict = Depends(require_permissions([Permission.ASSET_DELETE]))
+):
+    success = repo.delete(vuln_id)
+    if not success:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Vulnerability not found")
+        
+    username = current_user.get("preferred_username") or current_user.get("sub") or "System"
+    audit.log_action(
+        user_id=current_user.get("sub", "system"),
+        username=username,
+        action="VULNERABILITY_DELETED",
+        resource_type="Vulnerabilities",
+        resource_id=vuln_id,
+        ip_address=request.client.host if request.client else None
+    )
+
+@router.delete("", status_code=status.HTTP_204_NO_CONTENT)
+@limiter.limit("5/minute")
+async def delete_all_vulnerabilities(
+    request: Request,
+    repo: VulnerabilityRepository = Depends(get_vuln_repository),
+    audit: AuditService = Depends(get_audit_service),
+    current_user: dict = Depends(require_permissions([Permission.ASSET_DELETE]))
+):
+    deleted_count = repo.delete_all()
+    
+    username = current_user.get("preferred_username") or current_user.get("sub") or "System"
+    audit.log_action(
+        user_id=current_user.get("sub", "system"),
+        username=username,
+        action="ALL_VULNERABILITIES_DELETED",
+        resource_type="Vulnerabilities",
+        resource_id="ALL",
+        details={"deleted_count": deleted_count},
+        ip_address=request.client.host if request.client else None
+    )
+

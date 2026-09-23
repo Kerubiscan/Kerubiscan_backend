@@ -49,7 +49,16 @@ def generate_vulnerability_html(
             "vulnerabilities": []
         }
         
-        for v in sorted(vulns, key=lambda x: getattr(x, "cvss_base_score", 0.0) or 0.0, reverse=True):
+        def get_severity_weight(sev_str: str) -> int:
+            mapping = {"Critical": 5, "High": 4, "Medium": 3, "Low": 2, "Info": 1, "INFO": 1, "LOW": 2, "MEDIUM": 3, "HIGH": 4, "CRITICAL": 5}
+            return mapping.get(sev_str, 0)
+            
+        def sort_vulns(v):
+            sev_str = getattr(v.severity, "value", str(v.severity))
+            cvss = float(getattr(v, "cvss_base_score", 0.0) or 0.0)
+            return (get_severity_weight(sev_str), cvss)
+
+        for v in sorted(vulns, key=sort_vulns, reverse=True):
             sev_str = getattr(v.severity, "value", str(v.severity))
             score = float(v.cvss_base_score) if v.cvss_base_score is not None else 0.0
             if score > 0:
@@ -123,7 +132,13 @@ def generate_vulnerability_html(
     top_hosts = sorted(template_assets, key=lambda a: (a["crit_count"]*10 + a["high_count"]*5 + a["med_count"]*2), reverse=True)[:10]
     
     # Top 10 Critical Vulnerabilities
-    top_vulnerabilities = sorted(all_vulns_flat, key=lambda v: float(v["cvss"]) if v["cvss"] != "N/A" else 0.0, reverse=True)[:10]
+    def sort_flat_vulns(v):
+        mapping = {"Critical": 5, "High": 4, "Medium": 3, "Low": 2, "Info": 1, "INFO": 1, "LOW": 2, "MEDIUM": 3, "HIGH": 4, "CRITICAL": 5}
+        weight = mapping.get(v["severity"], 0)
+        cvss = float(v["cvss"]) if v["cvss"] != "N/A" else 0.0
+        return (weight, cvss)
+        
+    top_vulnerabilities = sorted(all_vulns_flat, key=sort_flat_vulns, reverse=True)[:10]
 
     template_data = {
         "scan_name": scan_name,
@@ -184,15 +199,16 @@ def generate_discovery_html(
         if "Auto-added" in name_str:
             name_str = name_str.replace("Auto-added Host", "").replace("Auto-added Web Host", "").replace("(", "").replace(")", "").strip()
 
-        # Parse history safely
+        # Parse history safely — AssetEntity has no history column, so default to empty
         history_list = []
         import json
-        if asset.history:
+        _history = getattr(asset, "history", None)
+        if _history:
             try:
-                if isinstance(asset.history, list):
-                    history_list = asset.history
+                if isinstance(_history, list):
+                    history_list = _history
                 else:
-                    history_list = json.loads(asset.history)
+                    history_list = json.loads(_history)
             except Exception:
                 pass
 
@@ -204,7 +220,7 @@ def generate_discovery_html(
             "operating_system": asset.operating_system or "Unknown",
             "network_zone": asset.network_zone or "N/A",
             "ports": asset.ports or "None detected",
-            "running_services": asset.running_services or "None detected",
+            "running_services": asset.services or "None detected",
             "history": history_list
         }
         template_assets.append(asset_data)

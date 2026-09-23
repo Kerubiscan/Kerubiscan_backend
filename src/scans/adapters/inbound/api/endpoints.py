@@ -197,12 +197,17 @@ def create_scan(req: ScanCreateRequest, db: Session = Depends(get_db), current_u
     )
 
 @router.get("", response_model=List[ScanResponse])
-def get_scans(company_id: Optional[str] = None, network_zone: Optional[str] = None, db: Session = Depends(get_db)):
+def get_scans(company_id: Optional[str] = None, network_zone: Optional[str] = None, status: Optional[str] = None, db: Session = Depends(get_db)):
     query = db.query(ScanEntity).filter(ScanEntity.is_deleted.is_not(True))
     if company_id:
         query = query.filter(ScanEntity.company_id == company_id)
     if network_zone:
         query = query.filter(ScanEntity.network_zone == network_zone)
+    if status:
+        try:
+            query = query.filter(ScanEntity.status == ScanStatus[status.upper()])
+        except KeyError:
+            pass  # ignore invalid status values
     scans = query.order_by(ScanEntity.created_at.desc()).all()
     
     # mapping enum to string

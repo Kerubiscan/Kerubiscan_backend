@@ -89,3 +89,15 @@ class VulnerabilityRepository:
             self.db.refresh(vuln)
         return vuln
 
+    def delete(self, vuln_id: str) -> bool:
+        vuln = self.db.query(VulnerabilityEntity).filter(VulnerabilityEntity.id == vuln_id).first()
+        if vuln:
+            self.db.delete(vuln)
+            self.db.commit()
+            return True
+        return False
+
+    def delete_all(self) -> int:
+        deleted_count = self.db.query(VulnerabilityEntity).delete()
+        self.db.commit()
+        return deleted_count

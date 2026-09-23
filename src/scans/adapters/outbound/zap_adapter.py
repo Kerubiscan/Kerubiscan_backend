@@ -52,9 +52,16 @@ class ZAPAdapter:
                 os.remove(output_file)
                 
             import tempfile
+            import socket
+            
             zap_home_dir = tempfile.mkdtemp(prefix="zap_home_")
+            
+            # Find a free port to avoid "Address already in use" (port 8080) conflicts
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.bind(('', 0))
+                free_port = s.getsockname()[1]
                 
-            cmd = ["/usr/local/bin/zap", "-dir", zap_home_dir, "-cmd", "-quickurl", formatted_target, "-quickout", output_file, "-quickprogress"]
+            cmd = ["/usr/local/bin/zap", "-dir", zap_home_dir, "-port", str(free_port), "-cmd", "-quickurl", formatted_target, "-quickout", output_file, "-quickprogress"]
             
             if credentials and credentials.get("credential_type") == "HTTP":
                 import base64

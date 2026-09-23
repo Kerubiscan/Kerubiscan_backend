@@ -176,6 +176,8 @@ def run_discovery_scan(self, scan_id: str, target: str, network_zone: str, compa
                                     asset_to_update.operating_system = d_host["os"]
                                 if d_host.get("ports"):
                                     asset_to_update.ports = d_host["ports"]
+                                if d_host.get("services"):
+                                    asset_to_update.services = d_host["services"]
                         
                         # Update scan progress
                         scan_update = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
