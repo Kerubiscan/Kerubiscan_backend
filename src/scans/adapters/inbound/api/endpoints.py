@@ -240,6 +240,20 @@ def delete_scan(scan_id: str, db: Session = Depends(get_db), current_user: dict 
         
     scan.is_deleted = True
     
+    # User requested: when I delete a scan its values too should also be removed.
+    # We find assets matching the scan's targets and delete their vulnerabilities.
+    from src.scans.domain.entities import AssetEntity
+    from src.vulnerabilities.domain.entities import VulnerabilityEntity
+    
+    targets = [t.strip() for t in scan.target.split(",")]
+    assets = db.query(AssetEntity).filter(
+        AssetEntity.company_id == scan.company_id,
+        AssetEntity.ip_address.in_(targets)
+    ).all()
+    
+    for asset in assets:
+        db.query(VulnerabilityEntity).filter(VulnerabilityEntity.asset_id == asset.id).delete()
+    
     audit = AuditLog(
         user_id=current_user.get("id", "unknown"),
         username=current_user.get("username", "system"),

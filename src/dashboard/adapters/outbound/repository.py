@@ -14,10 +14,16 @@ class DashboardRepository:
         self.db = db
 
     def get_kpis(self) -> Dict[str, int]:
-        # Count vulnerabilities by severity that are NOT fixed or false positives
-        query = select(VulnerabilityEntity.severity, func.count(VulnerabilityEntity.id))\
-            .where(VulnerabilityEntity.status.not_in([VulnStatus.FIXED, VulnStatus.FALSE_POSITIVE]))\
-            .group_by(VulnerabilityEntity.severity)
+        # User requested: Dashboard should reflect the latest scan regardless of status
+        max_seen = self.db.query(func.max(VulnerabilityEntity.last_seen_at)).scalar()
+        
+        query = select(VulnerabilityEntity.severity, func.count(VulnerabilityEntity.id))
+        
+        if max_seen:
+            threshold = max_seen - timedelta(minutes=30)
+            query = query.where(VulnerabilityEntity.last_seen_at >= threshold)
+            
+        query = query.group_by(VulnerabilityEntity.severity)
             
         results = self.db.execute(query).all()
         

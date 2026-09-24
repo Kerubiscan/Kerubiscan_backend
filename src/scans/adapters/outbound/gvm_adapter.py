@@ -10,11 +10,12 @@ from src.scans.ports.outbound.scan_engine import ScanEnginePort
 logger = logging.getLogger(__name__)
 
 class GVMAdapter(ScanEnginePort):
-    def __init__(self, host: str = "localhost", port: int = 9390, user: str = "admin", password: str = "admin", socket_path: str = "/run/gvmd/gvmd.sock"):
-        self.host = host
+    def __init__(self, host: str = None, port: int = 9390, user: str = "admin", password: str = "admin", socket_path: str = "/run/gvmd/gvmd.sock"):
+        import os
+        self.host = host or os.getenv("OPENVAS_HOST", "openvas")
         self.port = port
-        self.user = user
-        self.password = password
+        self.user = os.getenv("OPENVAS_USER", user)
+        self.password = os.getenv("OPENVAS_PASSWORD", password)
         self.socket_path = socket_path
         self.connection = None
         self.gmp = None

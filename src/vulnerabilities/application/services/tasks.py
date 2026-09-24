@@ -286,8 +286,10 @@ def parse_nmap_report(host_data: dict, target_ip: str, scan_id: str = None):
         
         new_vulns_to_insert = []
         
+        seen_titles = set()
         for v in vulns:
             title = v.get("id", "Nmap Vuln")[:250]
+            seen_titles.add(title)
             output = v.get("output", "")
             cve_id = v.get("cve_id")
             cvss_score = safe_float(v.get("cvss"))
@@ -349,8 +351,11 @@ def parse_nmap_report(host_data: dict, target_ip: str, scan_id: str = None):
         if new_vulns_to_insert:
             db.add_all(new_vulns_to_insert)
             
+        # User requested: Do not automatically delete or mark as FIXED.
+        # Just retain them, and the dashboard will filter by time.
+                
         if scan:
-            scan.vulnerabilities_found = (scan.vulnerabilities_found or 0) + len(vulns)
+            scan.vulnerabilities_found = len(vulns)
             
         db.commit()
 
@@ -428,8 +433,10 @@ def parse_nuclei_report(vuln_data_list: list, target_ip: str, scan_id: str = Non
         
         new_vulns_to_insert = []
 
+        seen_titles = set()
         for v in vuln_data_list:
             title = v.get("name", "Nuclei Vuln")[:250]
+            seen_titles.add(title)
             cve_id = v.get("cve_id")
             
             # Map severity
@@ -489,8 +496,11 @@ def parse_nuclei_report(vuln_data_list: list, target_ip: str, scan_id: str = Non
         if new_vulns_to_insert:
             db.add_all(new_vulns_to_insert)
             
+        # User requested: Do not automatically delete or mark as FIXED.
+        # Just retain them, and the dashboard will filter by time.
+            
         if scan:
-            scan.vulnerabilities_found = (scan.vulnerabilities_found or 0) + len(vuln_data_list)
+            scan.vulnerabilities_found = len(vuln_data_list)
             
         db.commit()
 
