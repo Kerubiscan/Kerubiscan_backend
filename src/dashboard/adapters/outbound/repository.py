@@ -15,6 +15,11 @@ class DashboardRepository:
 
     def get_kpis(self) -> Dict[str, int]:
         # User requested: Dashboard should reflect the latest scan regardless of status
+        # And if the latest scan is deleted, the dashboard should show zero
+        latest_scan = self.db.query(ScanEntity).order_by(desc(ScanEntity.created_at)).first()
+        if not latest_scan or latest_scan.is_deleted:
+            return {"Critical": 0, "High": 0, "Medium": 0, "Low": 0, "Info": 0}
+
         max_seen = self.db.query(func.max(VulnerabilityEntity.last_seen_at)).scalar()
         
         query = select(VulnerabilityEntity.severity, func.count(VulnerabilityEntity.id))

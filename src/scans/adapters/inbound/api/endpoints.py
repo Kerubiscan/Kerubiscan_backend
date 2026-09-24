@@ -241,23 +241,6 @@ def delete_scan(scan_id: str, db: Session = Depends(get_db), current_user: dict 
             
         scan.is_deleted = True
         
-        # User requested: when I delete a scan its values too should also be removed.
-        from src.assets.domain.entities import AssetEntity
-        from src.vulnerabilities.domain.entities import VulnerabilityEntity
-        from src.vulnerabilities.domain.entities import VulnerabilityHistoryEntity
-        
-        targets = [t.strip() for t in scan.target.split(",")] if scan.target else []
-        assets = db.query(AssetEntity).filter(
-            AssetEntity.company_id == scan.company_id,
-            (AssetEntity.ip_address.in_(targets)) | (AssetEntity.name.in_(targets))
-        ).all()
-        
-        for asset in assets:
-            vulns = db.query(VulnerabilityEntity).filter(VulnerabilityEntity.asset_id == asset.id).all()
-            for v in vulns:
-                db.query(VulnerabilityHistoryEntity).filter(VulnerabilityHistoryEntity.vulnerability_id == v.id).delete(synchronize_session=False)
-                db.delete(v)
-        
         audit = AuditLog(
             user_id=current_user.get("sub", "unknown"),
             username=current_user.get("preferred_username") or current_user.get("username", "system"),
@@ -282,12 +265,6 @@ def delete_all_scans(db: Session = Depends(get_db), current_user: dict = Depends
         for scan in scans:
             scan.is_deleted = True
             
-        from src.vulnerabilities.domain.entities import VulnerabilityEntity
-        from src.vulnerabilities.domain.entities import VulnerabilityHistoryEntity
-        
-        db.query(VulnerabilityHistoryEntity).delete(synchronize_session=False)
-        db.query(VulnerabilityEntity).delete(synchronize_session=False)
-        
         audit = AuditLog(
             user_id=current_user.get("sub", "unknown"),
             username=current_user.get("preferred_username") or current_user.get("username", "system"),
