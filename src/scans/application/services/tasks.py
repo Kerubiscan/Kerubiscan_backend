@@ -749,7 +749,7 @@ def run_vulnerability_scan(self, scan_id: str, asset_ip: str, asset_name: str, c
     adapter = GVMAdapter()
     if not adapter.connect():
         logger.error("Failed to connect to GVM")
-        self.retry(countdown=60)
+        self.retry(countdown=60, max_retries=60)
         return
         
     try:
