@@ -68,6 +68,7 @@ async def _call_openai(client: httpx.AsyncClient, prompt: str) -> str:
 async def generate_executive_summary(vuln_data: List[Dict], language: str = "French", extra_instructions: str = "", provider: str = None) -> str:
     lang_name = "Français" if language.lower() in ["french", "français", "fr"] else "English"
     active_provider = provider if provider else AI_PROVIDER
+    logger.info(f"Generating AI Executive Summary - Provider: {active_provider}, Language: {lang_name}")
     
     prompt = (
         f"You are a Senior Cybersecurity Consultant at KERIBU SOC.\n"
@@ -144,6 +145,7 @@ async def generate_executive_summary(vuln_data: List[Dict], language: str = "Fre
 async def generate_vulnerability_remediation(vuln_name: str, vuln_desc: str, language: str = "French", provider: str = None) -> dict:
     lang_name = "Français" if language.lower() in ["french", "français", "fr"] else "English"
     active_provider = provider if provider else AI_PROVIDER
+    logger.info(f"Generating AI Contextual Analysis for '{vuln_name}' - Provider: {active_provider}, Language: {lang_name}")
     prompt = (
         f"You are a Cybersecurity Expert at KERIBU SOC. Respond in {lang_name}.\n"
         f"Vulnerability Title: {vuln_name}\n"
