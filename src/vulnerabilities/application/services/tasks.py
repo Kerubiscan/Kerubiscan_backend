@@ -195,9 +195,10 @@ def parse_scan_report(report_xml: str, target_ip: str, scan_id: str = None):
                     "severity": v.severity.name if hasattr(v.severity, 'name') else str(v.severity),
                     "cvss": v.cvss_base_score
                 })
-            import json
-            logger.info(f"OpenVAS new parsed findings:\n{json.dumps(parsed_vulns, indent=2)}")
             db.add_all(new_vulns_to_insert)
+            
+        if scan:
+            scan.vulnerabilities_found = (scan.vulnerabilities_found or 0) + len(results)
             
         db.commit()
                 
@@ -336,6 +337,9 @@ def parse_nmap_report(host_data: dict, target_ip: str, scan_id: str = None):
         if new_vulns_to_insert:
             db.add_all(new_vulns_to_insert)
             
+        if scan:
+            scan.vulnerabilities_found = (scan.vulnerabilities_found or 0) + len(vulns)
+            
         db.commit()
 
         logger.info(f"Finished parsing Nmap report. Found {len(vulns)} scripts output.")
@@ -472,6 +476,9 @@ def parse_nuclei_report(vuln_data_list: list, target_ip: str, scan_id: str = Non
         # 3. Bulk insert and single commit
         if new_vulns_to_insert:
             db.add_all(new_vulns_to_insert)
+            
+        if scan:
+            scan.vulnerabilities_found = (scan.vulnerabilities_found or 0) + len(vuln_data_list)
             
         db.commit()
 
@@ -616,6 +623,9 @@ def parse_zap_report(vuln_data_list: list, target_ip: str, scan_id: str = None):
                 })
             logger.info(f"ZAP new parsed findings:\n{json.dumps(parsed_vulns, indent=2)}")
             db.add_all(new_vulns_to_insert)
+            
+        if scan:
+            scan.vulnerabilities_found = (scan.vulnerabilities_found or 0) + len(vuln_data_list)
             
         db.commit()
 
