@@ -76,6 +76,8 @@ class NmapAdapter:
                     cmd.extend(["--exclude-ports", exclude_p])
                 else:
                     cmd.extend(["-p", ports])
+            else:
+                cmd.extend(["-p-"])
                 
             cmd.extend(["-T4", "--script", "nbstat,smb-os-discovery"])
             cmd.extend(NmapAdapter._build_nmap_auth_args(credentials))
@@ -95,7 +97,7 @@ class NmapAdapter:
                 logger.warning(f"OS detection (-O) failed due to privileges. Falling back to -sV only for {target}")
                 try:
                     result = subprocess.run(
-                        ["nmap", "-sS", "-sV", "-Pn", "-T4", "--script", "nbstat,smb-os-discovery", "-oX", "-"] + target.split(','), 
+                        ["nmap", "-sS", "-sV", "-Pn", "-p-", "-T4", "--script", "nbstat,smb-os-discovery", "-oX", "-"] + target.split(','), 
                         capture_output=True, text=True, check=True, timeout=86400
                     )
                     logger.info(f"Nmap detailed scan (fallback) raw output for {target}:\n{result.stdout}")
@@ -129,6 +131,8 @@ class NmapAdapter:
                     cmd.extend(["--exclude-ports", exclude_p])
                 else:
                     cmd.extend(["-p", ports])
+            else:
+                cmd.extend(["-p-"])
             
             # vulscan removed due to excessive memory usage and frequent OOM crashes
             cmd.extend(["--script", "vuln,vulners"])
