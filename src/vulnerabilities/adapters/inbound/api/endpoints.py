@@ -105,12 +105,11 @@ async def generate_vulnerability_remediation_endpoint(
     if vuln.ai_analysis:
         return {"ai_remediation": vuln.ai_analysis}
         
-    from src.ai.application.services.nlp import generate_vulnerability_remediation
+    from src.scans.application.services.tasks import generate_ai_remediation_task
     
-    ai_content = await generate_vulnerability_remediation(vuln.title, vuln.description, req.language, req.provider)
-    repo.update_ai_analysis(vuln_id, ai_content)
+    task = generate_ai_remediation_task.delay(vuln.title, vuln.description, req.language, req.provider)
     
-    return {"ai_remediation": ai_content}
+    return {"task_id": task.id, "status": "processing"}
 
 @router.patch("/{vuln_id}/ai-analysis", response_model=VulnerabilityResponse)
 @limiter.limit("20/minute")

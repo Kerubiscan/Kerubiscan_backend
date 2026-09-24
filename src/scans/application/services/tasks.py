@@ -849,3 +849,18 @@ def generate_ai_summary_task(self, vuln_data: list, language: str = "French", ex
     except Exception as e:
         logger.error(f"Task {self.request.id}: AI summary generation failed: {str(e)}")
         raise self.retry(exc=e, countdown=30)
+
+@celery_app.task(name="generate_ai_remediation_task", bind=True, max_retries=3, ignore_result=False)
+def generate_ai_remediation_task(self, vuln_name: str, vuln_desc: str, language: str = "French", provider: str = None):
+    import asyncio
+    from src.ai.application.services.nlp import generate_vulnerability_remediation
+    
+    logger.info(f"Task {self.request.id}: Starting AI remediation generation for '{vuln_name}'...")
+    try:
+        remediation = asyncio.run(generate_vulnerability_remediation(vuln_name, vuln_desc, language=language, provider=provider))
+        logger.info(f"Task {self.request.id}: AI remediation generation completed successfully.")
+        return remediation
+    except Exception as e:
+        logger.error(f"Task {self.request.id}: AI remediation generation failed: {str(e)}")
+        raise self.retry(exc=e, countdown=30)
+
