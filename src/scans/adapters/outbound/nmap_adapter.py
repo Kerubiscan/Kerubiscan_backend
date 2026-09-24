@@ -216,34 +216,65 @@ class NmapAdapter:
                 # Nmap NSE Vulnerabilities (if run with --script vuln)
                 vulns = []
                 import re
-                for script in host.xpath("hostscript/script") + host.xpath("ports/port/script"):
+                
+                def parse_script_output(script_elem, port_id="host"):
+                    s_id = script_elem.get("id")
+                    s_out = script_elem.get("output", "")
+                    if s_id in ("smb-os-discovery", "nbstat"): return None, None
+                    
+                    cves = re.findall(r"(CVE-\d{4}-\d+)(?:[^\d]+([\d.]+))?", s_out)
+                    return s_id, s_out, cves
+                    
+                # Parse Host scripts
+                for script in host.xpath("hostscript/script"):
                     script_id = script.get("id")
                     output_text = script.get("output", "")
                     
-                    # Intercept hostname scripts so they don't appear as vulnerabilities
                     if script_id in ("smb-os-discovery", "nbstat"):
                         if not hostname or hostname.startswith("Discovered Host"):
-                            # Extract Computer Name or NetBIOS Name
                             m = re.search(r"(?i)(?:Computer name|NetBIOS computer name|NetBIOS name):\s*([^\r\n,\\]+)", output_text)
-                            if m:
-                                hostname = m.group(1).strip()
+                            if m: hostname = m.group(1).strip()
                         continue
                         
-                    # Look for CVEs and CVSS scores in the output
-                    cve_matches = re.findall(r"(CVE-\d{4}-\d+)\s+([\d.]+)", output_text)
+                    cve_matches = re.findall(r"(CVE-\d{4}-\d+)\s*([\d.]*)", output_text)
                     if cve_matches:
-                        for cve_id, cvss in cve_matches:
+                        unique_cves = {c[0]: c[1] for c in cve_matches}
+                        for cve_id, cvss_str in unique_cves.items():
                             vulns.append({
-                                "id": cve_id,
+                                "id": f"Nmap (Host): {cve_id}",
                                 "cve_id": cve_id,
-                                "cvss": float(cvss),
-                                "output": f"[{script_id}] {output_text}"
+                                "cvss": float(cvss_str) if cvss_str else 0.0,
+                                "output": f"Script {script_id}:\n{output_text}"
                             })
                     else:
                         vulns.append({
-                            "id": script_id,
+                            "id": f"Nmap (Host): {script_id}",
                             "output": output_text
                         })
+
+                # Parse Port scripts
+                for port_elem in host.xpath("ports/port"):
+                    port_num = port_elem.get("portid")
+                    for script in port_elem.xpath("script"):
+                        script_id = script.get("id")
+                        output_text = script.get("output", "")
+                        
+                        cve_matches = re.findall(r"(CVE-\d{4}-\d+)\s*([\d.]*)", output_text)
+                        if cve_matches:
+                            unique_cves = {c[0]: c[1] for c in cve_matches}
+                            for cve_id, cvss_str in unique_cves.items():
+                                vulns.append({
+                                    "id": f"Nmap ({port_num}): {cve_id}",
+                                    "cve_id": cve_id,
+                                    "cvss": float(cvss_str) if cvss_str else 0.0,
+                                    "output": f"Script {script_id} on port {port_num}:\n{output_text}"
+                                })
+                        else:
+                            if "ERROR" in output_text or len(output_text.strip()) < 5: continue
+                            vulns.append({
+                                "id": f"Nmap ({port_num}): {script_id}",
+                                "output": f"Script {script_id} on port {port_num}:\n{output_text}"
+                            })
                     
                 hosts_data.append({
                     "ip": ip,
