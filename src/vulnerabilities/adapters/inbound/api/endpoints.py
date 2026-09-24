@@ -87,6 +87,7 @@ async def get_vulnerability_history(
 from pydantic import BaseModel
 class VulnGenerateRemediationRequest(BaseModel):
     language: str = "French"
+    provider: str = None
 
 @router.post("/{vuln_id}/generate-remediation")
 @limiter.limit("10/minute")
@@ -106,7 +107,7 @@ async def generate_vulnerability_remediation_endpoint(
         
     from src.ai.application.services.nlp import generate_vulnerability_remediation
     
-    ai_content = await generate_vulnerability_remediation(vuln.title, vuln.description, req.language)
+    ai_content = await generate_vulnerability_remediation(vuln.title, vuln.description, req.language, req.provider)
     repo.update_ai_analysis(vuln_id, ai_content)
     
     return {"ai_remediation": ai_content}

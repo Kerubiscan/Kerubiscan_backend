@@ -65,8 +65,9 @@ async def _call_openai(client: httpx.AsyncClient, prompt: str) -> str:
     data = response.json()
     return data["choices"][0]["message"]["content"]
 
-async def generate_executive_summary(vuln_data: List[Dict], language: str = "French", extra_instructions: str = "") -> str:
+async def generate_executive_summary(vuln_data: List[Dict], language: str = "French", extra_instructions: str = "", provider: str = None) -> str:
     lang_name = "Français" if language.lower() in ["french", "français", "fr"] else "English"
+    active_provider = provider if provider else AI_PROVIDER
     
     prompt = (
         f"You are a Senior Cybersecurity Consultant at KERIBU SOC.\n"
@@ -86,11 +87,11 @@ async def generate_executive_summary(vuln_data: List[Dict], language: str = "Fre
     try:
         raw_response = ""
         async with httpx.AsyncClient() as client:
-            if AI_PROVIDER == "gemini":
+            if active_provider == "gemini":
                 raw_response = await _call_gemini(client, prompt)
-            elif AI_PROVIDER == "openai":
+            elif active_provider == "openai":
                 raw_response = await _call_openai(client, prompt)
-            elif AI_PROVIDER == "ollama":
+            elif active_provider == "ollama":
                 try:
                     raw_response = await _call_ollama(client, prompt)
                 except Exception as ollama_err:
@@ -140,8 +141,9 @@ async def generate_executive_summary(vuln_data: List[Dict], language: str = "Fre
             logger.error(f"AI generation failed: {str(err)}")
             return "Résumé exécutif généré automatiquement : Des vulnérabilités ont été détectées. Veuillez consulter la section détaillée par host pour appliquer les correctifs prioritaires."
 
-async def generate_vulnerability_remediation(vuln_name: str, vuln_desc: str, language: str = "French") -> dict:
+async def generate_vulnerability_remediation(vuln_name: str, vuln_desc: str, language: str = "French", provider: str = None) -> dict:
     lang_name = "Français" if language.lower() in ["french", "français", "fr"] else "English"
+    active_provider = provider if provider else AI_PROVIDER
     prompt = (
         f"You are a Cybersecurity Expert at KERIBU SOC. Respond in {lang_name}.\n"
         f"Vulnerability Title: {vuln_name}\n"
@@ -158,9 +160,9 @@ async def generate_vulnerability_remediation(vuln_name: str, vuln_desc: str, lan
     try:
         raw_response = ""
         async with httpx.AsyncClient() as client:
-            if AI_PROVIDER == "gemini":
+            if active_provider == "gemini":
                 raw_response = await _call_gemini(client, prompt)
-            elif AI_PROVIDER == "openai":
+            elif active_provider == "openai":
                 raw_response = await _call_openai(client, prompt)
             else:
                 raw_response = await _call_ollama(client, prompt)

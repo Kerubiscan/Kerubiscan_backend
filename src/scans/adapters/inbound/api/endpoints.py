@@ -322,6 +322,7 @@ def update_scan(scan_id: str, req: ScanUpdateRequest, db: Session = Depends(get_
 class SummaryGenerateRequest(BaseModel):
     language: str = "French"
     instructions: str = ""
+    provider: str = None
 
 class SummaryUpdateRequest(BaseModel):
     summary: str
@@ -346,7 +347,7 @@ async def generate_scan_summary(scan_id: str, req: SummaryGenerateRequest, db: S
     from src.scans.application.services.tasks import generate_ai_summary_task
     
     # Enqueue task
-    task = generate_ai_summary_task.delay(vuln_data, req.language, req.instructions)
+    task = generate_ai_summary_task.delay(vuln_data, req.language, req.instructions, req.provider)
     
     return {"task_id": task.id, "status": "processing"}
 
