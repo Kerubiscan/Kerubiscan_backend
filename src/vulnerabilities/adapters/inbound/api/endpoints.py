@@ -55,23 +55,30 @@ async def update_vulnerability_status(
     audit: AuditService = Depends(get_audit_service),
     current_user: dict = Depends(require_permissions([Permission.ASSET_READ]))
 ):
-    username = current_user.get("preferred_username") or current_user.get("sub") or "System"
-    vuln = repo.update_status(vuln_id, status_update.status, changed_by=username)
-    
-    if not vuln:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Vulnerability not found")
+    try:
+        username = current_user.get("preferred_username") or current_user.get("sub") or "System"
+        vuln = repo.update_status(vuln_id, status_update.status, changed_by=username)
         
-    audit.log_action(
-        user_id=current_user.get("sub", "system"),
-        username=username,
-        action="VULNERABILITY_STATUS_UPDATED",
-        resource_type="Vulnerabilities",
-        resource_id=str(vuln_id),
-        details={"new_status": status_update.status.value},
-        ip_address=request.client.host if request.client else None
-    )
-        
-    return vuln
+        if not vuln:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Vulnerability not found")
+            
+        audit.log_action(
+            user_id=current_user.get("sub", "system"),
+            username=username,
+            action="VULNERABILITY_STATUS_UPDATED",
+            resource_type="Vulnerabilities",
+            resource_id=str(vuln_id),
+            details={"new_status": status_update.status.value},
+            ip_address=request.client.host if request.client else None
+        )
+            
+        return vuln
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        error_msg = traceback.format_exc()
+        raise HTTPException(status_code=500, detail=str(error_msg))
 
 @router.get("/{vuln_id}/history", response_model=List[VulnerabilityHistoryResponse])
 @limiter.limit("20/minute")
