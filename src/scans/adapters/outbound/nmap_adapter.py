@@ -248,7 +248,7 @@ class NmapAdapter:
                             })
                     else:
                         vulns.append({
-                            "id": f"Nmap (Host): {script_id}",
+                            "id": f"Nmap (Host) {script_id}",
                             "output": output_text
                         })
 
@@ -273,7 +273,7 @@ class NmapAdapter:
                                     cve_id = cve_match.group(1)
                                     cvss_str = cve_match.group(2)
                                     vulns.append({
-                                        "id": f"Nmap ({port_num}): {cve_id}",
+                                        "id": f"Nmap ({port_num}) {script_id}: {cve_id}",
                                         "cve_id": cve_id,
                                         "cvss": float(cvss_str) if cvss_str else 0.0,
                                         "output": f"Port {port_num} ({script_id}): {line}"
@@ -285,7 +285,7 @@ class NmapAdapter:
                                         v_id = vscan_match.group(1)
                                         v_desc = vscan_match.group(2)
                                         vulns.append({
-                                            "id": f"Nmap ({port_num}): vulscan-{v_id}",
+                                            "id": f"Nmap ({port_num}) {script_id}: vulscan-{v_id}",
                                             "output": f"Port {port_num} ({script_id}): {line}"
                                         })
                         else:
@@ -295,14 +295,14 @@ class NmapAdapter:
                                 unique_cves = {c[0]: c[1] for c in cve_matches}
                                 for cve_id, cvss_str in unique_cves.items():
                                     vulns.append({
-                                        "id": f"Nmap ({port_num}): {cve_id}",
+                                        "id": f"Nmap ({port_num}) {script_id}: {cve_id}",
                                         "cve_id": cve_id,
                                         "cvss": float(cvss_str) if cvss_str else 0.0,
                                         "output": f"Script {script_id} on port {port_num}:\n{output_text}"
                                     })
                             else:
                                 vulns.append({
-                                    "id": f"Nmap ({port_num}): {script_id}",
+                                    "id": f"Nmap ({port_num}) {script_id}",
                                     "output": f"Script {script_id} on port {port_num}:\n{output_text}"
                                 })
                     
