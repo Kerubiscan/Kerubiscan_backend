@@ -835,7 +835,7 @@ def poll_scan_status(self, scan_id: str, task_id: str, report_id: str, asset_ip:
         adapter.disconnect()
         self.retry(countdown=60)
 
-@celery_app.task(name="generate_ai_summary_task", bind=True, max_retries=3)
+@celery_app.task(name="generate_ai_summary_task", bind=True, max_retries=3, ignore_result=False)
 def generate_ai_summary_task(self, vuln_data: list, language: str = "French", extra_instructions: str = ""):
     import asyncio
     from src.ai.application.services.nlp import generate_executive_summary
