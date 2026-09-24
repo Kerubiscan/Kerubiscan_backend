@@ -249,7 +249,7 @@ def delete_scan(scan_id: str, db: Session = Depends(get_db), current_user: dict 
         targets = [t.strip() for t in scan.target.split(",")] if scan.target else []
         assets = db.query(AssetEntity).filter(
             AssetEntity.company_id == scan.company_id,
-            AssetEntity.ip_address.in_(targets)
+            (AssetEntity.ip_address.in_(targets)) | (AssetEntity.name.in_(targets))
         ).all()
         
         for asset in assets:
@@ -277,21 +277,33 @@ def delete_scan(scan_id: str, db: Session = Depends(get_db), current_user: dict 
 
 @router.delete("", status_code=status.HTTP_204_NO_CONTENT)
 def delete_all_scans(db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)):
-    scans = db.query(ScanEntity).filter(ScanEntity.is_deleted == False).all()
-    for scan in scans:
-        scan.is_deleted = True
-    
-    audit = AuditLog(
-        user_id=current_user.get("id", "unknown"),
-        username=current_user.get("username", "system"),
-        action="DELETE_ALL",
-        resource_type="SCAN",
-        resource_id="ALL",
-        details={"count": len(scans)}
-    )
-    db.add(audit)
-    db.commit()
-    return None
+    try:
+        scans = db.query(ScanEntity).filter(ScanEntity.is_deleted == False).all()
+        for scan in scans:
+            scan.is_deleted = True
+            
+        from src.vulnerabilities.domain.entities import VulnerabilityEntity
+        from src.vulnerabilities.domain.entities import VulnerabilityHistoryEntity
+        
+        db.query(VulnerabilityHistoryEntity).delete(synchronize_session=False)
+        db.query(VulnerabilityEntity).delete(synchronize_session=False)
+        
+        audit = AuditLog(
+            user_id=current_user.get("sub", "unknown"),
+            username=current_user.get("preferred_username") or current_user.get("username", "system"),
+            action="DELETE_ALL",
+            resource_type="SCAN",
+            resource_id="ALL",
+            details={"count": len(scans)}
+        )
+        db.add(audit)
+        db.commit()
+        return None
+    except Exception as e:
+        import traceback
+        error_msg = traceback.format_exc()
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(error_msg))
 
 @router.put("/{scan_id}", response_model=ScanResponse)
 def update_scan(scan_id: str, req: ScanUpdateRequest, db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)):
