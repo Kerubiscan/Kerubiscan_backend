@@ -13,10 +13,10 @@ AI_ENDPOINT = os.getenv("AI_ENDPOINT", "http://host.docker.internal:11434/api/ch
 
 def _get_gemini_model() -> str:
     if AI_MODEL and "gemini" in AI_MODEL.lower():
-        if "1.5-flash" in AI_MODEL.lower():
-            return "gemini-1.5-flash"
+        if "1.5-flash" in AI_MODEL.lower() or "2.5-flash" in AI_MODEL.lower():
+            return "gemini-3.6-flash"
         return AI_MODEL
-    return "gemini-1.5-flash"
+    return "gemini-3.6-flash"
 
 def _get_ollama_model() -> str:
     if AI_MODEL and "gemini" not in AI_MODEL.lower() and "gpt" not in AI_MODEL.lower():
