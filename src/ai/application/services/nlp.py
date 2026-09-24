@@ -76,9 +76,9 @@ async def generate_executive_summary(vuln_data: List[Dict], language: str = "Fre
         f"Vulnerabilities data: {vuln_data}\n\n"
         "Respond with a valid JSON object with the following keys:\n"
         "{\n"
-        '  "executive_summary": "A clear non-technical synthesis of the security posture for C-level management.",\n'
-        '  "risk_analysis": "Real-world risk evaluation, business impact, and identification of false positive risks.",\n'
-        '  "remediation_plan": "Prioritized strategic remediation steps (1. Urgent, 2. Medium-term, 3. Hardening)."\n'
+        '  "executive_summary": "A clear non-technical synthesis of the security posture for C-level management. Format as a string.",\n'
+        '  "risk_analysis": "Real-world risk evaluation, business impact, and identification of false positive risks. Format as a string.",\n'
+        '  "remediation_plan": "A single Markdown string containing prioritized strategic remediation steps using bullet points (e.g., - **Urgent**: ...). DO NOT return a nested object or array here, it MUST be a single Markdown-formatted string."\n'
         "}\n"
         "Do NOT include markdown formatting outside the JSON."
     )
@@ -120,6 +120,11 @@ async def generate_executive_summary(vuln_data: List[Dict], language: str = "Fre
         exec_sum = parsed.get("executive_summary", "")
         risk_ana = parsed.get("risk_analysis", "")
         rem_plan = parsed.get("remediation_plan", "")
+        
+        if isinstance(rem_plan, (dict, list)):
+            # If the AI ignored instructions and returned a nested object, try to format it cleanly
+            import yaml
+            rem_plan = yaml.dump(rem_plan, allow_unicode=True, default_flow_style=False, sort_keys=False)
         
         formatted = f"{exec_sum}\n\n### Analyse des Risques / Risk Analysis\n{risk_ana}\n\n### Plan de Remédiation Stratégique / Remediation Plan\n{rem_plan}"
         return formatted.strip()
