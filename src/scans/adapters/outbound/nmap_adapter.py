@@ -134,8 +134,7 @@ class NmapAdapter:
             else:
                 cmd.extend(["-p-"])
             
-            # vulscan removed due to excessive memory usage and frequent OOM crashes
-            cmd.extend(["--script", "vuln,vulners"])
+            cmd.extend(["--script", "vuln,vulners,vulscan/"])
             cmd.extend(NmapAdapter._build_nmap_auth_args(credentials))
             cmd.extend(["-oX", "-", target])
             
