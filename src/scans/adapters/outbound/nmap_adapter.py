@@ -259,22 +259,52 @@ class NmapAdapter:
                         script_id = script.get("id")
                         output_text = script.get("output", "")
                         
-                        cve_matches = re.findall(r"(CVE-\d{4}-\d+)\s*([\d.]*)", output_text)
-                        if cve_matches:
-                            unique_cves = {c[0]: c[1] for c in cve_matches}
-                            for cve_id, cvss_str in unique_cves.items():
+                        if "ERROR" in output_text or len(output_text.strip()) < 5: 
+                            continue
+                            
+                        # Handle tabular/multi-finding scripts like vulners and vulscan line-by-line
+                        if script_id in ["vulners", "vulscan"]:
+                            for line in output_text.splitlines():
+                                line = line.strip()
+                                if not line or line.startswith("cpe:/"): continue
+                                
+                                cve_match = re.search(r"(CVE-\d{4}-\d+)\s*([\d.]*)", line)
+                                if cve_match:
+                                    cve_id = cve_match.group(1)
+                                    cvss_str = cve_match.group(2)
+                                    vulns.append({
+                                        "id": f"Nmap ({port_num}): {cve_id}",
+                                        "cve_id": cve_id,
+                                        "cvss": float(cvss_str) if cvss_str else 0.0,
+                                        "output": f"Port {port_num} ({script_id}): {line}"
+                                    })
+                                elif script_id == "vulscan":
+                                    # Vulscan often outputs IDs in brackets like [12345] OpenSSH Security Bypass
+                                    vscan_match = re.search(r"\[([^\]]+)\]\s*(.*)", line)
+                                    if vscan_match:
+                                        v_id = vscan_match.group(1)
+                                        v_desc = vscan_match.group(2)
+                                        vulns.append({
+                                            "id": f"Nmap ({port_num}): vulscan-{v_id}",
+                                            "output": f"Port {port_num} ({script_id}): {line}"
+                                        })
+                        else:
+                            # Standard single-vulnerability scripts (e.g. ssl-poodle, http-vuln-*)
+                            cve_matches = re.findall(r"(CVE-\d{4}-\d+)\s*([\d.]*)", output_text)
+                            if cve_matches:
+                                unique_cves = {c[0]: c[1] for c in cve_matches}
+                                for cve_id, cvss_str in unique_cves.items():
+                                    vulns.append({
+                                        "id": f"Nmap ({port_num}): {cve_id}",
+                                        "cve_id": cve_id,
+                                        "cvss": float(cvss_str) if cvss_str else 0.0,
+                                        "output": f"Script {script_id} on port {port_num}:\n{output_text}"
+                                    })
+                            else:
                                 vulns.append({
-                                    "id": f"Nmap ({port_num}): {cve_id}",
-                                    "cve_id": cve_id,
-                                    "cvss": float(cvss_str) if cvss_str else 0.0,
+                                    "id": f"Nmap ({port_num}): {script_id}",
                                     "output": f"Script {script_id} on port {port_num}:\n{output_text}"
                                 })
-                        else:
-                            if "ERROR" in output_text or len(output_text.strip()) < 5: continue
-                            vulns.append({
-                                "id": f"Nmap ({port_num}): {script_id}",
-                                "output": f"Script {script_id} on port {port_num}:\n{output_text}"
-                            })
                     
                 hosts_data.append({
                     "ip": ip,
