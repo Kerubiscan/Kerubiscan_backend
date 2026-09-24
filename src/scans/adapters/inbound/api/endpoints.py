@@ -412,7 +412,11 @@ def download_scan_report(
     
     raw_assets = []
     if exact_ips:
-        raw_assets.extend(db.query(AssetEntity).filter(AssetEntity.ip_address.in_(exact_ips)).all())
+        raw_assets.extend(
+            db.query(AssetEntity).filter(
+                (AssetEntity.ip_address.in_(exact_ips)) | (AssetEntity.name.in_(exact_ips))
+            ).all()
+        )
         
     if subnets:
         company_assets = db.query(AssetEntity).filter(AssetEntity.company_id == scan.company_id).all()
