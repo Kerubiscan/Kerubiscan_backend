@@ -390,8 +390,37 @@ def download_scan_report(
     if not scan:
         raise HTTPException(status_code=404, detail="Scan not found")
         
+    import ipaddress
+    
     targets = [t.strip() for t in scan.target.split(",")] if scan.target else []
-    raw_assets = db.query(AssetEntity).filter(AssetEntity.ip_address.in_(targets)).all()
+    
+    subnets = [t for t in targets if '/' in t]
+    exact_ips = [t for t in targets if '/' not in t]
+    
+    raw_assets = []
+    if exact_ips:
+        raw_assets.extend(db.query(AssetEntity).filter(AssetEntity.ip_address.in_(exact_ips)).all())
+        
+    if subnets:
+        company_assets = db.query(AssetEntity).filter(AssetEntity.company_id == scan.company_id).all()
+        for asset in company_assets:
+            if not asset.ip_address: continue
+            
+            # Skip if already added
+            if any(a.id == asset.id for a in raw_assets):
+                continue
+                
+            try:
+                asset_ip_obj = ipaddress.ip_address(asset.ip_address)
+                for subnet in subnets:
+                    try:
+                        if asset_ip_obj in ipaddress.ip_network(subnet, strict=False):
+                            raw_assets.append(asset)
+                            break
+                    except ValueError:
+                        pass
+            except ValueError:
+                pass
     
     # Deduplicate: one asset object per unique IP address
     seen_ips: dict = {}
