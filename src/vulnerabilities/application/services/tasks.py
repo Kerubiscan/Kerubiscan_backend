@@ -145,7 +145,13 @@ def parse_scan_report(report_xml: str, target_ip: str, scan_id: str = None):
 
             contextual_risk = calculate_contextual_risk(cvss_base_score, asset.criticality)
             
-            # 2. In-memory deduplication
+            # 2. In-memory deduplication (scoped to NUCLEI)
+            existing_vulns_list = db.query(VulnerabilityEntity).filter(
+                VulnerabilityEntity.asset_id == asset.id,
+                VulnerabilityEntity.source_engine == "NUCLEI"
+            ).all()
+            existing_by_cve = {v.cve_id: v for v in existing_vulns_list if v.cve_id}
+            existing_by_title = {v.title: v for v in existing_vulns_list}
             existing_vuln = None
             if cve_id and cve_id in existing_by_cve:
                 existing_vuln = existing_by_cve[cve_id]
@@ -172,6 +178,7 @@ def parse_scan_report(report_xml: str, target_ip: str, scan_id: str = None):
                     cvss_base_score=cvss_base_score,
                     contextual_risk_score=contextual_risk,
                     severity=severity,
+                    source_engine="NUCLEI",
                     status=VulnStatus.NEW
                 )
                 new_vulns_to_insert.append(new_vuln)
@@ -280,8 +287,11 @@ def parse_nmap_report(host_data: dict, target_ip: str, scan_id: str = None):
 
         vulns = host_data.get("vulns", [])
         
-        # 1. Load existing vulnerabilities into memory
-        existing_vulns_list = db.query(VulnerabilityEntity).filter(VulnerabilityEntity.asset_id == asset.id).all()
+        # 1. Load existing vulnerabilities into memory (scoped to NMAP)
+        existing_vulns_list = db.query(VulnerabilityEntity).filter(
+            VulnerabilityEntity.asset_id == asset.id,
+            VulnerabilityEntity.source_engine == "NMAP"
+        ).all()
         existing_by_title = {v.title: v for v in existing_vulns_list}
         
         new_vulns_to_insert = []

@@ -454,9 +454,16 @@ def download_scan_report(
         
     from src.vulnerabilities.domain.entities import VulnerabilityEntity
     all_vulns = {}
+    
+    # Determine the engine from the scan, default to OPENVAS if not set
+    engine = scan.scanner_engine.value if scan.scanner_engine else "OPENVAS"
+    
     for a in assets:
         if a.id != "dummy":
-            vulns = db.query(VulnerabilityEntity).filter(VulnerabilityEntity.asset_id == a.id).all()
+            vulns = db.query(VulnerabilityEntity).filter(
+                VulnerabilityEntity.asset_id == a.id,
+                VulnerabilityEntity.source_engine == engine
+            ).all()
             # Also deduplicate vulnerabilities by title
             seen_titles: dict = {}
             deduped = []
