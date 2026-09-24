@@ -23,6 +23,7 @@ class VulnerabilityRepository:
             query = query.filter(AssetEntity.network_zone == network_zone)
 
         total = query.count()
+        query = query.order_by(VulnerabilityEntity.last_seen_at.desc())
         rows = query.offset(skip).limit(limit).all()
 
         results = []
