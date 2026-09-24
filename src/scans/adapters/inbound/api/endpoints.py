@@ -234,37 +234,46 @@ def get_scans(company_id: Optional[str] = None, network_zone: Optional[str] = No
 
 @router.delete("/{scan_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_scan(scan_id: str, db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)):
-    scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
-    if not scan:
-        raise HTTPException(status_code=404, detail="Scan not found")
+    try:
+        scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
+        if not scan:
+            raise HTTPException(status_code=404, detail="Scan not found")
+            
+        scan.is_deleted = True
         
-    scan.is_deleted = True
-    
-    # User requested: when I delete a scan its values too should also be removed.
-    # We find assets matching the scan's targets and delete their vulnerabilities.
-    from src.assets.domain.entities import AssetEntity
-    from src.vulnerabilities.domain.entities import VulnerabilityEntity
-    
-    targets = [t.strip() for t in scan.target.split(",")]
-    assets = db.query(AssetEntity).filter(
-        AssetEntity.company_id == scan.company_id,
-        AssetEntity.ip_address.in_(targets)
-    ).all()
-    
-    for asset in assets:
-        db.query(VulnerabilityEntity).filter(VulnerabilityEntity.asset_id == asset.id).delete()
-    
-    audit = AuditLog(
-        user_id=current_user.get("id", "unknown"),
-        username=current_user.get("username", "system"),
-        action="DELETE",
-        resource_type="SCAN",
-        resource_id=str(scan.id),
-        details={"scan_name": scan.name}
-    )
-    db.add(audit)
-    db.commit()
-    return None
+        # User requested: when I delete a scan its values too should also be removed.
+        from src.assets.domain.entities import AssetEntity
+        from src.vulnerabilities.domain.entities import VulnerabilityEntity
+        from src.vulnerabilities.domain.entities import VulnerabilityHistoryEntity
+        
+        targets = [t.strip() for t in scan.target.split(",")] if scan.target else []
+        assets = db.query(AssetEntity).filter(
+            AssetEntity.company_id == scan.company_id,
+            AssetEntity.ip_address.in_(targets)
+        ).all()
+        
+        for asset in assets:
+            vulns = db.query(VulnerabilityEntity).filter(VulnerabilityEntity.asset_id == asset.id).all()
+            for v in vulns:
+                db.query(VulnerabilityHistoryEntity).filter(VulnerabilityHistoryEntity.vulnerability_id == v.id).delete(synchronize_session=False)
+                db.delete(v)
+        
+        audit = AuditLog(
+            user_id=current_user.get("sub", "unknown"),
+            username=current_user.get("preferred_username") or current_user.get("username", "system"),
+            action="DELETE",
+            resource_type="SCAN",
+            resource_id=str(scan.id),
+            details={"scan_name": scan.name}
+        )
+        db.add(audit)
+        db.commit()
+        return None
+    except Exception as e:
+        import traceback
+        error_msg = traceback.format_exc()
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(error_msg))
 
 @router.delete("", status_code=status.HTTP_204_NO_CONTENT)
 def delete_all_scans(db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)):
