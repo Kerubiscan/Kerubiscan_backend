@@ -308,12 +308,14 @@ def parse_nmap_report(host_data: dict, target_ip: str, scan_id: str = None):
                 out_lower = output.lower()
                 
                 # Check for critical keywords
-                if any(k in out_lower for k in ["remote code execution", "rce", "sql injection", "sqli", "command injection"]):
+                if "critical" in out_lower or any(k in out_lower for k in ["remote code execution", "rce", "sql injection", "sqli", "command injection"]):
                     severity = VulnSeverity.CRITICAL
-                elif any(k in out_lower for k in ["cross-site scripting", "xss", "buffer overflow", "privilege escalation", "authentication bypass", "vulnerable"]):
+                elif "high" in out_lower or any(k in out_lower for k in ["cross-site scripting", "xss", "buffer overflow", "privilege escalation", "authentication bypass", "vulnerable"]):
                     severity = VulnSeverity.HIGH
-                elif any(k in out_lower for k in ["denial of service", "dos", "information disclosure", "directory traversal", "csrf"]):
+                elif "medium" in out_lower or any(k in out_lower for k in ["denial of service", "dos", "information disclosure", "directory traversal", "csrf"]):
                     severity = VulnSeverity.MEDIUM
+                elif "low" in out_lower:
+                    severity = VulnSeverity.LOW
                 elif cve_id:
                     # If it has a CVE but no score/keywords, default to MEDIUM instead of INFO to ensure visibility
                     severity = VulnSeverity.MEDIUM
