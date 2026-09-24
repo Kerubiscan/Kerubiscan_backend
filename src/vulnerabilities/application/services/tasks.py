@@ -304,9 +304,19 @@ def parse_nmap_report(host_data: dict, target_ip: str, scan_id: str = None):
                 elif cvss_score > 0.0:
                     severity = VulnSeverity.LOW
             
-            if severity == VulnSeverity.INFO and ("VULNERABLE" in output or "State: VULNERABLE" in output):
-                severity = VulnSeverity.HIGH
-            
+            if severity == VulnSeverity.INFO:
+                out_lower = output.lower()
+                
+                # Check for critical keywords
+                if any(k in out_lower for k in ["remote code execution", "rce", "sql injection", "sqli", "command injection"]):
+                    severity = VulnSeverity.CRITICAL
+                elif any(k in out_lower for k in ["cross-site scripting", "xss", "buffer overflow", "privilege escalation", "authentication bypass", "vulnerable"]):
+                    severity = VulnSeverity.HIGH
+                elif any(k in out_lower for k in ["denial of service", "dos", "information disclosure", "directory traversal", "csrf"]):
+                    severity = VulnSeverity.MEDIUM
+                elif cve_id:
+                    # If it has a CVE but no score/keywords, default to MEDIUM instead of INFO to ensure visibility
+                    severity = VulnSeverity.MEDIUM
             # 2. In-memory deduplication
             existing_vuln = existing_by_title.get(title)
             
