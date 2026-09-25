@@ -189,6 +189,29 @@ async def delete_all_assets(
     
     return None
 
+@router.post("/clear-raw-logs", status_code=status.HTTP_200_OK)
+@limiter.limit("5/minute")
+async def clear_all_raw_logs(
+    request: Request,
+    db: Session = Depends(get_db),
+    audit: AuditService = Depends(get_audit_service),
+    current_user: dict = Depends(require_permissions([Permission.ASSET_WRITE]))
+):
+    from src.assets.domain.entities import AssetEntity
+    count = db.query(AssetEntity).filter(AssetEntity.last_scan_raw_output.is_not(None)).update({AssetEntity.last_scan_raw_output: None})
+    db.commit()
+    
+    audit.log_action(
+        user_id=current_user.get("sub", "unknown"),
+        username=current_user.get("preferred_username"),
+        action="CLEAR_RAW_LOGS",
+        resource_type="Asset",
+        resource_id="ALL",
+        details={"cleared_count": count}
+    )
+    
+    return {"message": f"Successfully cleared raw logs for {count} assets."}
+
 @router.post("/{asset_id}/generate-summary", response_model=dict)
 @limiter.limit("10/minute")
 async def generate_asset_summary(

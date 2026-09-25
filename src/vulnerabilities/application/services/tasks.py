@@ -39,6 +39,25 @@ def calculate_contextual_risk(base_score: float, criticality) -> float:
     
     return round(base_score * multiplier, 1)
 
+def send_scan_summary_email(scan, asset, target_ip, new_vulns_to_insert, scanner_name):
+    from src.notifications.application.services.smtp import send_alert_email
+    admin_email = getattr(scan, 'notify_email', None) if scan else None
+    if not admin_email: admin_email = "admin@kerubiscan.local"
+    
+    counts = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0, "INFO": 0}
+    for v in new_vulns_to_insert:
+        sev = v.severity.name if hasattr(v.severity, 'name') else str(v.severity).split('.')[-1]
+        if sev in counts: counts[sev] += 1
+        
+    content = f"{counts['CRITICAL']} critical, {counts['HIGH']} high, {counts['MEDIUM']} medium and {counts['LOW']} low vulnerabilities were found."
+    
+    send_alert_email(
+        to_email=admin_email,
+        subject=f"Scan Completed: {asset.name} ({scanner_name})",
+        content=content,
+        is_html=False
+    )
+
 @celery_app.task
 def parse_scan_report(report_xml: str, target_ip: str, scan_id: str = None):
     logger.info(f"Parsing scan report for {target_ip} (Scan {scan_id})")
@@ -212,25 +231,7 @@ def parse_scan_report(report_xml: str, target_ip: str, scan_id: str = None):
         logger.info("Finished parsing report.")
         
         # Send Email Alerts
-        from src.notifications.application.services.smtp import send_alert_email
-        admin_email = scan.notify_email if getattr(scan, 'notify_email', None) else "admin@kerubiscan.local"
-        
-        # 1. Email for finished scan
-        send_alert_email(
-            to_email=admin_email,
-            subject=f"Scan Completed: {target_ip}",
-            content=f"The vulnerability scan for asset {asset.name} ({target_ip}) has completed successfully.\nTotal results processed: {len(results)}."
-        )
-        
-        # 2. Email for critical/high alerts
-        if new_alerts:
-            logger.info(f"Sending alerts for {len(new_alerts)} vulnerabilities.")
-            vuln_list = "\n".join([f"- {v}" for v in new_alerts])
-            send_alert_email(
-                to_email=admin_email,
-                subject=f"HIGH/CRITICAL Vulnerabilities Detected on {asset.name}",
-                content=f"The following HIGH and CRITICAL vulnerabilities were newly discovered or regressed on {asset.name} ({target_ip}):\n\n{vuln_list}\n\nPlease investigate immediately."
-            )
+        send_scan_summary_email(scan, asset, target_ip, new_vulns_to_insert, "OpenVAS")
         
         if scan_id:
             update_scan_progress(scan_id, target_ip, "COMPLETED")
@@ -372,25 +373,7 @@ def parse_nmap_report(host_data: dict, target_ip: str, scan_id: str = None):
         logger.info(f"Finished parsing Nmap report. Found {len(vulns)} scripts output.")
 
         # Send Email Alerts
-        from src.notifications.application.services.smtp import send_alert_email
-        admin_email = scan.notify_email if getattr(scan, 'notify_email', None) else "admin@kerubiscan.local"
-        
-        # 1. Email for finished scan
-        send_alert_email(
-            to_email=admin_email,
-            subject=f"Nmap Scan Completed: {target_ip}",
-            content=f"The Nmap scan for asset {asset.name} ({target_ip}) has completed successfully.\nTotal scripts processed: {len(vulns)}."
-        )
-        
-        # 2. Email for critical/high alerts
-        if new_alerts:
-            logger.info(f"Sending alerts for {len(new_alerts)} Nmap vulnerabilities.")
-            vuln_list = "\n".join([f"- {v}" for v in new_alerts])
-            send_alert_email(
-                to_email=admin_email,
-                subject=f"HIGH/CRITICAL Vulnerabilities Detected by Nmap on {asset.name}",
-                content=f"The following HIGH and CRITICAL vulnerabilities were newly discovered or regressed on {asset.name} ({target_ip}):\n\n{vuln_list}\n\nPlease investigate immediately."
-            )
+        send_scan_summary_email(scan, asset, target_ip, new_vulns_to_insert, "Nmap")
 
         if scan_id:
             update_scan_progress(scan_id, target_ip, "COMPLETED")
@@ -517,25 +500,7 @@ def parse_nuclei_report(vuln_data_list: list, target_ip: str, scan_id: str = Non
         logger.info(f"Finished parsing Nuclei report. Processed {len(vuln_data_list)} findings.")
 
         # Send Email Alerts
-        from src.notifications.application.services.smtp import send_alert_email
-        admin_email = scan.notify_email if getattr(scan, 'notify_email', None) else "admin@kerubiscan.local"
-        
-        # 1. Email for finished scan
-        send_alert_email(
-            to_email=admin_email,
-            subject=f"Nuclei Scan Completed: {target_ip}",
-            content=f"The Nuclei scan for asset {asset.name} ({target_ip}) has completed successfully.\nTotal findings processed: {len(vuln_data_list)}."
-        )
-        
-        # 2. Email for critical/high alerts
-        if new_alerts:
-            logger.info(f"Sending alerts for {len(new_alerts)} Nuclei vulnerabilities.")
-            vuln_list = "\n".join([f"- {v}" for v in new_alerts])
-            send_alert_email(
-                to_email=admin_email,
-                subject=f"HIGH/CRITICAL Vulnerabilities Detected by Nuclei on {asset.name}",
-                content=f"The following HIGH and CRITICAL vulnerabilities were newly discovered or regressed on {asset.name} ({target_ip}):\n\n{vuln_list}\n\nPlease investigate immediately."
-            )
+        send_scan_summary_email(scan, asset, target_ip, new_vulns_to_insert, "Nuclei")
 
         if scan_id:
             update_scan_progress(scan_id, target_ip, "COMPLETED")
@@ -664,25 +629,7 @@ def parse_zap_report(vuln_data_list: list, target_ip: str, scan_id: str = None):
         logger.info(f"Finished parsing ZAP report. Processed {len(vuln_data_list)} findings.")
 
         # Send Email Alerts
-        from src.notifications.application.services.smtp import send_alert_email
-        admin_email = scan.notify_email if getattr(scan, 'notify_email', None) else "admin@kerubiscan.local"
-        
-        # 1. Email for finished scan
-        send_alert_email(
-            to_email=admin_email,
-            subject=f"ZAP Scan Completed: {target_ip}",
-            content=f"The OWASP ZAP scan for asset {asset.name} ({target_ip}) has completed successfully.\nTotal findings processed: {len(vuln_data_list)}."
-        )
-        
-        # 2. Email for critical/high alerts
-        if new_alerts:
-            logger.info(f"Sending alerts for {len(new_alerts)} ZAP vulnerabilities.")
-            vuln_list = "\n".join([f"- {v}" for v in new_alerts])
-            send_alert_email(
-                to_email=admin_email,
-                subject=f"HIGH/CRITICAL Web Vulnerabilities Detected by ZAP on {asset.name}",
-                content=f"The following HIGH and CRITICAL vulnerabilities were newly discovered or regressed on {asset.name} ({target_ip}):\n\n{vuln_list}\n\nPlease investigate immediately."
-            )
+        send_scan_summary_email(scan, asset, target_ip, new_vulns_to_insert, "ZAP")
 
         if scan_id:
             update_scan_progress(scan_id, target_ip, "COMPLETED")

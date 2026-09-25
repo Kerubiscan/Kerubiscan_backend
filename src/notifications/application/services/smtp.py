@@ -10,10 +10,14 @@ SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
 SMTP_USER = os.getenv("SMTP_USER", "")
 SMTP_PASS = os.getenv("SMTP_PASS", "")
 
-def send_alert_email(to_email: str, subject: str, content: str):
+def send_alert_email(to_email: str, subject: str, content: str, is_html: bool = False):
     try:
         msg = EmailMessage()
-        msg.set_content(content)
+        if is_html:
+            msg.set_content("Please enable HTML to view this email.")
+            msg.add_alternative(content, subtype='html')
+        else:
+            msg.set_content(content)
         msg['Subject'] = subject
         msg['From'] = "alerts@kerubiscan.com"
         msg['To'] = to_email
