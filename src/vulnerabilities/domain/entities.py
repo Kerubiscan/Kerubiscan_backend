@@ -18,6 +18,9 @@ class VulnerabilityEntity(Base):
     cvss_vector = Column(String, nullable=True)
     contextual_risk_score = Column(Float, nullable=True)
     
+    port = Column(Integer, nullable=True)
+    service = Column(String, nullable=True)
+    
     source_engine = Column(String, default="OPENVAS", nullable=False)
     
     ai_analysis = Column(JSON, nullable=True)

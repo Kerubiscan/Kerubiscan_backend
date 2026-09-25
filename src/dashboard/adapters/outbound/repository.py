@@ -158,8 +158,8 @@ class DashboardRepository:
                 "severity": vuln.severity.value,
                 "name": vuln.title,
                 "target": asset.ip_address,
-                "service": "Unknown", # We'll just leave it as Unknown since we don't track port level in current entity
-                "port": "-",
+                "service": vuln.service if vuln.service else "Unknown",
+                "port": str(vuln.port) if vuln.port else "-",
                 "date": vuln.first_detected_at.strftime("%d %b %Y, %H:%M"),
                 "badgeClass": badge_class
             })

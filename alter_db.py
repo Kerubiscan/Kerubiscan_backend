@@ -35,5 +35,17 @@ def upgrade_db():
         except Exception as e:
             print(f"Error adding notify_email to schedules: {e}")
 
+        try:
+            conn.execute(text("ALTER TABLE vulnerabilities ADD COLUMN port INTEGER;"))
+            print("Added port to vulnerabilities")
+        except Exception as e:
+            print(f"Error adding port to vulnerabilities: {e}")
+
+        try:
+            conn.execute(text("ALTER TABLE vulnerabilities ADD COLUMN service VARCHAR;"))
+            print("Added service to vulnerabilities")
+        except Exception as e:
+            print(f"Error adding service to vulnerabilities: {e}")
+
 if __name__ == "__main__":
     upgrade_db()

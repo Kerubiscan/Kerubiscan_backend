@@ -26,6 +26,8 @@ class VulnerabilityBase(BaseModel):
     cvss_base_score: Optional[float] = None
     cvss_vector: Optional[str] = None
     contextual_risk_score: Optional[float] = None
+    port: Optional[int] = None
+    service: Optional[str] = None
     source_engine: Optional[str] = None
     severity: VulnSeverity = VulnSeverity.INFO
     status: VulnStatus = VulnStatus.NEW

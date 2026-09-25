@@ -36,16 +36,34 @@ import alembic.command
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Automatically apply Alembic migrations on startup
+    # Check if database is fresh
+    from sqlalchemy import inspect
     try:
-        alembic_cfg = alembic.config.Config("alembic.ini")
-        alembic.command.upgrade(alembic_cfg, "head")
-        print("Alembic migrations applied successfully.")
-    except Exception as e:
-        print(f"Failed to apply Alembic migrations: {e}")
+        inspector = inspect(engine)
+        tables = inspector.get_table_names()
         
-    # Initialize database tables on startup (creates missing tables that don't have migrations yet)
-    Base.metadata.create_all(bind=engine)
+        if 'assets' not in tables:
+            # Fresh or partially initialized database: create all tables from models
+            Base.metadata.create_all(bind=engine)
+            print("Fresh database initialized with create_all.")
+            
+            # Stamp Alembic to head so future migrations apply correctly
+            alembic_cfg = alembic.config.Config("alembic.ini")
+            alembic.command.stamp(alembic_cfg, "head")
+            print("Alembic stamped to head.")
+        else:
+            # Existing database: Apply Alembic migrations first
+            try:
+                alembic_cfg = alembic.config.Config("alembic.ini")
+                alembic.command.upgrade(alembic_cfg, "head")
+                print("Alembic migrations applied successfully.")
+            except Exception as e:
+                print(f"Failed to apply Alembic migrations: {e}")
+                
+            # Then ensure any missing tables are created (just in case)
+            Base.metadata.create_all(bind=engine)
+    except Exception as e:
+        print(f"Database initialization error: {e}")
     
     # Automatically clear useless bloat (raw outputs and old audit logs) on application start
     from sqlalchemy import text

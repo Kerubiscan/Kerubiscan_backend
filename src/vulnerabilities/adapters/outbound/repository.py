@@ -38,6 +38,8 @@ class VulnerabilityRepository:
                 cvss_base_score=vuln.cvss_base_score,
                 cvss_vector=vuln.cvss_vector,
                 contextual_risk_score=vuln.contextual_risk_score,
+                port=vuln.port,
+                service=vuln.service,
                 source_engine=vuln.source_engine,
                 severity=vuln.severity,
                 status=vuln.status,

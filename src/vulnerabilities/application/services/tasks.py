@@ -164,10 +164,22 @@ def parse_scan_report(report_xml: str, target_ip: str, scan_id: str = None):
 
             contextual_risk = calculate_contextual_risk(cvss_base_score, asset.criticality)
             
-            # 2. In-memory deduplication (scoped to NUCLEI)
+            port_str = result.findtext("port")
+            port_num = None
+            service_name = None
+            if port_str:
+                if "/" in port_str:
+                    p_num_str = port_str.split("/")[0]
+                    if p_num_str.isdigit():
+                        port_num = int(p_num_str)
+                    service_name = port_str.split("/")[1] if len(port_str.split("/")) > 1 else None
+                elif port_str.isdigit():
+                    port_num = int(port_str)
+            
+            # 2. In-memory deduplication (scoped to OPENVAS)
             existing_vulns_list = db.query(VulnerabilityEntity).filter(
                 VulnerabilityEntity.asset_id == asset.id,
-                VulnerabilityEntity.source_engine == "NUCLEI"
+                VulnerabilityEntity.source_engine == "OPENVAS"
             ).all()
             existing_by_cve = {v.cve_id: v for v in existing_vulns_list if v.cve_id}
             existing_by_title = {v.title: v for v in existing_vulns_list}
@@ -197,7 +209,9 @@ def parse_scan_report(report_xml: str, target_ip: str, scan_id: str = None):
                     cvss_base_score=cvss_base_score,
                     contextual_risk_score=contextual_risk,
                     severity=severity,
-                    source_engine="NUCLEI",
+                    port=port_num,
+                    service=service_name,
+                    source_engine="OPENVAS",
                     status=VulnStatus.NEW
                 )
                 new_vulns_to_insert.append(new_vuln)
