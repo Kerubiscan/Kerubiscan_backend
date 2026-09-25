@@ -18,7 +18,7 @@ class DashboardRepository:
         # And if the latest scan is deleted, the dashboard should show zero
         latest_scan = self.db.query(ScanEntity).order_by(desc(ScanEntity.created_at)).first()
         if not latest_scan or latest_scan.is_deleted:
-            return {"Critical": 0, "High": 0, "Medium": 0, "Low": 0, "Info": 0}
+            return {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}
 
         max_seen = self.db.query(func.max(VulnerabilityEntity.last_seen_at)).scalar()
         
