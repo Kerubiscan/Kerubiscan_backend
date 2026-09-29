@@ -63,7 +63,7 @@ def check_scheduled_scans():
                     db.commit()
                     db.refresh(scan)
                     
-                    admin_email = sched.notify_email if getattr(sched, 'notify_email', None) else "admin@kerubiscan.local"
+                    admin_email = sched.notify_email if getattr(sched, 'notify_email', None) else "admin@KVS.local"
                     try:
                         send_alert_email(
                             to_email=admin_email,
@@ -113,7 +113,7 @@ def check_scheduled_scans():
                 scan.target_states = target_states
                 db.commit()
 
-                admin_email = scan.notify_email if getattr(scan, 'notify_email', None) else "admin@kerubiscan.local"
+                admin_email = scan.notify_email if getattr(scan, 'notify_email', None) else "admin@KVS.local"
                 try:
                     send_alert_email(
                         to_email=admin_email,

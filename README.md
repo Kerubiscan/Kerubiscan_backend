@@ -1,4 +1,4 @@
-# Kimia Vulnerability Scanner
+# Kerubi Vulnerability Scanner
 
 Automated vulnerability management platform relying on Greenbone/OpenVAS.
 

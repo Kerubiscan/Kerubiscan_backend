@@ -395,7 +395,7 @@ import io
 @router.get("/{scan_id}/report/html")
 def download_scan_report(
     scan_id: str, 
-    scanner_company: str = "Kerubiscan Security", 
+    scanner_company: str = "KVS Security", 
     target_company: str = "Client Company", 
     db: Session = Depends(get_db)
 ):

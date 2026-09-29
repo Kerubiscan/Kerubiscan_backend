@@ -42,7 +42,7 @@ def calculate_contextual_risk(base_score: float, criticality) -> float:
 def send_scan_summary_email(scan, asset, target_ip, new_vulns_to_insert, scanner_name):
     from src.notifications.application.services.smtp import send_alert_email
     admin_email = getattr(scan, 'notify_email', None) if scan else None
-    if not admin_email: admin_email = "admin@kerubiscan.local"
+    if not admin_email: admin_email = "admin@KVS.local"
     
     counts = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0, "INFO": 0}
     for v in new_vulns_to_insert:

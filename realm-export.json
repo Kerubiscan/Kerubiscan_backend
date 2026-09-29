@@ -32,10 +32,10 @@
       "protocol": "openid-connect"
     },
     {
-      "clientId": "kerubiscan-web",
+      "clientId": "KVS-web",
       "enabled": true,
       "clientAuthenticatorType": "client-secret",
-      "secret": "kerubiscan-web-secret",
+      "secret": "KVS-web-secret",
       "publicClient": false,
       "directAccessGrantsEnabled": true,
       "standardFlowEnabled": true,

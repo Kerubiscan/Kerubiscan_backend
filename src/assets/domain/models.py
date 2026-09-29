@@ -58,5 +58,5 @@ class AssetSummaryGenerateRequest(BaseModel):
 
 class AssetReportRequest(BaseModel):
     executive_summary: str = ""
-    scanner_company: str = "Kerubiscan Security"
+    scanner_company: str = "KVS Security"
     target_company: str = "Client Company"

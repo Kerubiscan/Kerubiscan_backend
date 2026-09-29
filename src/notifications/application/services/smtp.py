@@ -19,7 +19,7 @@ def send_alert_email(to_email: str, subject: str, content: str, is_html: bool = 
         else:
             msg.set_content(content)
         msg['Subject'] = subject
-        msg['From'] = "alerts@kerubiscan.com"
+        msg['From'] = "alerts@KVS.com"
         msg['To'] = to_email
 
         if not SMTP_USER:
