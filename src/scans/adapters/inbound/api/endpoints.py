@@ -82,7 +82,7 @@ def get_scanner_status(db: Session = Depends(get_db)):
         last_scan_time = "Aucun"
 
     return ScannerStatus(
-        status="Opérationnel",
+        status="OpÃ©rationnel",
         scans_in_progress=in_progress,
         scheduled_scans=scheduled,
         last_scan_time=last_scan_time
@@ -553,4 +553,87 @@ def trigger_scanner_update(req: ScannerUpdateRequest, db: Session = Depends(get_
     db.commit()
     
     return {"message": f"Update triggered for {engine}", "status": "STARTED"}
+
+from pydantic import BaseModel
+class PdfReportRequest(BaseModel):
+    language: str = "English"
+    executive_summary: str = None
+
+@router.post("/{scan_id}/report/pdf")
+def download_scan_report_pdf(
+    scan_id: str, 
+    request_body: PdfReportRequest,
+    scanner_company: str = "KVS Security", 
+    target_company: str = "Client Company", 
+    db: Session = Depends(get_db)
+):
+    scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
+    if not scan:
+        raise HTTPException(status_code=404, detail="Scan not found")
+        
+    import ipaddress
+    
+    targets = [t.strip() for t in scan.target.split(",")] if scan.target else []
+    
+    subnets = [t for t in targets if '/' in t]
+    exact_ips = [t for t in targets if '/' not in t]
+    
+    raw_assets = []
+    if exact_ips:
+        raw_assets.extend(
+            db.query(AssetEntity).filter(
+                AssetEntity.ip_address.in_(exact_ips)
+            ).all()
+        )
+    for subnet in subnets:
+        try:
+            network = ipaddress.ip_network(subnet, strict=False)
+            all_assets = db.query(AssetEntity).all()
+            for a in all_assets:
+                try:
+                    if ipaddress.ip_address(a.ip_address) in network:
+                        if a not in raw_assets:
+                            raw_assets.append(a)
+                except ValueError:
+                    pass
+        except ValueError:
+            pass
+            
+    assets = raw_assets
+    all_vulns_by_asset = {}
+    for a in assets:
+        asset_vulns = db.query(VulnerabilityEntity).filter(VulnerabilityEntity.asset_id == str(a.id)).all()
+        # deduplicate
+        deduped = []
+        seen = set()
+        for v in asset_vulns:
+            key = (v.cve_id, v.title, v.asset_id)
+            if key not in seen:
+                seen.add(key)
+                deduped.append(v)
+        all_vulns_by_asset[str(a.id)] = deduped
+    
+    from src.reporting.application.services.pdf_generator import generate_scan_vulnerability_pdf
+    
+    display_name = scan.name
+    if "," in display_name and len(display_name) > 40:
+        display_name = "Multi-Target Scan Batch"
+        
+    dummy_asset = AssetEntity(name=display_name, ip_address=scan.target)
+    
+    pdf_bytes = generate_scan_vulnerability_pdf(
+        assets=assets,
+        all_vulnerabilities=all_vulns_by_asset,
+        executive_summary=request_body.executive_summary or scan.executive_summary,
+        scanner_company_name=scanner_company,
+        target_company_name=target_company,
+        scan_name=display_name
+    )
+    
+    short_id = str(scan.id)[:8]
+    return StreamingResponse(
+        io.BytesIO(pdf_bytes), 
+        media_type="application/pdf", 
+        headers={"Content-Disposition": f'attachment; filename="report_{short_id}.pdf"'}
+    )
 

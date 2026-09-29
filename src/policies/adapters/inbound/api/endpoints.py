@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, Query, Request
+﻿from fastapi import APIRouter, Depends, Query, Request, HTTPException, status
 from sqlalchemy.orm import Session
 from typing import Optional
 
@@ -8,7 +8,7 @@ from src.auth.adapters.inbound.api.dependencies import require_permissions
 from src.auth.domain.entities import Permission
 from src.core.rate_limit import limiter
 
-from src.policies.domain.models import PolicyResponse
+from src.policies.domain.models import PolicyResponse, PolicyCreate, PolicyUpdate
 from src.policies.adapters.outbound.repository import PolicyRepository
 
 router = APIRouter()
@@ -37,9 +37,6 @@ async def get_policies(
         pages=pages
     )
 
-from src.policies.domain.models import PolicyCreate
-from fastapi import status
-
 @router.post("", response_model=PolicyResponse, status_code=status.HTTP_201_CREATED)
 @limiter.limit("20/minute")
 async def create_policy(
@@ -49,3 +46,28 @@ async def create_policy(
     current_user: dict = Depends(require_permissions([Permission.ASSET_WRITE]))
 ):
     return repo.create(policy_in)
+
+@router.put("/{policy_id}", response_model=PolicyResponse)
+@limiter.limit("20/minute")
+async def update_policy(
+    request: Request,
+    policy_id: str,
+    policy_in: PolicyUpdate,
+    repo: PolicyRepository = Depends(get_policy_repository),
+    current_user: dict = Depends(require_permissions([Permission.ASSET_WRITE]))
+):
+    entity = repo.update(policy_id, policy_in)
+    if not entity:
+        raise HTTPException(status_code=404, detail="Policy not found")
+    return entity
+
+@router.delete("/{policy_id}", status_code=status.HTTP_204_NO_CONTENT)
+@limiter.limit("20/minute")
+async def delete_policy(
+    request: Request,
+    policy_id: str,
+    repo: PolicyRepository = Depends(get_policy_repository),
+    current_user: dict = Depends(require_permissions([Permission.ASSET_WRITE]))
+):
+    if not repo.delete(policy_id):
+        raise HTTPException(status_code=404, detail="Policy not found")

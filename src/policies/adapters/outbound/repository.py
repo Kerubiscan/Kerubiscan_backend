@@ -1,4 +1,4 @@
-from sqlalchemy.orm import Session
+﻿from sqlalchemy.orm import Session
 from sqlalchemy import select, func
 from typing import List, Tuple, Optional
 from src.policies.domain.entities import PolicyEntity
@@ -23,3 +23,25 @@ class PolicyRepository:
         self.db.commit()
         self.db.refresh(entity)
         return entity
+
+    def get_by_id(self, policy_id: int) -> Optional[PolicyEntity]:
+        return self.db.execute(select(PolicyEntity).where(PolicyEntity.id == policy_id)).scalar_one_or_none()
+
+    def update(self, policy_id: int, policy_in) -> Optional[PolicyEntity]:
+        entity = self.get_by_id(policy_id)
+        if not entity:
+            return None
+        update_data = policy_in.model_dump(exclude_unset=True)
+        for key, value in update_data.items():
+            setattr(entity, key, value)
+        self.db.commit()
+        self.db.refresh(entity)
+        return entity
+
+    def delete(self, policy_id: int) -> bool:
+        entity = self.get_by_id(policy_id)
+        if not entity:
+            return False
+        self.db.delete(entity)
+        self.db.commit()
+        return True
