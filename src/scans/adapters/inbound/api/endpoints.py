@@ -82,7 +82,7 @@ def get_scanner_status(db: Session = Depends(get_db)):
         last_scan_time = "Aucun"
 
     return ScannerStatus(
-        status="OpÃ©rationnel",
+        status="Opérationnel",
         scans_in_progress=in_progress,
         scheduled_scans=scheduled,
         last_scan_time=last_scan_time
