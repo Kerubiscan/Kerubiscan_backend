@@ -22,12 +22,28 @@ The backend is structured around domain-driven business logic:
 ```text
 src/
 ├── main.py                     # FastAPI Application Entrypoint
-├── {module}/domain/            # Core Business logic, Entities, and Pydantic Models
-├── {module}/ports/             # Abstract Interfaces for Adapters
+├── ai/                         # AI-powered services for severity/impact analysis
+├── assets/                     # Asset/IP management module
+├── audit/                      # Audit logs and tracking
+├── auth/                       # Authentication and authorization logic
+├── companies/                  # Multi-tenant company management
+├── core/                       # Core configurations, DB sessions, and shared exceptions
+├── dashboard/                  # Dashboard statistics and KPIs
+├── notifications/              # Alerting and notification module
+├── policies/                   # Scan policies configuration (CRUD)
+├── reporting/                  # Report generators (PDF, HTML via Jinja2/ReportLab)
+├── scans/                      # Scan orchestration (OpenVAS, Nuclei, Nmap)
+├── scheduling/                 # Recurrent scan scheduling and cron tasks
+├── secrets/                    # Vault integration and secret management
+└── vulnerabilities/            # Vulnerability intelligence and deduplication
+
+Within each module (e.g., `scans/`), the Hexagonal architecture is strictly followed:
+├── {module}/domain/            # Core Business logic, `entities.py` (SQLAlchemy), `models.py` (Pydantic)
+├── {module}/ports/             # Abstract Interfaces for Repositories and Services
 ├── {module}/adapters/          # Implementations
-│   ├── inbound/api/            # REST API endpoints (FastAPI routers)
-│   └── outbound/               # Database repositories, external API clients
-└── {module}/application/       # Use-cases and Orchestration Services (e.g., Report Generators)
+│   ├── inbound/api/            # REST API endpoints (FastAPI routers, `endpoints.py`)
+│   └── outbound/               # Database repositories (`repository.py`), external API clients
+└── {module}/application/       # Use-cases and Orchestration Services
 ```
 
 ## 🚀 Setup & Installation
