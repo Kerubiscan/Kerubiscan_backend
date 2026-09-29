@@ -1,33 +1,53 @@
-﻿# Kerubi Vulnerability Scanner (KVS) - Backend
+# Kerubi Vulnerability Scanner (KVS) - Backend
 
-Automated vulnerability management platform relying on Greenbone/OpenVAS, Nuclei, and Nmap, with a unified intelligence aggregation layer.
+![KVS Architecture Logo](https://img.shields.io/badge/Security-Scanner-blue?style=for-the-badge) ![Python](https://img.shields.io/badge/Python-3.10%2B-green?style=for-the-badge) ![FastAPI](https://img.shields.io/badge/FastAPI-Framework-009688?style=for-the-badge)
 
-## Setup Instructions
+The **Kerubi Vulnerability Scanner (KVS)** backend is an automated, high-performance vulnerability management platform. It acts as the core orchestration engine, aggregating intelligence from industry-standard scanners like **OpenVAS (Greenbone)**, **Nuclei**, and **Nmap**.
 
-1. Ensure Docker and docker-compose are installed.
-2. Build and start the services:
-   ``bash
-   docker-compose up --build
-   ``
-3. The API will be available at http://localhost:8000. 
-4. The API documentation is at http://localhost:8000/docs.
+Built with a robust **Hexagonal (Ports and Adapters) Architecture**, the backend ensures clean separation of concerns, scalability, and maintainability.
 
-## Architecture
-The backend follows a Hexagonal Architecture, with code organized around business domains.
+## 🌟 Core Features
 
-- src/main.py: Entrypoint
-- src/{module}/domain/: Business logic and models
-- src/{module}/ports/: Interfaces for adapters to implement
-- src/{module}/adapters/: Implementations of ports (e.g., HTTP API endpoints, Database Repositories)
+- **Multi-Engine Orchestration**: Seamlessly coordinates OpenVAS, Nuclei, and Nmap for comprehensive asset discovery and deep vulnerability assessments.
+- **Intelligent Deduplication**: Automatically aggregates and deduplicates cross-engine findings based on CVEs, IP signatures, and vulnerability vectors, reducing alert fatigue.
+- **AI-Powered Contextual Analysis**: Leverages AI to provide actionable remediation steps, contextual business impact analysis, and tailored severity assessments.
+- **Advanced Reporting**: Dynamically generates highly polished, professional **PDF and HTML** executive and technical reports using `ReportLab` and `Jinja2`.
+- **Policy & Secret Management**: Provides full CRUD capabilities to define dynamic security policies and manage vault secrets securely.
+- **Task & Schedule Management**: Asynchronous task tracking for immediate, scheduled, and recurrent network scans.
 
-## Core Capabilities
-- **Multi-Engine Scanning**: Orchestrates OpenVAS, Nuclei, and Nmap for comprehensive asset discovery and vulnerability assessment.
-- **Reporting Engine**: Generates professional PDF and HTML reports for executive overviews and detailed vulnerability insights.
-- **AI-Powered Analysis**: Provides AI-generated remediation steps, business impact analysis, and contextual severity assessments.
-- **Policy Management**: Full CRUD capabilities for dynamic policy tracking.
-- **Deduplication**: Intelligent aggregation and deduplication of findings across multiple scanners based on CVE and signatures.
+## 📁 Architecture Overview
 
-## Latest Updates
-- Added dynamic policy deletion and modification logic.
-- Expanded AI capabilities for Scan PDF report generation.
-- Corrected UTF-8 string rendering bugs in reporting outputs.
+The backend is structured around domain-driven business logic:
+
+```text
+src/
+├── main.py                     # FastAPI Application Entrypoint
+├── {module}/domain/            # Core Business logic, Entities, and Pydantic Models
+├── {module}/ports/             # Abstract Interfaces for Adapters
+├── {module}/adapters/          # Implementations
+│   ├── inbound/api/            # REST API endpoints (FastAPI routers)
+│   └── outbound/               # Database repositories, external API clients
+└── {module}/application/       # Use-cases and Orchestration Services (e.g., Report Generators)
+```
+
+## 🚀 Setup & Installation
+
+### Prerequisites
+- Docker & Docker Compose
+- PostgreSQL (Provided via Docker)
+- OpenVAS / Greenbone Services (Provided via Docker)
+
+### Running Locally
+
+1. Clone the deployment repository (which includes this backend submodule).
+2. Start the services using Docker Compose:
+   ```bash
+   docker compose up -d backend
+   ```
+3. The API will be accessible at: `http://localhost:8000`
+4. Interactive API Documentation (Swagger UI): `http://localhost:8000/docs`
+
+## 🛠️ Latest Updates
+- **Scan PDF Reporting**: Introduced comprehensive PDF report generation for entire scan batches, detailing per-asset vulnerabilities and global statistics.
+- **Policy Engine Upgrades**: Added full Edit (PUT) and Delete (DELETE) workflows for granular policy modifications.
+- **Encoding Fixes**: Resolved UTF-8 character encoding issues (`Opérationnel`) across backend output streams.
