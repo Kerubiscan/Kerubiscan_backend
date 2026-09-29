@@ -44,8 +44,8 @@ src/
    ```bash
    docker compose up -d backend
    ```
-3. The API will be accessible at: `http://localhost:8000`
-4. Interactive API Documentation (Swagger UI): `http://localhost:8000/docs`
+3. The API will be accessible at: `http://localhost:9445`
+4. Interactive API Documentation (Swagger UI): `http://localhost:9445/docs`
 
 ## 🛠️ Latest Updates
 - **Scan PDF Reporting**: Introduced comprehensive PDF report generation for entire scan batches, detailing per-asset vulnerabilities and global statistics.
