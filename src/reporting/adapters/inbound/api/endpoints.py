@@ -88,13 +88,22 @@ async def generate_executive_report_html(
 
     from src.reporting.application.services.html_generator import generate_vulnerability_html
     
+    # Use the creation date of the vulnerabilities to represent when the scan actually ran,
+    # because asset.updated_at gets changed when the AI enricher runs just before this.
+    scan_launch_date = max((v.created_at for v in vulnerabilities if v.created_at), default=asset.created_at)
+    
+    name_str = (asset.name.strip() if asset.name and asset.name.strip() else asset.ip_address)
+    if "Auto-added" in name_str:
+        name_str = name_str.replace("Auto-added Host", "").replace("Auto-added Web Host", "").replace("(", "").replace(")", "").strip()
+        
     html_bytes = generate_vulnerability_html(
         assets=[asset],
         all_vulnerabilities={str(asset.id): vulnerabilities},
         executive_summary=exec_summary,
         scanner_company_name=request_data.scanner_company_name or "KERIBU SOC Security",
         target_company_name=request_data.target_company_name or "Client Company",
-        scan_name=f"Rapport d'Audit : {asset.name} ({asset.ip_address})",
+        scan_date=scan_launch_date,
+        scan_name=name_str,
         scan_profile=request_data.scan_profile or "Audit de Sécurité Multi-Moteurs (Full Audit)",
         classification=request_data.classification or "CONFIDENTIEL - USAGE INTERNE"
     )
@@ -133,12 +142,15 @@ async def generate_executive_report_pdf(
 
     from src.reporting.application.services.pdf_generator import generate_vulnerability_pdf
     
+    scan_launch_date = max((v.created_at for v in vulnerabilities if v.created_at), default=asset.created_at)
+    
     pdf_bytes = generate_vulnerability_pdf(
         asset=asset,
         vulnerabilities=vulnerabilities,
         executive_summary=exec_summary,
         scanner_company_name=request_data.scanner_company_name or "KERIBU SOC Security",
-        target_company_name=request_data.target_company_name or "Client Company"
+        target_company_name=request_data.target_company_name or "Client Company",
+        scan_date=scan_launch_date
     )
     
     return Response(content=pdf_bytes, media_type="application/pdf", headers={

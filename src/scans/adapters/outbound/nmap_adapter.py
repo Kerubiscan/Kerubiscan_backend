@@ -1,325 +1,373 @@
-import subprocess
+import os
+import re
+import shutil
+import tempfile
+import ipaddress
 import logging
 from lxml import etree
-from sqlalchemy.orm import Session
-from typing import List, Dict
+from typing import List, Dict, Optional, Union
+from src.scans.adapters.outbound.base_adapter import BaseScannerAdapter, ScanError
 
 logger = logging.getLogger(__name__)
 
-class NmapAdapter:
-    @staticmethod
-    def run_discovery_scan(target: str) -> List[Dict]:
-        """Runs an Nmap ping sweep and returns a list of discovered hosts."""
-        logger.info(f"Running Nmap discovery scan on {target}")
-        
-        try:
-            # -sn: Ping Scan (disable port scan)
-            # -oX -: Output XML to stdout
-            result = subprocess.run(
-                ["nmap", "-sn", "-oX", "-", target], 
-                capture_output=True, text=True, check=True, timeout=300
-            )
-            logger.info(f"Nmap discovery scan raw output for {target}:\n{result.stdout}")
-            return NmapAdapter._parse_nmap_xml(result.stdout)
-        except subprocess.TimeoutExpired:
-            logger.error(f"Nmap discovery scan timed out for {target}")
-            raise Exception(f"Nmap discovery timed out on {target}")
-        except subprocess.CalledProcessError as e:
-            logger.error(f"Nmap discovery failed: {e.stderr}")
-            raise Exception(f"Nmap discovery failed: {e.stderr}")
+_HOST_RE = re.compile(r"^(?=.{1,253}$)[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$")
+_PORT_TOKEN = re.compile(r"^\d{1,5}(-\d{1,5})?$")
 
+def _validate_targets(raw: str) -> List[str]:
+    out = []
+    for t in (x.strip() for x in raw.split(",")):
+        if not t or t.startswith("-"):
+            raise ValueError(f"Invalid target: {t!r}")
+        try:
+            ipaddress.ip_network(t, strict=False)      # IP or CIDR
+        except ValueError:
+            if not _HOST_RE.match(t):                  # hostname
+                raise ValueError(f"Invalid target: {t!r}")
+        out.append(t)
+    return out
+
+def _build_port_args(ports: Optional[str]) -> List[str]:
+    if not ports:
+        return ["-p-"]
+    tokens = [t.strip() for t in ports.split(",") if t.strip()]
+    inc = [t for t in tokens if not t.startswith("!")]
+    exc = [t[1:] for t in tokens if t.startswith("!")]
+    for t in inc + exc:
+        if not _PORT_TOKEN.match(t):
+            raise ValueError(f"Invalid port spec: {t!r}")
+    args = ["-p", ",".join(inc)] if inc else ["-p-"]
+    if exc:
+        args += ["--exclude-ports", ",".join(exc)]
+    return args
+
+def _to_cvss(s) -> Optional[float]:
+    try:
+        v = float(s)
+    except (TypeError, ValueError):
+        return None
+    return v if 0.0 <= v <= 10.0 else None
+
+class NmapAdapter(BaseScannerAdapter):
     @staticmethod
-    def _build_nmap_auth_args(credentials: Dict = None) -> List[str]:
-        if not credentials:
+    def _build_nmap_auth_args(credentials: Optional[Dict] = None, workdir: Optional[str] = None) -> List[str]:
+        if not credentials or not workdir:
             return []
         
         args = []
-        if credentials.get("credential_type") == "SMB":
-            args.append(f"smbusername={credentials.get('username','')}")
-            if credentials.get("password"):
-                args.append(f"smbpassword={credentials.get('password','')}")
-            if credentials.get("domain"):
-                args.append(f"smbdomain={credentials.get('domain','')}")
-        elif credentials.get("credential_type") == "SSH":
-            args.append(f"ssh.username={credentials.get('username','')}")
-            if credentials.get("password"):
-                args.append(f"ssh.password={credentials.get('password','')}")
-        elif credentials.get("credential_type") == "HTTP":
-            args.append(f"http.user={credentials.get('username','')}")
-            if credentials.get("password"):
-                args.append(f"http.password={credentials.get('password','')}")
-        elif credentials.get("credential_type") == "DATABASE":
-            args.append(f"mysqluser={credentials.get('username','')}")
-            if credentials.get("password"):
-                args.append(f"mysqlpass={credentials.get('password','')}")
+        c_type = credentials.get("credential_type")
+        user = credentials.get("username", "")
+        pwd = credentials.get("password", "")
+        domain = credentials.get("domain", "")
+        
+        if c_type == "SMB" and user:
+            args.append(f"smbusername={user}")
+            if pwd: args.append(f"smbpassword={pwd}")
+            if domain: args.append(f"smbdomain={domain}")
+        elif c_type == "SSH" and user:
+            args.append(f"ssh.username={user}")
+            if pwd: args.append(f"ssh.password={pwd}")
+        elif c_type == "HTTP" and user:
+            args.append(f"http.user={user}")
+            if pwd: args.append(f"http.password={pwd}")
+        elif c_type == "DATABASE" and user:
+            args.append(f"mysqluser={user}")
+            if pwd: args.append(f"mysqlpass={pwd}")
                 
         if args:
-            return ["--script-args", ",".join(args)]
+            args_file_path = os.path.join(workdir, "script_args.txt")
+            with open(args_file_path, "w") as f:
+                f.write(",".join(args))
+            os.chmod(args_file_path, 0o600)
+            return ["--script-args-file", args_file_path]
         return []
 
     @staticmethod
-    def run_detailed_discovery_scan(target: str, ports: str = None, credentials: Dict = None) -> List[Dict]:
-        """Runs a detailed Nmap scan to get OS, hostnames, and ports without full vulnerability scripts.
-           Falls back to -sV if -O fails (e.g. due to lack of root privileges)."""
-        logger.info(f"Running Nmap detailed discovery scan on {target} with ports option: {ports}")
+    def run_discovery_scan(target: str) -> List[Dict]:
+        """Runs an Nmap ping sweep."""
+        logger.info(f"Running Nmap discovery scan on {target}")
+        
+        workdir = tempfile.mkdtemp(prefix="nmap_")
+        out_xml = os.path.join(workdir, "output.xml")
+        err_file = os.path.join(workdir, "stderr.log")
         
         try:
-            cmd = ["nmap", "-sS", "-sV", "-O", "-Pn"]
+            cmd = ["nmap", "-sn", "-oX", out_xml, "--", *_validate_targets(target)]
+            env = os.environ.copy()
+            env["NMAP_PRIVILEGED"] = "1"
             
-            if ports:
-                if "!" in ports:
-                    p_parts = ports.split("!")
-                    scan_p = p_parts[0].rstrip(",")
-                    exclude_p = p_parts[1]
-                    if scan_p:
-                        cmd.extend(["-p", scan_p])
-                    cmd.extend(["--exclude-ports", exclude_p])
-                else:
-                    cmd.extend(["-p", ports])
-            else:
-                cmd.extend(["-p-"])
-                
-            cmd.extend(["-T4", "--script", "nbstat,smb-os-discovery"])
-            cmd.extend(NmapAdapter._build_nmap_auth_args(credentials))
-            cmd.extend(["-oX", "-"])
+            returncode, stderr = NmapAdapter.run_process(cmd, 300, err_file, env)
+            if returncode != 0:
+                raise ScanError(f"Nmap discovery failed with code {returncode}: {stderr}")
             
-            result = subprocess.run(
-                cmd + target.split(','), 
-                capture_output=True, text=True, check=True, timeout=86400
-            )
-            logger.info(f"Nmap detailed scan raw output for {target}:\n{result.stdout}")
-            return NmapAdapter._parse_nmap_xml(result.stdout)
-        except subprocess.TimeoutExpired:
-            logger.error(f"Nmap detailed scan timed out for {target}")
-            raise Exception(f"Nmap detailed scan timed out on {target}")
-        except subprocess.CalledProcessError as e:
-            if "requires root privileges" in e.stderr.lower() or "requires root" in e.stderr.lower() or "root" in e.stderr.lower() or "privilege" in e.stderr.lower():
-                logger.warning(f"OS detection (-O) failed due to privileges. Falling back to -sV only for {target}")
-                try:
-                    result = subprocess.run(
-                        ["nmap", "-sS", "-sV", "-Pn", "-p-", "-T4", "--script", "nbstat,smb-os-discovery", "-oX", "-"] + target.split(','), 
-                        capture_output=True, text=True, check=True, timeout=86400
-                    )
-                    logger.info(f"Nmap detailed scan (fallback) raw output for {target}:\n{result.stdout}")
-                    return NmapAdapter._parse_nmap_xml(result.stdout)
-                except subprocess.TimeoutExpired:
-                    logger.error(f"Nmap fallback detailed scan timed out for {target}")
-                    raise Exception(f"Nmap fallback detailed scan timed out on {target}")
-                except subprocess.CalledProcessError as e2:
-                    logger.error(f"Nmap fallback detailed scan failed: {e2.stderr}")
-                    raise Exception(f"Nmap fallback detailed scan failed: {e2.stderr}")
-            else:
-                logger.error(f"Nmap detailed scan failed: {e.stderr}")
-                raise Exception(f"Nmap detailed scan failed: {e.stderr}")
+            with open(out_xml, "r", encoding="utf-8") as f:
+                return NmapAdapter._parse_nmap_xml(f.read())
+        finally:
+            shutil.rmtree(workdir, ignore_errors=True)
 
     @staticmethod
-    def run_vulnerability_scan(target: str, ports: str = None, credentials: Dict = None) -> List[Dict]:
-        """Runs an Nmap deep scan (ports, OS, versions) with optional custom port ranges / exclusions."""
-        logger.info(f"Running Nmap deep scan on {target} with ports option: {ports}")
+    def run_detailed_discovery_scan(target: str, ports: Optional[str] = None, credentials: Optional[Dict] = None) -> List[Dict]:
+        logger.info(f"Running Nmap detailed discovery on {target}")
+        
+        workdir = tempfile.mkdtemp(prefix="nmap_")
+        out_xml = os.path.join(workdir, "output.xml")
+        err_file = os.path.join(workdir, "stderr.log")
         
         try:
-            cmd = ["nmap", "-sS", "-sV", "-Pn"]
+            cmd = ["nmap", "-sS", "-sV", "-O", "-Pn", "--max-retries", "2", "--host-timeout", "30m"]
+            cmd.extend(_build_port_args(ports))
+            cmd.extend(["-T4", "--script", "nbstat,smb-os-discovery"])
+            cmd.extend(NmapAdapter._build_nmap_auth_args(credentials, workdir))
+            cmd.extend(["-oX", out_xml, "--", *_validate_targets(target)])
             
-            if ports:
-                # Handle exclusion ranges if specified in format "1-65535,!7000" or "--exclude-ports 7000"
-                if "!" in ports:
-                    p_parts = ports.split("!")
-                    scan_p = p_parts[0].rstrip(",")
-                    exclude_p = p_parts[1]
-                    if scan_p:
-                        cmd.extend(["-p", scan_p])
-                    cmd.extend(["--exclude-ports", exclude_p])
-                else:
-                    cmd.extend(["-p", ports])
-            else:
-                cmd.extend(["-p-"])
+            env = os.environ.copy()
+            env["NMAP_PRIVILEGED"] = "1"
             
-            cmd.extend(["--script", "vuln,vulners,vulscan/"])
-            cmd.extend(NmapAdapter._build_nmap_auth_args(credentials))
-            cmd.extend(["-oX", "-", target])
+            returncode, stderr = NmapAdapter.run_process(cmd, 86400, err_file, env)
+            if returncode != 0:
+                raise ScanError(f"Nmap detailed scan failed with code {returncode}: {stderr}")
             
-            result = subprocess.run(
-                cmd, 
-                capture_output=True, text=True, check=True, timeout=86400, stdin=subprocess.DEVNULL
-            )
-            logger.info(f"Nmap vulnerability scan raw output for {target}:\n{result.stdout}")
-            return NmapAdapter._parse_nmap_xml(result.stdout)
-        except subprocess.TimeoutExpired:
-            logger.error(f"Nmap deep scan timed out for {target}")
-            raise Exception(f"Nmap deep scan timed out on {target}")
-        except subprocess.CalledProcessError as e:
-            logger.error(f"Nmap deep scan failed: {e.stderr}")
-            raise Exception(f"Nmap deep scan failed: {e.stderr}")
+            with open(out_xml, "r", encoding="utf-8") as f:
+                return NmapAdapter._parse_nmap_xml(f.read())
+        finally:
+            shutil.rmtree(workdir, ignore_errors=True)
+
+    @staticmethod
+    def run_vulnerability_scan(target: str, ports: Optional[str] = None, credentials: Optional[Dict] = None) -> List[Dict]:
+        logger.info(f"Running Nmap vulnerability scan on {target}")
+        
+        workdir = tempfile.mkdtemp(prefix="nmap_")
+        out_xml = os.path.join(workdir, "output.xml")
+        err_file = os.path.join(workdir, "stderr.log")
+        
+        try:
+            cmd = ["nmap", "-sS", "-sV", "-Pn", "--max-retries", "2", "--host-timeout", "30m"]
+            cmd.extend(_build_port_args(ports))
+            # Use 'vuln and safe' to avoid intrusive scripts
+            cmd.extend(["--script", "vuln and safe,vulners,vulscan/"])
+            cmd.extend(NmapAdapter._build_nmap_auth_args(credentials, workdir))
+            cmd.extend(["-oX", out_xml, "--", *_validate_targets(target)])
+            
+            env = os.environ.copy()
+            env["NMAP_PRIVILEGED"] = "1"
+            
+            returncode, stderr = NmapAdapter.run_process(cmd, 86400, err_file, env)
+            if returncode != 0:
+                raise ScanError(f"Nmap vulnerability scan failed with code {returncode}: {stderr}")
+            
+            with open(out_xml, "r", encoding="utf-8") as f:
+                return NmapAdapter._parse_nmap_xml(f.read())
+        finally:
+            shutil.rmtree(workdir, ignore_errors=True)
 
     @staticmethod
     def _parse_nmap_xml(xml_output: str) -> List[Dict]:
-        """Parses Nmap XML output and returns a list of dictionaries with host data."""
         if not xml_output or not xml_output.strip():
-            logger.error("Nmap XML output is empty.")
-            raise ValueError("Nmap generated empty output.")
+            raise ScanError("Nmap generated empty output.")
             
         hosts_data = []
         try:
-            root = etree.fromstring(xml_output.encode('utf-8'))
+            parser = etree.XMLParser(resolve_entities=False, no_network=True)
+            root = etree.fromstring(xml_output.encode('utf-8'), parser=parser)
+            
+            # Check exit success
+            runstats = root.find("runstats/finished")
+            if runstats is not None and runstats.get("exit") != "success":
+                logger.warning(f"Nmap XML indicates scan did not exit successfully: {runstats.get('errormsg')}")
+                
             for host in root.xpath("//host"):
-                status = host.find("status")
-                state = status.get("state") if status is not None else "down"
-                if state != "up":
-                    continue
-                
-                addr_elem = host.find("address[@addrtype='ipv4']")
-                if addr_elem is None:
-                    addr_elem = host.find("address")
-                ip = addr_elem.get("addr") if addr_elem is not None else None
-                
-                mac_elem = host.find("address[@addrtype='mac']")
-                mac_address = mac_elem.get("addr") if mac_elem is not None else None
-                
-                if not ip:
-                    continue
-                
-                hostname_elem = host.find("hostnames/hostname")
-                hostname = hostname_elem.get("name") if hostname_elem is not None else None
-                
-                # OS Detection
-                os_match = host.find("os/osmatch")
-                os_name = os_match.get("name") if os_match is not None else "Unknown"
-                
-                # Ports and Services
-                open_ports = []
-                running_services = []
-                for port in host.xpath("ports/port"):
-                    state_elem = port.find("state")
-                    if state_elem is not None and state_elem.get("state") == "open":
+                try:
+                    status = host.find("status")
+                    state = status.get("state") if status is not None else "down"
+                    reason = status.get("reason") if status is not None else "unknown"
+                    
+                    addr_elem = host.find("address[@addrtype='ipv4']")
+                    if addr_elem is None:
+                        addr_elem = host.find("address")
+                    ip = addr_elem.get("addr") if addr_elem is not None else None
+                    
+                    mac_elem = host.find("address[@addrtype='mac']")
+                    mac_address = mac_elem.get("addr") if mac_elem is not None else None
+                    
+                    if not ip:
+                        continue
+                    
+                    hostname_elem = host.find("hostnames/hostname")
+                    hostname = hostname_elem.get("name") if hostname_elem is not None else None
+                    
+                    # OS Detection
+                    os_match = host.find("os/osmatch")
+                    os_name = os_match.get("name") if os_match is not None else "Unknown"
+                    os_accuracy = os_match.get("accuracy") if os_match is not None else "0"
+                    
+                    parsed_ports = []
+                    
+                    for port in host.xpath("ports/port"):
                         port_id = port.get("portid")
                         protocol = port.get("protocol")
+                        
+                        state_elem = port.find("state")
+                        port_state = state_elem.get("state") if state_elem is not None else "unknown"
+                        port_reason = state_elem.get("reason") if state_elem is not None else "unknown"
+                        
                         service = port.find("service")
                         service_name = service.get("name") if service is not None else "unknown"
-                        open_ports.append(f"{port_id}/{protocol} ({service_name})")
                         
-                        if service is not None:
-                            product = service.get("product")
-                            version = service.get("version")
-                            extrainfo = service.get("extrainfo")
-                            
-                            svc_str = service_name
-                            if product:
-                                svc_str += f": {product}"
-                            if version:
-                                svc_str += f" {version}"
-                            if extrainfo:
-                                svc_str += f" ({extrainfo})"
-                            
-                            if product or version or extrainfo:
-                                running_services.append(f"Port {port_id}/{protocol} - {svc_str}")
-                
-                # Nmap NSE Vulnerabilities (if run with --script vuln)
-                vulns = []
-                import re
-                
-                def parse_script_output(script_elem, port_id="host"):
-                    s_id = script_elem.get("id")
-                    s_out = script_elem.get("output", "")
-                    if s_id in ("smb-os-discovery", "nbstat"): return None, None
-                    
-                    cves = re.findall(r"(CVE-\d{4}-\d+)(?:[^\d]+([\d.]+))?", s_out)
-                    return s_id, s_out, cves
-                    
-                # Parse Host scripts
-                for script in host.xpath("hostscript/script"):
-                    script_id = script.get("id")
-                    output_text = script.get("output", "")
-                    
-                    if script_id in ("smb-os-discovery", "nbstat"):
-                        if not hostname or hostname.startswith("Discovered Host"):
-                            m = re.search(r"(?i)(?:Computer name|NetBIOS computer name|NetBIOS name):\s*([^\r\n,\\]+)", output_text)
-                            if m: hostname = m.group(1).strip()
-                        continue
+                        product = service.get("product") if service is not None else None
+                        version = service.get("version") if service is not None else None
+                        extrainfo = service.get("extrainfo") if service is not None else None
+                        tunnel = service.get("tunnel") if service is not None else None
+                        method = service.get("method") if service is not None else "unknown"
+                        conf = service.get("conf") if service is not None else "0"
                         
-                    cve_matches = re.findall(r"(CVE-\d{4}-\d+)\s*([\d.]*)", output_text)
-                    if cve_matches:
-                        unique_cves = {c[0]: c[1] for c in cve_matches}
-                        for cve_id, cvss_str in unique_cves.items():
-                            vulns.append({
-                                "id": f"Nmap (Host): {cve_id}",
-                                "cve_id": cve_id,
-                                "cvss": float(cvss_str) if cvss_str else 0.0,
-                                "output": f"Script {script_id}:\n{output_text}"
-                            })
-                    else:
-                        vulns.append({
-                            "id": f"Nmap (Host) {script_id}",
-                            "output": output_text
+                        cpes = [cpe.text for cpe in service.findall("cpe")] if service is not None else []
+                        
+                        parsed_ports.append({
+                            "port": int(port_id) if port_id and port_id.isdigit() else port_id,
+                            "protocol": protocol,
+                            "state": port_state,
+                            "reason": port_reason,
+                            "service": service_name,
+                            "product": product,
+                            "version": version,
+                            "extrainfo": extrainfo,
+                            "tunnel": tunnel,
+                            "method": method,
+                            "confidence": int(conf) if conf.isdigit() else 0,
+                            "cpe": cpes
                         })
+                    
+                    # If host is up, or if it has open ports despite being down
+                    if state != "up" and not any(p["state"] == "open" for p in parsed_ports):
+                        continue
 
-                # Parse Port scripts
-                for port_elem in host.xpath("ports/port"):
-                    port_num = port_elem.get("portid")
-                    for script in port_elem.xpath("script"):
+                    vulns = []
+                    
+                    # Parse Host scripts
+                    for script in host.xpath("hostscript/script"):
                         script_id = script.get("id")
                         output_text = script.get("output", "")
                         
-                        if "ERROR" in output_text or len(output_text.strip()) < 5: 
+                        if "ERROR:" in output_text:
+                            logger.warning(f"Host script {script_id} failed: {output_text}")
+                            continue
+                        
+                        if script_id in ("smb-os-discovery", "nbstat"):
+                            if not hostname or hostname.startswith("Discovered Host"):
+                                m = re.search(r"(?i)(?:Computer name|NetBIOS computer name|NetBIOS name):\s*([^\r\n,\\]+)", output_text)
+                                if m: hostname = m.group(1).strip()
                             continue
                             
-                        # Handle tabular/multi-finding scripts like vulners and vulscan line-by-line
-                        if script_id in ["vulners", "vulscan"]:
-                            for line in output_text.splitlines():
-                                line = line.strip()
-                                if not line or line.startswith("cpe:/"): continue
+                        cve_matches = re.findall(r"(CVE-\d{4}-\d{4,})\s*([\d.]*)", output_text)
+                        if cve_matches:
+                            unique_cves = {}
+                            for cve_id, cvss_str in cve_matches:
+                                val = _to_cvss(cvss_str) or 0.0
+                                unique_cves[cve_id] = max(unique_cves.get(cve_id, 0.0), val)
                                 
-                                cve_match = re.search(r"(CVE-\d{4}-\d+)\s*([\d.]*)", line)
-                                if cve_match:
-                                    cve_id = cve_match.group(1)
-                                    cvss_str = cve_match.group(2)
-                                    vulns.append({
-                                        "id": f"Nmap ({port_num}) {script_id}: {cve_id}",
-                                        "cve_id": cve_id,
-                                        "cvss": float(cvss_str) if cvss_str else 0.0,
-                                        "output": f"Port {port_num} ({script_id}): {line}"
-                                    })
-                                elif script_id == "vulscan":
-                                    # Vulscan often outputs IDs in brackets like [12345] OpenSSH Security Bypass
-                                    vscan_match = re.search(r"\[([^\]]+)\]\s*(.*)", line)
-                                    if vscan_match:
-                                        v_id = vscan_match.group(1)
-                                        v_desc = vscan_match.group(2)
-                                        vulns.append({
-                                            "id": f"Nmap ({port_num}) {script_id}: vulscan-{v_id}",
-                                            "output": f"Port {port_num} ({script_id}): {line}"
-                                        })
-                        else:
-                            # Standard single-vulnerability scripts (e.g. ssl-poodle, http-vuln-*)
-                            cve_matches = re.findall(r"(CVE-\d{4}-\d+)\s*([\d.]*)", output_text)
-                            if cve_matches:
-                                unique_cves = {c[0]: c[1] for c in cve_matches}
-                                for cve_id, cvss_str in unique_cves.items():
-                                    vulns.append({
-                                        "id": f"Nmap ({port_num}) {script_id}: {cve_id}",
-                                        "cve_id": cve_id,
-                                        "cvss": float(cvss_str) if cvss_str else 0.0,
-                                        "output": f"Script {script_id} on port {port_num}:\n{output_text}"
-                                    })
-                            else:
+                            for cve_id, cvss_val in unique_cves.items():
                                 vulns.append({
-                                    "id": f"Nmap ({port_num}) {script_id}",
-                                    "output": f"Script {script_id} on port {port_num}:\n{output_text}"
+                                    "id": f"nmap-host-{cve_id.lower()}",
+                                    "cve_id": cve_id,
+                                    "cvss_score": cvss_val if cvss_val > 0 else None,
+                                    "name": f"Host Vuln {cve_id}",
+                                    "description": f"Script {script_id}:\n{output_text}",
+                                    "severity": "high" if cvss_val > 7.0 else "medium"
                                 })
+                        else:
+                            vulns.append({
+                                "id": f"nmap-host-{script_id}",
+                                "name": f"Host Script {script_id}",
+                                "description": output_text,
+                                "severity": "info"
+                            })
+
+                    # Parse Port scripts
+                    for port_elem in host.xpath("ports/port"):
+                        port_num = port_elem.get("portid")
+                        for script in port_elem.xpath("script"):
+                            script_id = script.get("id")
+                            output_text = script.get("output", "")
+                            
+                            if "ERROR:" in output_text:
+                                logger.warning(f"Port script {script_id} failed on port {port_num}: {output_text}")
+                                continue
+                                
+                            if len(output_text.strip()) < 5: 
+                                continue
+                                
+                            if script_id in ["vulners", "vulscan"]:
+                                for line in output_text.splitlines():
+                                    line = line.strip()
+                                    if not line or line.startswith("cpe:/"): continue
+                                    
+                                    cve_match = re.search(r"\b(CVE-\d{4}-\d{4,})\b(?:[ \t]+(\d{1,2}\.\d))?", line)
+                                    if cve_match:
+                                        cve_id = cve_match.group(1)
+                                        cvss_str = cve_match.group(2)
+                                        cvss_val = _to_cvss(cvss_str)
+                                        vulns.append({
+                                            "id": f"nmap-{port_num}-{cve_id.lower()}",
+                                            "cve_id": cve_id,
+                                            "cvss_score": cvss_val,
+                                            "name": f"Port {port_num} Vuln {cve_id}",
+                                            "description": line,
+                                            "severity": "high" if (cvss_val and cvss_val > 7.0) else "medium"
+                                        })
+                                    elif script_id == "vulscan":
+                                        vscan_match = re.search(r"\[([^\]]+)\]\s*(.*)", line)
+                                        if vscan_match:
+                                            v_id = vscan_match.group(1)
+                                            v_desc = vscan_match.group(2)
+                                            vulns.append({
+                                                "id": f"nmap-{port_num}-vulscan-{v_id}",
+                                                "name": f"Vulscan {v_id} on Port {port_num}",
+                                                "description": line,
+                                                "severity": "medium"
+                                            })
+                            else:
+                                cve_matches = re.findall(r"(CVE-\d{4}-\d{4,})\s*([\d.]*)", output_text)
+                                if cve_matches:
+                                    unique_cves = {}
+                                    for cve_id, cvss_str in cve_matches:
+                                        val = _to_cvss(cvss_str) or 0.0
+                                        unique_cves[cve_id] = max(unique_cves.get(cve_id, 0.0), val)
+                                        
+                                    for cve_id, cvss_val in unique_cves.items():
+                                        vulns.append({
+                                            "id": f"nmap-{port_num}-{script_id}-{cve_id.lower()}",
+                                            "cve_id": cve_id,
+                                            "cvss_score": cvss_val if cvss_val > 0 else None,
+                                            "name": f"Port {port_num} Vuln {cve_id}",
+                                            "description": f"Script {script_id}:\n{output_text}",
+                                            "severity": "high" if cvss_val > 7.0 else "medium"
+                                        })
+                                else:
+                                    vulns.append({
+                                        "id": f"nmap-{port_num}-{script_id}",
+                                        "name": f"Script {script_id} on Port {port_num}",
+                                        "description": output_text,
+                                        "severity": "info"
+                                    })
+                        
+                    # De-duplicate vulns based on ID
+                    unique_vulns = {v["id"]: v for v in vulns}.values()
                     
-                hosts_data.append({
-                    "ip": ip,
-                    "hostname": hostname or f"Discovered Host ({ip})",
-                    "mac_address": mac_address,
-                    "os": os_name,
-                    "ports": ", ".join(open_ports) if open_ports else None,
-                    "services": "\n".join(running_services) if running_services else None,
-                    "vulns": vulns
-                })
-                
+                    hosts_data.append({
+                        "ip": ip,
+                        "hostname": hostname,
+                        "mac_address": mac_address,
+                        "os": os_name,
+                        "os_accuracy": int(os_accuracy) if os_accuracy.isdigit() else 0,
+                        "ports": parsed_ports,
+                        "services": parsed_ports,
+                        "vulns": list(unique_vulns)
+                    })
+                except Exception as ex:
+                    logger.error(f"Error parsing Nmap host: {ex}")
+                    continue
+                    
         except Exception as e:
-            logger.error(f"Failed to parse Nmap XML: {str(e)}")
-            raise e
+            raise ScanError(f"Failed to parse Nmap XML: {e}") from e
             
-        import json
-        logger.info(f"Nmap parsed result:\n{json.dumps(hosts_data, indent=2)}")
+        logger.debug(f"Nmap successfully parsed {len(hosts_data)} hosts.")
         return hosts_data

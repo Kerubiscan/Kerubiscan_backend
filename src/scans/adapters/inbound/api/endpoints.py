@@ -615,9 +615,14 @@ def download_scan_report_pdf(
     
     from src.reporting.application.services.pdf_generator import generate_scan_vulnerability_pdf
     
-    display_name = scan.name
-    if "," in display_name and len(display_name) > 40:
-        display_name = "Multi-Target Scan Batch"
+    if len(assets) > 1:
+        display_name = target_company
+    elif len(assets) == 1:
+        display_name = (assets[0].name.strip() if assets[0].name and assets[0].name.strip() else assets[0].ip_address)
+        if "Auto-added" in display_name:
+            display_name = display_name.replace("Auto-added Host", "").replace("Auto-added Web Host", "").replace("(", "").replace(")", "").strip()
+    else:
+        display_name = scan.name
         
     dummy_asset = AssetEntity(name=display_name, ip_address=scan.target)
     
@@ -635,5 +640,102 @@ def download_scan_report_pdf(
         io.BytesIO(pdf_bytes), 
         media_type="application/pdf", 
         headers={"Content-Disposition": f'attachment; filename="report_{short_id}.pdf"'}
+    )
+
+@router.put("/{scan_id}/pause", response_model=ScanResponse)
+def pause_scan(scan_id: str, db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)):
+    """Pauses a running scan at the queue level by aborting pending target tasks."""
+    scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
+    if not scan or scan.is_deleted:
+        raise HTTPException(status_code=404, detail="Scan not found")
+        
+    if scan.status != ScanStatus.IN_PROGRESS and scan.status != ScanStatus.PENDING:
+        raise HTTPException(status_code=400, detail=f"Cannot pause scan in state {scan.status.name}")
+        
+    scan.status = ScanStatus.PAUSED
+    
+    # Audit log
+    audit = AuditLog(
+        user_id=current_user.get("id", "unknown"),
+        username=current_user.get("username", "system"),
+        action="PAUSE",
+        resource_type="SCAN",
+        resource_id=str(scan.id),
+        details={"status": "PAUSED"}
+    )
+    db.add(audit)
+    db.commit()
+    db.refresh(scan)
+    
+    # Return updated scan response
+    return ScanResponse(
+        id=scan.id, company_id=scan.company_id, name=scan.name, target=scan.target,
+        network_zone=scan.network_zone, scan_type=scan.scan_type.name,
+        scanner_engine=scan.scanner_engine.name, status=scan.status.name,
+        progress=scan.progress, target_states=scan.target_states,
+        executive_summary=scan.executive_summary, policy_id=scan.policy_id,
+        credential_id=scan.credential_id, recurrence_rule=scan.recurrence_rule,
+        next_run_at=scan.next_run_at.isoformat() if scan.next_run_at else None,
+        created_at=scan.created_at.isoformat() if scan.created_at else None
+    )
+
+@router.put("/{scan_id}/resume", response_model=ScanResponse)
+def resume_scan(scan_id: str, db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)):
+    """Resumes a paused scan by re-queueing tasks for any targets that are still PENDING or IN_PROGRESS."""
+    scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
+    if not scan or scan.is_deleted:
+        raise HTTPException(status_code=404, detail="Scan not found")
+        
+    if scan.status != ScanStatus.PAUSED:
+        raise HTTPException(status_code=400, detail=f"Cannot resume scan in state {scan.status.name}")
+        
+    scan.status = ScanStatus.IN_PROGRESS
+    
+    # Find pending targets to re-queue
+    targets_to_requeue = []
+    if scan.target_states:
+        new_states = dict(scan.target_states)
+        for t_ip, t_state in new_states.items():
+            if t_state in ["PENDING", "IN_PROGRESS"]:
+                # Reset to pending for the UI and the task logic
+                new_states[t_ip] = "PENDING"
+                targets_to_requeue.append(t_ip)
+        scan.target_states = new_states
+    
+    # Commit status update so the tasks know it's not paused anymore
+    db.commit()
+    
+    # Audit log
+    audit = AuditLog(
+        user_id=current_user.get("id", "unknown"),
+        username=current_user.get("username", "system"),
+        action="RESUME",
+        resource_type="SCAN",
+        resource_id=str(scan.id),
+        details={"status": "IN_PROGRESS", "requeued_targets": len(targets_to_requeue)}
+    )
+    db.add(audit)
+    db.commit()
+    db.refresh(scan)
+    
+    # Re-queue the pending tasks
+    from src.scans.application.services.tasks import run_vulnerability_scan, run_discovery_scan
+    if targets_to_requeue:
+        if scan.scan_type == ScanType.DISCOVERY:
+            run_discovery_scan.delay(scan.id, scan.target, scan.network_zone or "Internal", scan.company_id)
+        else:
+            config_id = "daba56c8-73ec-11df-a475-002264764cea"
+            for ip in targets_to_requeue:
+                run_vulnerability_scan.delay(scan.id, ip, ip, config_id)
+    
+    return ScanResponse(
+        id=scan.id, company_id=scan.company_id, name=scan.name, target=scan.target,
+        network_zone=scan.network_zone, scan_type=scan.scan_type.name,
+        scanner_engine=scan.scanner_engine.name, status=scan.status.name,
+        progress=scan.progress, target_states=scan.target_states,
+        executive_summary=scan.executive_summary, policy_id=scan.policy_id,
+        credential_id=scan.credential_id, recurrence_rule=scan.recurrence_rule,
+        next_run_at=scan.next_run_at.isoformat() if scan.next_run_at else None,
+        created_at=scan.created_at.isoformat() if scan.created_at else None
     )
 

@@ -1,68 +1,65 @@
-import subprocess
-import logging
-import json
 import os
+import json
+import shutil
+import signal
+import socket
+import subprocess
+import tempfile
+import logging
+import re
+import time
+import requests
+import secrets
+import urllib3
+from html import unescape
 from typing import List, Dict
 
 logger = logging.getLogger(__name__)
 
+class ScanError(RuntimeError):
+    pass
+
+_TAG = re.compile(r"<[^>]+>")
+def _clean(html: str) -> str:
+    """Removes HTML tags and unescapes entities from ZAP descriptions."""
+    return unescape(_TAG.sub("", html or "")).strip()
+
 class ZAPAdapter:
     @staticmethod
-    def run_scan(target: str, credentials: Dict = None) -> List[Dict]:
-        """Runs an OWASP ZAP active scan and returns structured JSON data."""
-        logger.info(f"Running OWASP ZAP full scan on {target}")
+    def run_scan(targets: str, credentials: Dict = None) -> List[Dict]:
+        """
+        Runs OWASP ZAP active scans efficiently on multiple targets.
+        Uses a single background daemon and the REST API to handle multiple targets simultaneously.
+        """
+        target_list = [t.strip() for t in targets.split(",") if t.strip()]
+        if not target_list:
+            return []
+            
+        logger.info(f"Running OWASP ZAP scan on {len(target_list)} targets: {target_list}")
         
-        output_file = f"/tmp/zap_{target.replace('.', '_').replace('/', '_').replace(':', '_')}.json"
+        zap_home_dir = None
+        proc = None
+        api_key = secrets.token_hex(16)
         
         try:
-            import requests
-            import urllib3
             urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-            
-            # ZAP expects a URL.
-            formatted_target = target
-            if not target.startswith("http://") and not target.startswith("https://"):
-                logger.info(f"Probing {target} to determine correct HTTP/HTTPS prefix...")
-                use_https = False
-                
-                # Fast Probe: Try HTTPS first
-                try:
-                    requests.get(f"https://{target}", timeout=3, verify=False)
-                    use_https = True
-                    logger.info(f"Fast Probe: HTTPS connection successful for {target}")
-                except requests.RequestException:
-                    # If HTTPS fails, try HTTP
-                    try:
-                        requests.get(f"http://{target}", timeout=3)
-                        use_https = False
-                        logger.info(f"Fast Probe: HTTP connection successful for {target}")
-                    except requests.RequestException:
-                        # If both fail, default to http but log warning
-                        logger.warning(f"Fast Probe: Both HTTP and HTTPS failed for {target}. Defaulting to HTTP.")
-                        use_https = False
-                        
-                formatted_target = f"https://{target}" if use_https else f"http://{target}"
-                
-            logger.info(f"ZAP target formatted to: {formatted_target}")
-            # -cmd: Run inline without GUI or daemon
-            # -quickurl: Spider and Active Scan the target
-            # -quickout: Save the results to this file
-            # -quickprogress: Print progress
-            if os.path.exists(output_file):
-                os.remove(output_file)
-                
-            import tempfile
-            import socket
             
             zap_home_dir = tempfile.mkdtemp(prefix="zap_home_")
             
-            # Find a free port to avoid "Address already in use" (port 8080) conflicts
+            # Find a free port safely
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.bind(('', 0))
+                s.bind(('127.0.0.1', 0))
                 free_port = s.getsockname()[1]
                 
-            cmd = ["/usr/local/bin/zap", "-dir", zap_home_dir, "-port", str(free_port), "-cmd", "-quickurl", formatted_target, "-quickout", output_file, "-quickprogress"]
+            cmd = [
+                "/usr/local/bin/zap", 
+                "-daemon", 
+                "-dir", zap_home_dir, 
+                "-port", str(free_port),
+                "-config", f"api.key={api_key}"
+            ]
             
+            # Inject Credentials if provided
             if credentials and credentials.get("credential_type") == "HTTP":
                 import base64
                 user = credentials.get("username", "")
@@ -70,8 +67,6 @@ class ZAPAdapter:
                 if user or pwd:
                     auth_str = f"{user}:{pwd}"
                     b64_auth = base64.b64encode(auth_str.encode("utf-8")).decode("utf-8")
-                    
-                    # Inject Authorization header using ZAP Replacer
                     cmd.extend([
                         "-config", "replacer.full_list(0).description=auth1",
                         "-config", "replacer.full_list(0).enabled=true",
@@ -80,82 +75,135 @@ class ZAPAdapter:
                         "-config", "replacer.full_list(0).regex=false",
                         "-config", f"replacer.full_list(0).replacement=Basic {b64_auth}"
                     ])
-                    logger.info("Injected HTTP Basic Auth into ZAP Replacer config.")
-
-            result = subprocess.run(
+            else:
+                if credentials:
+                    logger.warning(f"ZAP Adapter: Unsupported credential_type '{credentials.get('credential_type')}'. Ignoring.")
+            
+            logger.info("Starting ZAP Daemon...")
+            
+            # Use start_new_session to ensure we can kill the entire process group (java + wrapper)
+            proc = subprocess.Popen(
                 cmd, 
-                capture_output=True, 
+                stdout=subprocess.PIPE, 
+                stderr=subprocess.PIPE,
                 text=True, 
-                check=False,
-                timeout=7200 # ZAP Active scans can take a long time
+                start_new_session=True
             )
             
-            logger.info(f"ZAP scan stdout: {result.stdout}")
-            if result.stderr:
-                logger.warning(f"ZAP output/errors: {result.stderr}")
+            zap_url = f"http://127.0.0.1:{free_port}"
+            zap_ready = False
+            
+            # Wait for ZAP API to boot (Up to 60 seconds)
+            for _ in range(60):
+                try:
+                    resp = requests.get(zap_url, timeout=2)
+                    if resp.status_code == 200:
+                        zap_ready = True
+                        break
+                except Exception:
+                    time.sleep(1)
+                    
+            if not zap_ready:
+                raise ScanError("ZAP Daemon failed to start within 60 seconds.")
                 
-            return ZAPAdapter._parse_zap_json(output_file)
-        except subprocess.TimeoutExpired:
-            logger.error(f"ZAP scan timed out for {target}")
-            raise Exception(f"ZAP scan timed out on {target}")
-        except Exception as e:
-            logger.error(f"ZAP scan failed: {str(e)}")
-            raise Exception(f"ZAP scan failed: {str(e)}")
-        finally:
-            if os.path.exists(output_file):
-                os.remove(output_file)
+            logger.info("ZAP Daemon is ready. Preparing targets...")
+            
+            formatted_targets = []
+            for target in target_list:
+                formatted = target
+                if not formatted.startswith("http"):
+                    try:
+                        requests.get(f"https://{formatted}", timeout=3, verify=False)
+                        formatted = f"https://{formatted}"
+                    except Exception:
+                        formatted = f"http://{formatted}"
+                formatted_targets.append(formatted)
+            
+            # Step 1: Spider all targets
+            for target in formatted_targets:
+                logger.info(f"Accessing and Spidering {target}...")
+                requests.get(f"{zap_url}/JSON/core/action/accessUrl/", params={"apikey": api_key, "url": target})
+                
+                spider_resp = requests.get(f"{zap_url}/JSON/spider/action/scan/", params={"apikey": api_key, "url": target})
+                scan_id = spider_resp.json().get("scan")
+                
+                if scan_id:
+                    # Wait for this spider to finish
+                    while True:
+                        stat_resp = requests.get(f"{zap_url}/JSON/spider/view/status/", params={"apikey": api_key, "scanId": scan_id})
+                        if stat_resp.json().get("status") == "100":
+                            break
+                        time.sleep(2)
+                        
+            # Step 2: Trigger Active Scans for all targets (Concurrent in ZAP)
+            scan_ids = []
+            for target in formatted_targets:
+                logger.info(f"Starting Active Scan for {target}...")
+                ascan_resp = requests.get(f"{zap_url}/JSON/ascan/action/scan/", params={"apikey": api_key, "url": target})
+                scan_ids.append(ascan_resp.json().get("scan"))
+                
+            # Step 3: Poll Active Scan status until all are 100%
+            for scan_id in scan_ids:
+                if not scan_id: 
+                    continue
+                while True:
+                    stat_resp = requests.get(f"{zap_url}/JSON/ascan/view/status/", params={"apikey": api_key, "scanId": scan_id})
+                    if stat_resp.json().get("status") == "100":
+                        break
+                    time.sleep(10) # Poll every 10 seconds for heavy active scans
+                    
+            logger.info("All ZAP scans completed. Fetching aggregated alerts...")
+            alerts_resp = requests.get(f"{zap_url}/JSON/core/view/alerts/", params={"apikey": api_key})
+            raw_alerts = alerts_resp.json().get("alerts", [])
+            
+            # Step 4: Gracefully shutdown the Daemon
+            requests.get(f"{zap_url}/JSON/core/action/shutdown/", params={"apikey": api_key})
             try:
-                import shutil
-                if 'zap_home_dir' in locals() and os.path.exists(zap_home_dir):
-                    shutil.rmtree(zap_home_dir, ignore_errors=True)
-            except Exception:
-                pass
+                proc.wait(timeout=30)
+            except subprocess.TimeoutExpired:
+                os.killpg(proc.pid, signal.SIGKILL)
+            
+            return ZAPAdapter._parse_zap_alerts(raw_alerts)
+            
+        except Exception as e:
+            # Emergency cleanup of the background JVM
+            if proc and proc.poll() is None:
+                os.killpg(proc.pid, signal.SIGKILL)
+            raise ScanError(f"ZAP scan failed: {str(e)}") from e
+            
+        finally:
+            if zap_home_dir and os.path.exists(zap_home_dir):
+                shutil.rmtree(zap_home_dir, ignore_errors=True)
 
     @staticmethod
-    def _parse_zap_json(filepath: str) -> List[Dict]:
-        """Parses ZAP JSON output."""
+    def _parse_zap_alerts(alerts: List[Dict]) -> List[Dict]:
+        """Parses and normalizes the JSON alerts from the ZAP REST API."""
         vulns = []
-        if not os.path.exists(filepath):
-            logger.warning(f"ZAP output file {filepath} not found.")
-            return vulns
+        for alert in alerts:
+            # Map risk codes to severity securely
+            risk_desc = str(alert.get("risk", alert.get("riskcode", "0")))
+            severity = {"3": "high", "2": "medium", "1": "low", "0": "info"}.get(risk_desc, "info")
             
-        try:
-            with open(filepath, 'r') as f:
-                data = json.load(f)
+            # Fallback if the API returns text instead of code
+            if not risk_desc.isdigit():
+                severity = risk_desc.split(' ')[0].lower()
+                if severity == "informational": 
+                    severity = "info"
                 
-                # ZAP JSON structure is usually:
-                # {"site": [{"@name": "http://192.168.100.80", "alerts": [{"alert": "...", "riskdesc": "High", "desc": "...", "solution": "..."}]}]}
-                sites = data.get("site", [])
-                if isinstance(sites, dict):
-                    sites = [sites]
-                    
-                for site in sites:
-                    alerts = site.get("alerts", [])
-                    if isinstance(alerts, dict):
-                        alerts = [alerts]
-                        
-                    for alert in alerts:
-                        risk_desc = alert.get("riskdesc", "Informational")
-                        # Map riskdesc like 'High (Medium)' to just 'High'
-                        severity = risk_desc.split(' ')[0].lower()
-                        if severity == "informational":
-                            severity = "info"
-                            
-                        vuln = {
-                            "id": alert.get("pluginid", "zap-unknown"),
-                            "name": alert.get("alert", "ZAP Finding"),
-                            "severity": severity,
-                            "description": alert.get("desc", ""),
-                            "remediation": alert.get("solution", ""),
-                            "cvss_score": 0.0, # ZAP usually doesn't provide CVSS in quickout
-                            "cve_id": None,
-                            "matched_at": alert.get("instances", [{}])[0].get("uri", "") if alert.get("instances") else "",
-                            "extracted_results": [f"Evidence: {alert.get('instances', [{}])[0].get('evidence', '')}"] if alert.get('instances') else []
-                        }
-                        vulns.append(vuln)
-                        
-        except Exception as e:
-            logger.error(f"Failed to parse ZAP JSON: {str(e)}")
+            vuln = {
+                "id": f"zap-{alert.get('pluginId', alert.get('pluginid', 'unknown'))}",
+                "name": alert.get("alert", alert.get("name", "ZAP Finding")),
+                "severity": severity,
+                "confidence": alert.get("confidence"),
+                "description": _clean(alert.get("description", alert.get("desc", ""))),
+                "remediation": _clean(alert.get("solution", "")),
+                "cvss_score": None, # ZAP doesn't return CVSS
+                "cve_id": None,
+                "cwe_id": alert.get("cweid"),
+                "matched_at": alert.get("url", alert.get("uri", "")),
+                "extracted_results": [f"Evidence: {alert['evidence']}"] if alert.get("evidence") else []
+            }
+            vulns.append(vuln)
             
-        logger.info(f"ZAP parsed result:\n{json.dumps(vulns, indent=2)}")
+        logger.info(f"ZAP successfully parsed {len(vulns)} aggregated findings.")
         return vulns

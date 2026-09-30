@@ -75,7 +75,10 @@ async def lifespan(app: FastAPI):
             # Delete Audit Logs older than 30 days to prevent infinite table growth
             conn.execute(text("DELETE FROM audit_logs WHERE timestamp < NOW() - INTERVAL '30 days'"))
             
-            print("Successfully cleared database bloat (raw outputs and old audit logs) to save space.")
+            # Auto-pause scans that were orphaned (interrupted by a server crash/shutdown)
+            conn.execute(text("UPDATE scans SET status = 'PAUSED' WHERE status = 'IN_PROGRESS'"))
+            
+            print("Successfully cleared database bloat and paused orphaned scans.")
     except Exception as e:
         print(f"Failed to clear database bloat: {e}")
         

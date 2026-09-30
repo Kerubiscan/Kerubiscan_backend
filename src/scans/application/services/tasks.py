@@ -83,7 +83,7 @@ def update_scan_progress(scan_id: str, ip: str, target_status: str):
             scan.target_states = states
             
             total = len(states)
-            completed = sum(1 for s in states.values() if s in ["COMPLETED", "FAILED"])
+            completed = sum(1 for s in states.values() if s in ["COMPLETED", "FAILED", "ABANDONED"])
             scan.progress = int((completed / total) * 100) if total > 0 else 100
             
             if completed == total:
@@ -107,6 +107,10 @@ def run_discovery_scan(self, scan_id: str, target: str, network_zone: str, compa
         scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
         if not scan:
             return
+            
+        if scan.status == ScanStatus.PAUSED:
+            logger.info(f"Scan {scan_id} is PAUSED. Aborting discovery task.")
+            return True
             
         scan.status = ScanStatus.IN_PROGRESS
         scan_engine = scan.scanner_engine
@@ -397,6 +401,14 @@ def run_vulnerability_scan(self, scan_id: str, asset_ip: str, asset_name: str, c
     try:
         scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
         if scan:
+            if scan.status == ScanStatus.PAUSED:
+                logger.info(f"Scan {scan_id} is PAUSED. Aborting task for {asset_ip}.")
+                current_states = dict(scan.target_states) if scan.target_states else {}
+                current_states[asset_ip] = "PENDING"
+                scan.target_states = current_states
+                db.commit()
+                return True
+                
             if not scan.target_states:
                 scan.target_states = {}
             
@@ -468,9 +480,13 @@ def run_vulnerability_scan(self, scan_id: str, asset_ip: str, asset_name: str, c
                             port_list = host_data["ports"]
                             if isinstance(port_list, str):
                                 port_list = [p.strip() for p in port_list.split(",") if p.strip()]
-                            for p in port_list:
-                                port_num = p.split('/')[0]
-                                open_ports_list.append(port_num)
+                                for p in port_list:
+                                    port_num = p.split('/')[0]
+                                    open_ports_list.append(port_num)
+                            elif isinstance(port_list, list):
+                                for p in port_list:
+                                    if isinstance(p, dict) and p.get("state") == "open":
+                                        open_ports_list.append(str(p.get("port")))
                                 
                         asset = db.query(AssetEntity).filter(AssetEntity.ip_address == asset_ip).first()
                         if not asset:
@@ -525,18 +541,15 @@ def run_vulnerability_scan(self, scan_id: str, asset_ip: str, asset_name: str, c
                 
             return True
         except Exception as e:
-            logger.error(f"Nmap scan failed: {str(e)}")
-            db = SessionLocal()
+            logger.error(f"Nmap scan failed for {asset_ip}: {str(e)}")
             try:
-                scan_fail = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
-                if scan_fail:
-                    scan_fail.status = ScanStatus.FAILED
-                    from src.audit.domain.models import AuditLog
-                    db.add(AuditLog(user_id="system", username="celery_worker", action="SCAN_FAILED", resource_type="SCAN", resource_id=str(scan_id), details={"status": "FAILED"}))
-                    db.commit()
-            finally:
-                db.close()
-            raise e
+                self.retry(exc=e, countdown=60)
+            except Retry:
+                raise
+            except Exception:
+                logger.error(f"Max retries exceeded for {asset_ip}. Abandoning.")
+                from src.vulnerabilities.application.services.tasks import update_scan_progress
+                update_scan_progress(scan_id, asset_ip, "ABANDONED")
 
     if scan_engine == ScannerEngine.NUCLEI:
         try:
@@ -560,19 +573,32 @@ def run_vulnerability_scan(self, scan_id: str, asset_ip: str, asset_name: str, c
                             port_list = host_data["ports"]
                             if isinstance(port_list, str):
                                 port_list = [p.strip() for p in port_list.split(",") if p.strip()]
-                            # Map ports to Nuclei URIs
-                            for p in port_list:
-                                port_id = p.split('/')[0]
-                                service_name = "unknown"
-                                if "(" in p and ")" in p:
-                                    service_name = p.split('(')[1].split(')')[0].lower()
-                                
-                                if "http" in service_name and "ssl" not in service_name and "https" not in service_name:
-                                    nuclei_targets.append(f"http://{host_ip}:{port_id}")
-                                elif "https" in service_name or "ssl" in service_name:
-                                    nuclei_targets.append(f"https://{host_ip}:{port_id}")
-                                else:
-                                    nuclei_targets.append(f"{host_ip}:{port_id}")
+                                # Map ports to Nuclei URIs
+                                for p in port_list:
+                                    port_id = p.split('/')[0]
+                                    service_name = "unknown"
+                                    if "(" in p and ")" in p:
+                                        service_name = p.split('(')[1].split(')')[0].lower()
+                                    
+                                    if "http" in service_name and "ssl" not in service_name and "https" not in service_name:
+                                        nuclei_targets.append(f"http://{host_ip}:{port_id}")
+                                    elif "https" in service_name or "ssl" in service_name:
+                                        nuclei_targets.append(f"https://{host_ip}:{port_id}")
+                                    else:
+                                        nuclei_targets.append(f"{host_ip}:{port_id}")
+                            elif isinstance(port_list, list):
+                                for p in port_list:
+                                    if isinstance(p, dict) and p.get("state") == "open":
+                                        port_id = str(p.get("port"))
+                                        service_name = p.get("service", "unknown").lower()
+                                        tunnel = p.get("tunnel")
+                                        
+                                        if "http" in service_name and tunnel != "ssl" and "https" not in service_name:
+                                            nuclei_targets.append(f"http://{host_ip}:{port_id}")
+                                        elif "https" in service_name or tunnel == "ssl":
+                                            nuclei_targets.append(f"https://{host_ip}:{port_id}")
+                                        else:
+                                            nuclei_targets.append(f"{host_ip}:{port_id}")
                                     
                         asset = db.query(AssetEntity).filter(AssetEntity.ip_address == asset_ip).first()
                         if not asset:
@@ -618,18 +644,15 @@ def run_vulnerability_scan(self, scan_id: str, asset_ip: str, asset_name: str, c
             parse_nuclei_report.delay(vulns, asset_ip, scan_id)
             return True
         except Exception as e:
-            logger.error(f"Nuclei scan failed: {str(e)}")
-            db = SessionLocal()
+            logger.error(f"Nuclei scan failed for {asset_ip}: {str(e)}")
             try:
-                scan_fail = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
-                if scan_fail:
-                    scan_fail.status = ScanStatus.FAILED
-                    from src.audit.domain.models import AuditLog
-                    db.add(AuditLog(user_id="system", username="celery_worker", action="SCAN_FAILED", resource_type="SCAN", resource_id=str(scan_id), details={"status": "FAILED"}))
-                    db.commit()
-            finally:
-                db.close()
-            raise e
+                self.retry(exc=e, countdown=60)
+            except Retry:
+                raise
+            except Exception:
+                logger.error(f"Max retries exceeded for {asset_ip}. Abandoning.")
+                from src.vulnerabilities.application.services.tasks import update_scan_progress
+                update_scan_progress(scan_id, asset_ip, "ABANDONED")
 
     if scan_engine == ScannerEngine.NESSUS:
         try:
@@ -652,18 +675,15 @@ def run_vulnerability_scan(self, scan_id: str, asset_ip: str, asset_name: str, c
             logger.info("Nessus integration is currently in stub mode. Scan completed.")
             return True
         except Exception as e:
-            logger.error(f"Nessus scan failed: {str(e)}")
-            db = SessionLocal()
+            logger.error(f"Nessus scan failed for {asset_ip}: {str(e)}")
             try:
-                scan_fail = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
-                if scan_fail:
-                    scan_fail.status = ScanStatus.FAILED
-                    from src.audit.domain.models import AuditLog
-                    db.add(AuditLog(user_id="system", username="celery_worker", action="SCAN_FAILED", resource_type="SCAN", resource_id=str(scan_id), details={"status": "FAILED"}))
-                    db.commit()
-            finally:
-                db.close()
-            raise e
+                self.retry(exc=e, countdown=60)
+            except Retry:
+                raise
+            except Exception:
+                logger.error(f"Max retries exceeded for {asset_ip}. Abandoning.")
+                from src.vulnerabilities.application.services.tasks import update_scan_progress
+                update_scan_progress(scan_id, asset_ip, "ABANDONED")
 
     if scan_engine == ScannerEngine.OWASP_ZAP:
         try:
@@ -688,9 +708,13 @@ def run_vulnerability_scan(self, scan_id: str, asset_ip: str, asset_name: str, c
                             port_list = host_data["ports"]
                             if isinstance(port_list, str):
                                 port_list = [p.strip() for p in port_list.split(",") if p.strip()]
-                            for p in port_list:
-                                port_num = p.split('/')[0]
-                                open_ports_list.append(port_num)
+                                for p in port_list:
+                                    port_num = p.split('/')[0]
+                                    open_ports_list.append(port_num)
+                            elif isinstance(port_list, list):
+                                for p in port_list:
+                                    if isinstance(p, dict) and p.get("state") == "open":
+                                        open_ports_list.append(str(p.get("port")))
                                 
                         asset = db.query(AssetEntity).filter(AssetEntity.ip_address == asset_ip).first()
                         if not asset:
@@ -733,18 +757,15 @@ def run_vulnerability_scan(self, scan_id: str, asset_ip: str, asset_name: str, c
             parse_zap_report.delay(vulns, asset_ip, scan_id)
             return True
         except Exception as e:
-            logger.error(f"OWASP ZAP scan failed: {str(e)}")
-            db = SessionLocal()
+            logger.error(f"OWASP ZAP scan failed for {asset_ip}: {str(e)}")
             try:
-                scan_fail = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
-                if scan_fail:
-                    scan_fail.status = ScanStatus.FAILED
-                    from src.audit.domain.models import AuditLog
-                    db.add(AuditLog(user_id="system", username="celery_worker", action="SCAN_FAILED", resource_type="SCAN", resource_id=str(scan_id), details={"status": "FAILED"}))
-                    db.commit()
-            finally:
-                db.close()
-            raise e
+                self.retry(exc=e, countdown=60)
+            except Retry:
+                raise
+            except Exception:
+                logger.error(f"Max retries exceeded for {asset_ip}. Abandoning.")
+                from src.vulnerabilities.application.services.tasks import update_scan_progress
+                update_scan_progress(scan_id, asset_ip, "ABANDONED")
 
     adapter = GVMAdapter()
     if not adapter.connect():

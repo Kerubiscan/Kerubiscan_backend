@@ -14,7 +14,8 @@ def generate_vulnerability_html(
     target_company_name: str = "Client Company",
     scan_name: str = "Vulnerability Scan Report",
     scan_profile: str = "Full Security Audit (Multi-Engine)",
-    classification: str = "CONFIDENTIEL - USAGE INTERNE"
+    classification: str = "CONFIDENTIEL - USAGE INTERNE",
+    scan_date: datetime = None
 ) -> bytes:
     
     template_assets = []
@@ -30,7 +31,7 @@ def generate_vulnerability_html(
     for asset in assets:
         vulns = all_vulnerabilities.get(str(asset.id), [])
         
-        name_str = asset.name or asset.ip_address
+        name_str = (asset.name.strip() if asset.name and asset.name.strip() else asset.ip_address)
         if "Auto-added" in name_str:
             # Clean up the name e.g., "Auto-added Host (192.168.100.75)" or "Auto-added Web Host (...)" -> "192.168.100.75"
             name_str = name_str.replace("Auto-added Host", "").replace("Auto-added Web Host", "").replace("(", "").replace(")", "").strip()
@@ -144,7 +145,7 @@ def generate_vulnerability_html(
         "scan_name": scan_name,
         "scan_profile": scan_profile,
         "classification": classification,
-        "report_date": datetime.now().strftime("%d/%m/%Y à %H:%M:%S"),
+        "report_date": (scan_date or datetime.now()).strftime("%d/%m/%Y à %H:%M:%S"),
         "scanner_company_name": scanner_company_name,
         "target_company_name": target_company_name,
         "executive_summary": executive_summary,
@@ -190,12 +191,13 @@ def generate_discovery_html(
     target_company_name: str = "Client Company",
     scan_name: str = "Discovery Scan Report",
     scan_profile: str = "Host Discovery",
-    classification: str = "CONFIDENTIEL - USAGE INTERNE"
+    classification: str = "CONFIDENTIEL - USAGE INTERNE",
+    scan_date: datetime = None
 ) -> bytes:
     template_assets = []
 
     for asset in assets:
-        name_str = asset.name or asset.ip_address
+        name_str = (asset.name.strip() if asset.name and asset.name.strip() else asset.ip_address)
         if "Auto-added" in name_str:
             name_str = name_str.replace("Auto-added Host", "").replace("Auto-added Web Host", "").replace("(", "").replace(")", "").strip()
 
@@ -229,7 +231,7 @@ def generate_discovery_html(
         "scan_name": scan_name,
         "scan_profile": scan_profile,
         "classification": classification,
-        "report_date": datetime.now().strftime("%d/%m/%Y  %H:%M:%S"),
+        "report_date": (scan_date or datetime.now()).strftime("%d/%m/%Y à %H:%M:%S"),
         "scanner_company_name": scanner_company_name,
         "target_company_name": target_company_name,
         "assets": template_assets,

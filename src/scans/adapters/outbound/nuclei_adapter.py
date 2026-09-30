@@ -1,40 +1,30 @@
-import subprocess
-import logging
-import json
 import os
-from typing import List, Dict
+import json
+import shutil
+import tempfile
+import logging
+import base64
+from typing import List, Dict, Optional, Union
+from src.scans.adapters.outbound.base_adapter import BaseScannerAdapter, ScanError
 
 logger = logging.getLogger(__name__)
 
-class NucleiAdapter:
+class NucleiAdapter(BaseScannerAdapter):
     @staticmethod
-    def run_scan(target: str | List[str], ports: str = None, credentials: Dict = None) -> List[Dict]:
+    def run_scan(target: Union[str, List[str]], ports: Optional[str] = None, credentials: Optional[Dict] = None) -> List[Dict]:
         """Runs a Nuclei vulnerability scan and returns structured JSON data."""
-        targets = [target] if isinstance(target, str) else target
-        target_name = targets[0].replace('.', '_').replace(':', '_').replace('/', '_')
+        targets = [target] if isinstance(target, str) else list(target)
+        if not targets:
+            raise ValueError("No target provided")
+            
         logger.info(f"Running Nuclei scan on {targets} with ports {ports}")
         
-        output_file = f"/tmp/nuclei_{target_name}.json"
+        workdir = tempfile.mkdtemp(prefix="nuclei_")
+        targets_file = os.path.join(workdir, "targets.txt")
+        out_file = os.path.join(workdir, "results.jsonl")
+        err_file = os.path.join(workdir, "stderr.log")
         
         try:
-            # -duc: Disable update check
-            # We removed -as (Automatic Scan) so Nuclei runs ALL default templates 
-            # (cves, vulnerabilities, exposures, misconfiguration, etc.) as requested.
-            cmd = ["/usr/local/bin/nuclei", "-duc", "-je", output_file, "-nc"]
-            
-            if credentials and credentials.get("credential_type") == "HTTP":
-                import base64
-                user = credentials.get("username", "")
-                pwd = credentials.get("password", "")
-                if user or pwd:
-                    auth_str = f"{user}:{pwd}"
-                    b64_auth = base64.b64encode(auth_str.encode("utf-8")).decode("utf-8")
-                    cmd.extend(["-H", f"Authorization: Basic {b64_auth}"])
-                    logger.info("Injected HTTP Basic Auth into Nuclei headers.")
-            
-            # Format targets with ports if ports are provided
-            # IMPORTANT: In Nuclei, '-p' is the short flag for '--proxy'!
-            # To scan specific ports, targets must be passed as 'host:port' with '-u'.
             scan_targets = []
             for t in targets:
                 scan_targets.append(t)
@@ -44,82 +34,80 @@ class NucleiAdapter:
                         if p_clean.isdigit():
                             scan_targets.append(f"{t}:{p_clean}")
                             
-            for st in list(dict.fromkeys(scan_targets)):
-                cmd.extend(["-u", st])
-                
-            # Completely strip all proxy environment variables to prevent Nuclei proxy errors
+            with open(targets_file, "w", encoding="utf-8") as f:
+                f.write("\n".join(dict.fromkeys(scan_targets)))
+
+            # -duc: disable updates, -nc: no color, -jle: JSONL export
+            cmd = ["/usr/local/bin/nuclei", "-duc", "-nc", "-l", targets_file, "-jle", out_file]
+            
+            if credentials and credentials.get("credential_type") == "HTTP":
+                user = credentials.get("username", "")
+                pwd = credentials.get("password", "")
+                if user or pwd:
+                    auth_str = f"{user}:{pwd}"
+                    b64_auth = base64.b64encode(auth_str.encode("utf-8")).decode("utf-8")
+                    cmd.extend(["-H", f"Authorization: Basic {b64_auth}"])
+                    logger.info("Injected HTTP Basic Auth into Nuclei headers.")
+                    
             env = os.environ.copy()
             for proxy_var in ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy", "NO_PROXY", "no_proxy"]:
                 env.pop(proxy_var, None)
                 
-            result = subprocess.run(
-                cmd, 
-                capture_output=True, 
-                text=True, 
-                check=False,
-                stdin=subprocess.DEVNULL,
-                env=env,
-                timeout=86400
+            returncode, stderr_tail = NucleiAdapter.run_process(
+                cmd=cmd,
+                timeout=86400,
+                err_file_path=err_file,
+                env=env
             )
             
-            # Log any errors Nuclei spits out
-            if result.stderr:
-                logger.warning(f"Nuclei output/errors: {result.stderr}")
+            if returncode != 0:
+                raise ScanError(f"Nuclei exited with code {returncode}: {stderr_tail}")
                 
-            if os.path.exists(output_file):
-                with open(output_file, 'r') as f:
-                    logger.info(f"Nuclei raw output for {target}:\n{f.read()}")
-                    
-            # Nuclei might return non-zero if vulnerabilities are found, so we don't strict check=True
-            return NucleiAdapter._parse_nuclei_json(output_file)
-        except subprocess.TimeoutExpired:
-            logger.error(f"Nuclei scan timed out for {target}")
-            raise Exception(f"Nuclei scan timed out on {target}")
-        except Exception as e:
-            logger.error(f"Nuclei scan failed: {str(e)}")
-            raise Exception(f"Nuclei scan failed: {str(e)}")
+            if not os.path.exists(out_file):
+                return []
+                
+            return NucleiAdapter._parse_nuclei_jsonl(out_file)
+            
         finally:
-            if os.path.exists(output_file):
-                os.remove(output_file)
+            shutil.rmtree(workdir, ignore_errors=True)
 
     @staticmethod
-    def _parse_nuclei_json(filepath: str) -> List[Dict]:
-        """Parses Nuclei JSON output."""
+    def _parse_nuclei_jsonl(path: str) -> List[Dict]:
+        """Parses Nuclei JSONL output."""
         vulns = []
-        if not os.path.exists(filepath):
-            return vulns
-            
-        try:
-            with open(filepath, 'r') as f:
-                # Nuclei JSON export might be a JSON array or JSON lines. 
-                # Modern Nuclei -je creates a JSON array.
+        with open(path, encoding="utf-8") as f:
+            for n, line in enumerate(f, 1):
+                line = line.strip()
+                if not line:
+                    continue
                 try:
-                    data = json.load(f)
-                    if isinstance(data, list):
-                        lines = data
-                    else:
-                        lines = [data]
-                except json.JSONDecodeError:
-                    # Fallback to JSON Lines
-                    f.seek(0)
-                    lines = [json.loads(line) for line in f if line.strip()]
-                    
-                for entry in lines:
-                    info = entry.get("info", {})
-                    
-                    vulns.append({
-                        "id": entry.get("template-id", "unknown"),
-                        "name": info.get("name", "Nuclei Finding"),
-                        "severity": info.get("severity", "info"),
-                        "description": info.get("description", ""),
-                        "remediation": info.get("remediation", ""),
-                        "cvss_score": info.get("classification", {}).get("cvss-score", 0.0),
-                        "cve_id": info.get("classification", {}).get("cve-id", [None])[0] if info.get("classification", {}).get("cve-id") else None,
-                        "matched_at": entry.get("matched-at", ""),
-                        "extracted_results": entry.get("extracted-results", [])
-                    })
-        except Exception as e:
-            logger.error(f"Failed to parse Nuclei JSON: {str(e)}")
-            
-        logger.info(f"Nuclei parsed result:\n{json.dumps(vulns, indent=2)}")
+                    entry = json.loads(line)
+                except json.JSONDecodeError as e:
+                    raise ScanError(f"Invalid Nuclei JSON at line {n}") from e
+
+                info = entry.get("info") or {}
+                cls = info.get("classification") or {}
+                cves = cls.get("cve-id") or []
+                if isinstance(cves, str):
+                    cves = [cves]
+                cves = [c.upper() for c in cves]
+
+                vuln = {
+                    "id": f"nuclei-{entry.get('template-id', 'unknown')}",
+                    "name": info.get("name", "Nuclei Finding"),
+                    "severity": (info.get("severity") or "info").lower(),
+                    "description": info.get("description", ""),
+                    "remediation": info.get("remediation", ""),
+                    "cvss_score": cls.get("cvss-score"),
+                    "cve_id": cves[0] if cves else None,
+                    "cve_ids": cves,
+                    "host": entry.get("host"),
+                    "ip": entry.get("ip"),
+                    "matcher_name": entry.get("matcher-name"),
+                    "matched_at": entry.get("matched-at", ""),
+                    "extracted_results": entry.get("extracted-results") or [],
+                }
+                vulns.append(vuln)
+                
+        logger.info(f"Nuclei parsed {len(vulns)} results.")
         return vulns

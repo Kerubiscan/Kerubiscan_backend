@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Boolean, Enum as SQLEnum, Text, DateTime, ForeignKey
+from sqlalchemy import Column, Integer, String, Boolean, Enum as SQLEnum, Text, DateTime, ForeignKey, JSON
 from sqlalchemy.sql import func
 import uuid
 from src.core.database import Base
@@ -18,8 +18,8 @@ class AssetEntity(Base):
     operating_system = Column(String, nullable=True)
     cpe = Column(String, nullable=True)
     description = Column(Text, nullable=True)
-    ports = Column(String, nullable=True)
-    services = Column(Text, nullable=True)
+    ports = Column(JSON, nullable=True)
+    services = Column(JSON, nullable=True)
     mac_address = Column(String, nullable=True)
     last_scan_raw_output = Column(Text, nullable=True)
     

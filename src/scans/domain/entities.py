@@ -21,6 +21,7 @@ class ScannerEngine(enum.Enum):
 class ScanStatus(enum.Enum):
     PENDING = "PENDING"
     IN_PROGRESS = "IN_PROGRESS"
+    PAUSED = "PAUSED"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
 

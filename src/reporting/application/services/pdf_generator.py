@@ -17,7 +17,8 @@ def generate_vulnerability_pdf(
     vulnerabilities: List[VulnerabilityEntity], 
     executive_summary: str,
     scanner_company_name: str = "KERIBU SOC Security",
-    target_company_name: str = "Client Company"
+    target_company_name: str = "Client Company",
+    scan_date: datetime = None
 ) -> bytes:
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(
@@ -76,12 +77,16 @@ def generate_vulnerability_pdf(
     story.append(t_header)
     story.append(Spacer(1, 40))
 
-    report_date = datetime.now().strftime('%d/%m/%Y à %H:%M:%S')
+    name_str = (asset.name.strip() if asset.name and asset.name.strip() else asset.ip_address)
+    if "Auto-added" in name_str:
+        name_str = name_str.replace("Auto-added Host", "").replace("Auto-added Web Host", "").replace("(", "").replace(")", "").strip()
+
+    report_date = (scan_date or datetime.now()).strftime('%d/%m/%Y à %H:%M:%S')
     cover_data = [
-        ["Nom de la Cible / Scope :", f"{asset.name} ({asset.ip_address})"],
+        ["Nom de la Cible / Scope :", name_str],
         ["Client :", target_company_name],
         ["Organisme d'Audit :", scanner_company_name],
-        ["Date du Scan / Génération :", report_date],
+        ["Date du Scan :", report_date],
         ["Profil & Moteur(s) :", "Multi-Engine Audit (OpenVAS, Nuclei, Nmap)"],
         ["Classification de Sécurité :", "CONFIDENTIEL - USAGE INTERNE"]
     ]
@@ -185,7 +190,7 @@ def generate_vulnerability_pdf(
     
     context_data = [
         ["Propriété / Paramètre", "Valeur Détectée"],
-        ["Hostname / Nom de la machine", asset.name or "N/A"],
+        ["Nom de la machine", name_str],
         ["Adresse IP", asset.ip_address or "N/A"],
         ["Adresse MAC", getattr(asset, "mac_address", "N/A") or "N/A"],
         ["Système d'Exploitation", asset.operating_system or "Linux / Unix"],
@@ -308,6 +313,7 @@ def generate_scan_vulnerability_pdf(
     executive_summary: str,
     scanner_company_name: str = "KERIBU SOC Security",
     target_company_name: str = "Client Company",
+    scan_date: datetime = None,
     scan_name: str = "Vulnerability Scan Report"
 ) -> bytes:
     buffer = io.BytesIO()
@@ -357,12 +363,12 @@ def generate_scan_vulnerability_pdf(
     story.append(t_header)
     story.append(Spacer(1, 40))
 
-    report_date = datetime.now().strftime('%d/%m/%Y à %H:%M:%S')
+    report_date = (scan_date or datetime.now()).strftime('%d/%m/%Y à %H:%M:%S')
     cover_data = [
         ["Nom du Scan / Cible :", scan_name],
         ["Client :", target_company_name],
         ["Organisme d'Audit :", scanner_company_name],
-        ["Date du Scan / Génération :", report_date],
+        ["Date du Scan :", report_date],
         ["Classification de Sécurité :", "CONFIDENTIEL - USAGE INTERNE"]
     ]
     t_cover = Table(cover_data, colWidths=[180, 340])
@@ -425,12 +431,16 @@ def generate_scan_vulnerability_pdf(
 
     # 4. PAR ASSET
     for asset in assets:
-        story.append(Paragraph(f"Host: {asset.name} ({asset.ip_address})", heading_style))
+        name_str = (asset.name.strip() if asset.name and asset.name.strip() else asset.ip_address)
+        if "Auto-added" in name_str:
+            name_str = name_str.replace("Auto-added Host", "").replace("Auto-added Web Host", "").replace("(", "").replace(")", "").strip()
+            
+        story.append(Paragraph(f"Host: {name_str}", heading_style))
         story.append(HRFlowable(width="100%", thickness=1.5, color=BRAND_LIME, spaceAfter=15))
         
         context_data = [
             ["Propriété", "Valeur"],
-            ["Hostname", asset.name or "N/A"],
+            ["Nom de la machine", name_str],
             ["IP", asset.ip_address or "N/A"],
             ["OS", asset.operating_system or "Linux / Unix"],
             ["Ports Ouverts", asset.ports or "N/A"]

@@ -164,7 +164,7 @@ table{margin:0!important}
                     <ul style="list-style-type: disc; margin: 10px 0 0 20px;">
                         {% for asset in assets %}
                         <li style="margin: 0 0 10px 0; color: #000000;">
-                            <a href="#id-host-{{ loop.index }}">{{ asset.ip_address }}{% if asset.name and asset.name != asset.ip_address %} ({{ asset.name }}){% endif %}</a>
+                            <a href="#id-host-{{ loop.index }}">{{ asset.name }}</a>
                         </li>
                         {% endfor %}
                     </ul>
@@ -180,7 +180,7 @@ table{margin:0!important}
 
             {% for asset in assets %}
             <div id="id-host-{{ loop.index }}" style="font-size: 22px; font-weight: 700; padding: 10px 0; overflow-wrap: break-word">
-                {{ asset.ip_address }}{% if asset.name and asset.name != asset.ip_address %} - {{ asset.name }}{% endif %}
+                {{ asset.name }}
                 <div class="clear"></div>
             </div>
 
