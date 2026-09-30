@@ -36,7 +36,7 @@ RUN wget https://raw.githubusercontent.com/vulnersCom/nmap-vulners/master/vulner
 
 # Install python dependencies
 COPY requirements.txt .
-RUN pip install --no-cache-dir --default-timeout=100 -r requirements.txt
+RUN pip install --no-cache-dir --default-timeout=1000 --retries 10 -r requirements.txt
 
 # Copy application code
 COPY src/ /app/src/
