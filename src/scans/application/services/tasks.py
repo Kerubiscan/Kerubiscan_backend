@@ -500,14 +500,20 @@ def run_vulnerability_scan(self, scan_id: str, asset_ip: str, asset_name: str, c
                             db.add(asset)
                             
                         if asset:
+                            from sqlalchemy.orm.attributes import flag_modified
+                            
                             if host_data.get("os") and host_data["os"] != "Unknown":
                                 asset.operating_system = host_data["os"]
                             if host_data.get("ports"):
                                 asset.ports = host_data["ports"]
+                                flag_modified(asset, "ports")
                             if host_data.get("services"):
                                 asset.services = host_data["services"]
+                                flag_modified(asset, "services")
                             if host_data.get("mac_address"):
                                 asset.mac_address = host_data["mac_address"]
+                                
+                            logger.info(f"Phase 1 saved details for {asset_ip}: OS={asset.operating_system}, Ports={len(asset.ports) if asset.ports else 0}")
                             
                             # Update IP address if the original asset was a domain name and we resolved an IP
                             if host_ip != asset_ip and host_data.get("ip"):
@@ -616,14 +622,20 @@ def run_vulnerability_scan(self, scan_id: str, asset_ip: str, asset_name: str, c
                             db.add(asset)
                             
                         if asset:
+                            from sqlalchemy.orm.attributes import flag_modified
+                            
                             if host_data.get("os") and host_data["os"] != "Unknown":
                                 asset.operating_system = host_data["os"]
                             if host_data.get("ports"):
                                 asset.ports = host_data["ports"]
+                                flag_modified(asset, "ports")
                             if host_data.get("services"):
                                 asset.services = host_data["services"]
+                                flag_modified(asset, "services")
                             if host_data.get("mac_address"):
                                 asset.mac_address = host_data["mac_address"]
+                                
+                            logger.info(f"Phase 1 saved details for {asset_ip}: OS={asset.operating_system}, Ports={len(asset.ports) if asset.ports else 0}")
                                 
                             # Update IP address if the original asset was a domain name and we resolved an IP
                             if host_ip != asset_ip and host_data.get("ip"):
@@ -736,14 +748,20 @@ def run_vulnerability_scan(self, scan_id: str, asset_ip: str, asset_name: str, c
                             db.add(asset)
                             
                         if asset:
+                            from sqlalchemy.orm.attributes import flag_modified
+                            
                             if host_data.get("os") and host_data["os"] != "Unknown":
                                 asset.operating_system = host_data["os"]
                             if host_data.get("ports"):
                                 asset.ports = host_data["ports"]
+                                flag_modified(asset, "ports")
                             if host_data.get("services"):
                                 asset.services = host_data["services"]
+                                flag_modified(asset, "services")
                             if host_data.get("mac_address"):
                                 asset.mac_address = host_data["mac_address"]
+                            
+                            logger.info(f"Phase 1 saved details for {asset_ip}: OS={asset.operating_system}, Ports={len(asset.ports) if asset.ports else 0}")
                                 
                             # Update IP address if the original asset was a domain name and we resolved an IP
                             if host_ip != asset_ip and host_data.get("ip"):
