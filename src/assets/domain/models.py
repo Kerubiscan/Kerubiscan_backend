@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import Optional
+from typing import Optional, Any
 from enum import Enum
 from datetime import datetime
 
@@ -21,8 +21,8 @@ class AssetBase(BaseModel):
     operating_system: Optional[str] = Field(None, max_length=100)
     cpe: Optional[str] = Field(None, max_length=255, description="Common Platform Enumeration string")
     description: Optional[str] = None
-    ports: Optional[str] = None
-    services: Optional[str] = None
+    ports: Optional[Any] = None
+    services: Optional[Any] = None
     mac_address: Optional[str] = None
 
 class AssetCreate(AssetBase):
@@ -38,8 +38,8 @@ class AssetUpdate(BaseModel):
     operating_system: Optional[str] = Field(None, max_length=100)
     cpe: Optional[str] = Field(None, max_length=255)
     description: Optional[str] = None
-    ports: Optional[str] = None
-    services: Optional[str] = None
+    ports: Optional[Any] = None
+    services: Optional[Any] = None
     mac_address: Optional[str] = None
 
 class AssetResponse(AssetBase):
