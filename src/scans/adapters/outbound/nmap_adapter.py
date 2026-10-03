@@ -147,6 +147,8 @@ class NmapAdapter(BaseScannerAdapter):
             cmd.extend(NmapAdapter._build_nmap_auth_args(credentials, workdir))
             cmd.extend(["-oX", out_xml, "--", *_validate_targets(target)])
             
+            logger.info(f"Executing Nmap command: {' '.join(cmd)}")
+            
             env = os.environ.copy()
             env["NMAP_PRIVILEGED"] = "1"
             
