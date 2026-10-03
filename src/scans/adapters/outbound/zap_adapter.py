@@ -87,19 +87,24 @@ class ZAPAdapter:
             logger.info("Starting ZAP Daemon...")
             
             # Use start_new_session to ensure we can kill the entire process group (java + wrapper)
+            # Restrict JVM memory to 512MB to prevent starving Celery/RabbitMQ under load
+            env = os.environ.copy()
+            env["_JAVA_OPTIONS"] = "-Xmx512m -Xms256m"
+            
             proc = subprocess.Popen(
                 cmd, 
                 stdout=subprocess.PIPE, 
                 stderr=subprocess.PIPE,
                 text=True, 
+                env=env,
                 start_new_session=True
             )
             
             zap_url = f"http://127.0.0.1:{free_port}"
             zap_ready = False
             
-            # Wait for ZAP API to boot (Up to 60 seconds)
-            for _ in range(60):
+            # Wait for ZAP API to boot (Up to 120 seconds for heavy environments)
+            for _ in range(120):
                 try:
                     resp = requests.get(zap_url, timeout=2)
                     if resp.status_code == 200:
@@ -109,7 +114,10 @@ class ZAPAdapter:
                     time.sleep(1)
                     
             if not zap_ready:
-                raise ScanError("ZAP Daemon failed to start within 60 seconds.")
+                # Let's get stderr for debugging if it crashes
+                stderr_out = proc.stderr.read() if proc.stderr else "No stderr"
+                logger.error(f"ZAP Boot Failed. Stderr: {stderr_out}")
+                raise ScanError("ZAP Daemon failed to start within 120 seconds.")
                 
             logger.info("ZAP Daemon is ready. Preparing targets...")
             
