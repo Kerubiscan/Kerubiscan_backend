@@ -420,6 +420,7 @@ def run_vulnerability_scan(self, scan_id: str, asset_ip: str, asset_name: str, c
             if scan.status != ScanStatus.IN_PROGRESS:
                 scan.status = ScanStatus.IN_PROGRESS
             scan_engine = scan.scanner_engine
+            scan_company_id = scan.company_id
             
             from src.policies.domain.entities import PolicyEntity
             from src.secrets.domain.entities import CredentialEntity
@@ -495,7 +496,7 @@ def run_vulnerability_scan(self, scan_id: str, asset_ip: str, asset_name: str, c
                             asset = db.query(AssetEntity).filter(AssetEntity.ip_address == host_ip).first()
                             
                         if not asset:
-                            asset = AssetEntity(name=asset_ip, ip_address=host_ip, company_id=scan.company_id)
+                            asset = AssetEntity(name=asset_ip, ip_address=host_ip, company_id=scan_company_id)
                             db.add(asset)
                             
                         if asset:
@@ -611,7 +612,7 @@ def run_vulnerability_scan(self, scan_id: str, asset_ip: str, asset_name: str, c
                             asset = db.query(AssetEntity).filter(AssetEntity.ip_address == host_ip).first()
                             
                         if not asset:
-                            asset = AssetEntity(name=asset_ip, ip_address=host_ip, company_id=scan.company_id)
+                            asset = AssetEntity(name=asset_ip, ip_address=host_ip, company_id=scan_company_id)
                             db.add(asset)
                             
                         if asset:
@@ -731,7 +732,7 @@ def run_vulnerability_scan(self, scan_id: str, asset_ip: str, asset_name: str, c
                             asset = db.query(AssetEntity).filter(AssetEntity.ip_address == host_ip).first()
                             
                         if not asset:
-                            asset = AssetEntity(name=asset_ip, ip_address=host_ip, company_id=scan.company_id)
+                            asset = AssetEntity(name=asset_ip, ip_address=host_ip, company_id=scan_company_id)
                             db.add(asset)
                             
                         if asset:
