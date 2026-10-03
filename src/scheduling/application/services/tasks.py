@@ -111,6 +111,8 @@ def check_scheduled_scans():
                 targets = [t.strip() for t in scan.target.split(",") if t.strip()]
                 target_states = {t: "PENDING" for t in targets}
                 scan.target_states = target_states
+                from sqlalchemy.orm.attributes import flag_modified
+                flag_modified(scan, "target_states")
                 db.commit()
 
                 admin_email = scan.notify_email if getattr(scan, 'notify_email', None) else "admin@KVS.local"

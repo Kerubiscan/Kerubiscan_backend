@@ -87,7 +87,9 @@ class VulnerabilityRepository:
     def update_ai_analysis(self, vuln_id: str, ai_analysis: dict) -> Optional[VulnerabilityEntity]:
         vuln = self.db.query(VulnerabilityEntity).filter(VulnerabilityEntity.id == vuln_id).first()
         if vuln:
+            from sqlalchemy.orm.attributes import flag_modified
             vuln.ai_analysis = ai_analysis
+            flag_modified(vuln, "ai_analysis")
             self.db.commit()
             self.db.refresh(vuln)
         return vuln

@@ -78,9 +78,11 @@ def update_scan_progress(scan_id: str, ip: str, target_status: str):
     try:
         scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
         if scan and scan.target_states:
+            from sqlalchemy.orm.attributes import flag_modified
             states = dict(scan.target_states)
             states[ip] = target_status
             scan.target_states = states
+            flag_modified(scan, "target_states")
             
             total = len(states)
             completed = sum(1 for s in states.values() if s in ["COMPLETED", "FAILED", "ABANDONED"])
@@ -401,21 +403,25 @@ def run_vulnerability_scan(self, scan_id: str, asset_ip: str, asset_name: str, c
     try:
         scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
         if scan:
+            from sqlalchemy.orm.attributes import flag_modified
             if scan.status == ScanStatus.PAUSED:
                 logger.info(f"Scan {scan_id} is PAUSED. Aborting task for {asset_ip}.")
                 current_states = dict(scan.target_states) if scan.target_states else {}
                 current_states[asset_ip] = "PENDING"
                 scan.target_states = current_states
+                flag_modified(scan, "target_states")
                 db.commit()
                 return True
                 
             if not scan.target_states:
                 scan.target_states = {}
+                flag_modified(scan, "target_states")
             
             # Make a copy of target_states, update the current IP, and reassign so SQLAlchemy detects the change
             current_states = dict(scan.target_states)
             current_states[asset_ip] = "IN_PROGRESS"
             scan.target_states = current_states
+            flag_modified(scan, "target_states")
             
             if scan.status != ScanStatus.IN_PROGRESS:
                 scan.status = ScanStatus.IN_PROGRESS

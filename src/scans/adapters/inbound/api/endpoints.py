@@ -701,6 +701,8 @@ def resume_scan(scan_id: str, db: Session = Depends(get_db), current_user: dict 
                 new_states[t_ip] = "PENDING"
                 targets_to_requeue.append(t_ip)
         scan.target_states = new_states
+        from sqlalchemy.orm.attributes import flag_modified
+        flag_modified(scan, "target_states")
     
     # Commit status update so the tasks know it's not paused anymore
     db.commit()
