@@ -68,7 +68,9 @@ from src.scheduling.domain.entities import ScheduleEntity
 
 @router.get("/status", response_model=ScannerStatus)
 def get_scanner_status(db: Session = Depends(get_db)):
-    in_progress = db.query(ScanEntity).filter(ScanEntity.status == ScanStatus.IN_PROGRESS).count()
+    in_progress = db.query(ScanEntity).filter(
+        ScanEntity.status.in_([ScanStatus.IN_PROGRESS, ScanStatus.PENDING])
+    ).count()
     scheduled = db.query(ScheduleEntity).count()
     
     last_scan = db.query(ScanEntity).filter(
