@@ -533,6 +533,16 @@ def run_vulnerability_scan(self, scan_id: str, asset_ip: str, asset_name: str, c
             finally:
                 db.close()
                 
+            # Update overall scan progress to 50% since Phase 1 is complete
+            db = SessionLocal()
+            try:
+                scan_update = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
+                if scan_update and scan_update.progress < 50:
+                    scan_update.progress = 50
+                db.commit()
+            finally:
+                db.close()
+                
             # If no open ports were found, there's no need to run vulnerability scripts
             if not open_ports_list:
                 logger.info(f"No open ports found on {asset_ip}. Skipping Phase 2 vulnerability scripts.")
