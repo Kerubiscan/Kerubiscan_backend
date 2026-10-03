@@ -494,6 +494,10 @@ def run_vulnerability_scan(self, scan_id: str, asset_ip: str, asset_name: str, c
                         if not asset:
                             asset = db.query(AssetEntity).filter(AssetEntity.ip_address == host_ip).first()
                             
+                        if not asset:
+                            asset = AssetEntity(name=asset_ip, ip_address=host_ip, company_id=scan.company_id)
+                            db.add(asset)
+                            
                         if asset:
                             if host_data.get("os") and host_data["os"] != "Unknown":
                                 asset.operating_system = host_data["os"]
@@ -605,6 +609,10 @@ def run_vulnerability_scan(self, scan_id: str, asset_ip: str, asset_name: str, c
                             asset = db.query(AssetEntity).filter(AssetEntity.name == asset_ip).first()
                         if not asset:
                             asset = db.query(AssetEntity).filter(AssetEntity.ip_address == host_ip).first()
+                            
+                        if not asset:
+                            asset = AssetEntity(name=asset_ip, ip_address=host_ip, company_id=scan.company_id)
+                            db.add(asset)
                             
                         if asset:
                             if host_data.get("os") and host_data["os"] != "Unknown":
@@ -721,6 +729,10 @@ def run_vulnerability_scan(self, scan_id: str, asset_ip: str, asset_name: str, c
                             asset = db.query(AssetEntity).filter(AssetEntity.name == asset_ip).first()
                         if not asset:
                             asset = db.query(AssetEntity).filter(AssetEntity.ip_address == host_ip).first()
+                            
+                        if not asset:
+                            asset = AssetEntity(name=asset_ip, ip_address=host_ip, company_id=scan.company_id)
+                            db.add(asset)
                             
                         if asset:
                             if host_data.get("os") and host_data["os"] != "Unknown":

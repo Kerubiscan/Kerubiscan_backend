@@ -42,6 +42,10 @@ class ZAPAdapter:
         api_key = secrets.token_hex(16)
         
         try:
+            # Ensure requests to localhost do not use proxy
+            os.environ["NO_PROXY"] = "127.0.0.1,localhost"
+            os.environ["no_proxy"] = "127.0.0.1,localhost"
+            
             urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
             
             zap_home_dir = tempfile.mkdtemp(prefix="zap_home_")
@@ -54,6 +58,7 @@ class ZAPAdapter:
             cmd = [
                 "/usr/local/bin/zap", 
                 "-daemon", 
+                "-host", "127.0.0.1",
                 "-dir", zap_home_dir, 
                 "-port", str(free_port),
                 "-config", f"api.key={api_key}"
