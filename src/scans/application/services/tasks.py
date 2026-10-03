@@ -551,7 +551,7 @@ def run_vulnerability_scan(self, scan_id: str, asset_ip: str, asset_name: str, c
             if vuln_hosts:
                 from src.vulnerabilities.application.services.tasks import parse_nmap_report
                 for host_data in vuln_hosts:
-                    parse_nmap_report.delay(host_data, host_data.get("ip", asset_ip), scan_id)
+                    parse_nmap_report.delay(host_data, asset_ip, scan_id)
             else:
                 from src.vulnerabilities.application.services.tasks import update_scan_progress
                 update_scan_progress(scan_id, asset_ip, "COMPLETED")
