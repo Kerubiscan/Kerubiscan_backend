@@ -134,7 +134,7 @@ def create_scan(req: ScanCreateRequest, db: Session = Depends(get_db), current_u
     target_states = {t: "PENDING" for t in targets}
     
     if len(targets) > 1:
-        scan_name = f"Multi-Target Scan ({len(targets)} targets)"
+        scan_name = f"Multi scan for {company.name}"
     else:
         scan_name = f"Scan for {req.target}"
     
@@ -479,14 +479,17 @@ def download_scan_report(
     
     display_name = scan.name
     if "," in display_name and len(display_name) > 40:
-        display_name = "Multi-Target Scan Batch"
+        company = db.query(CompanyEntity).filter(CompanyEntity.id == scan.company_id).first()
+        company_name = company.name if company else target_company
+        display_name = f"Multi scan for {company_name}"
     
     if scan.scan_type and getattr(scan.scan_type, 'value', str(scan.scan_type)).lower() == "discovery":
         html_bytes = generate_discovery_html(
             assets=assets,
             scanner_company_name=scanner_company,
             target_company_name=target_company,
-            scan_name=display_name
+            scan_name=display_name,
+            scan_date=scan.created_at
         )
     else:
         html_bytes = generate_vulnerability_html(
@@ -495,7 +498,8 @@ def download_scan_report(
             executive_summary=scan.executive_summary,
             scanner_company_name=scanner_company,
             target_company_name=target_company,
-            scan_name=display_name
+            scan_name=display_name,
+            scan_date=scan.created_at
         )
     
     # Use a short, clean filename using the scan ID to avoid any browser encoding issues
@@ -618,7 +622,11 @@ def download_scan_report_pdf(
     from src.reporting.application.services.pdf_generator import generate_scan_vulnerability_pdf
     
     if len(assets) > 1:
-        display_name = target_company
+        display_name = scan.name
+        if "," in display_name and len(display_name) > 40:
+            company = db.query(CompanyEntity).filter(CompanyEntity.id == scan.company_id).first()
+            company_name = company.name if company else target_company
+            display_name = f"Multi scan for {company_name}"
     elif len(assets) == 1:
         display_name = (assets[0].name.strip() if assets[0].name and assets[0].name.strip() else assets[0].ip_address)
         if "Auto-added" in display_name:
@@ -634,7 +642,8 @@ def download_scan_report_pdf(
         executive_summary=request_body.executive_summary or scan.executive_summary,
         scanner_company_name=scanner_company,
         target_company_name=target_company,
-        scan_name=display_name
+        scan_name=display_name,
+        scan_date=scan.created_at
     )
     
     short_id = str(scan.id)[:8]

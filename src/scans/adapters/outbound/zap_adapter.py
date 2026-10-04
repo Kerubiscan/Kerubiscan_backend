@@ -141,10 +141,14 @@ class ZAPAdapter:
                 scan_id = spider_resp.json().get("scan")
                 
                 if scan_id:
-                    # Wait for this spider to finish
+                    # Wait for this spider to finish (Max 5 minutes)
+                    spider_start_time = time.time()
                     while True:
+                        if time.time() - spider_start_time > 300:
+                            logger.warning(f"ZAP Spider timeout reached for {target}")
+                            break
                         stat_resp = requests.get(f"{zap_url}/JSON/spider/view/status/", params={"apikey": api_key, "scanId": scan_id})
-                        if stat_resp.json().get("status") == "100":
+                        if str(stat_resp.json().get("status")) == "100":
                             break
                         time.sleep(2)
                         
@@ -155,13 +159,17 @@ class ZAPAdapter:
                 ascan_resp = requests.get(f"{zap_url}/JSON/ascan/action/scan/", params={"apikey": api_key, "url": target})
                 scan_ids.append(ascan_resp.json().get("scan"))
                 
-            # Step 3: Poll Active Scan status until all are 100%
+            # Step 3: Poll Active Scan status until all are 100% (Max 30 minutes)
             for scan_id in scan_ids:
                 if not scan_id: 
                     continue
+                ascan_start_time = time.time()
                 while True:
+                    if time.time() - ascan_start_time > 1800:
+                        logger.warning(f"ZAP Active Scan timeout reached for scan ID {scan_id}")
+                        break
                     stat_resp = requests.get(f"{zap_url}/JSON/ascan/view/status/", params={"apikey": api_key, "scanId": scan_id})
-                    if stat_resp.json().get("status") == "100":
+                    if str(stat_resp.json().get("status")) == "100":
                         break
                     time.sleep(10) # Poll every 10 seconds for heavy active scans
                     

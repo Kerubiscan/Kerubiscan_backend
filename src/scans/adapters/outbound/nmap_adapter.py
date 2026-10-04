@@ -142,8 +142,8 @@ class NmapAdapter(BaseScannerAdapter):
         try:
             cmd = ["nmap", "-sS", "-sV", "-Pn", "--max-retries", "2", "--host-timeout", "30m"]
             cmd.extend(_build_port_args(ports))
-            # Use 'vuln and safe' to avoid intrusive scripts
-            cmd.extend(["--script", "vuln and safe,vulners,vulscan/"])
+            # Use 'vuln' category fully to ensure web vulnerabilities are actually tested
+            cmd.extend(["--script", "vuln,vulners,vulscan"])
             cmd.extend(NmapAdapter._build_nmap_auth_args(credentials, workdir))
             cmd.extend(["-oX", out_xml, "--", *_validate_targets(target)])
             

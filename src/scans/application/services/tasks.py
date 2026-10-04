@@ -504,17 +504,20 @@ def run_vulnerability_scan(self, scan_id: str, asset_ip: str, asset_name: str, c
                         if not asset:
                             asset = AssetEntity(name=asset_ip, ip_address=host_ip, company_id=scan_company_id)
                             db.add(asset)
+                            db.commit()
+                            db.refresh(asset)
                             
                         if asset:
                             from sqlalchemy.orm.attributes import flag_modified
+                            import copy
                             
                             if host_data.get("os") and host_data["os"] != "Unknown":
                                 asset.operating_system = host_data["os"]
                             if host_data.get("ports"):
-                                asset.ports = host_data["ports"]
+                                asset.ports = copy.deepcopy(host_data["ports"])
                                 flag_modified(asset, "ports")
                             if host_data.get("services"):
-                                asset.services = host_data["services"]
+                                asset.services = copy.deepcopy(host_data["services"])
                                 flag_modified(asset, "services")
                             if host_data.get("mac_address"):
                                 asset.mac_address = host_data["mac_address"]
@@ -529,6 +532,7 @@ def run_vulnerability_scan(self, scan_id: str, asset_ip: str, asset_name: str, c
                                 asset.ip_address = host_ip
 
                             asset.last_scan_raw_output = json.dumps(host_data, indent=2)
+                            db.commit()
                     db.commit()
             finally:
                 db.close()
@@ -587,7 +591,7 @@ def run_vulnerability_scan(self, scan_id: str, asset_ip: str, asset_name: str, c
             logger.info(f"Phase 1: Running Nmap detailed discovery on {asset_ip} for Nuclei")
             discovery_hosts = NmapAdapter.run_detailed_discovery_scan(asset_ip, ports=port_range, credentials=vault_secret)
             
-            nuclei_targets = []
+            nuclei_targets = [asset_ip]
             
             # Save Phase 1 results directly to DB
             db = SessionLocal()
@@ -636,17 +640,20 @@ def run_vulnerability_scan(self, scan_id: str, asset_ip: str, asset_name: str, c
                         if not asset:
                             asset = AssetEntity(name=asset_ip, ip_address=host_ip, company_id=scan_company_id)
                             db.add(asset)
+                            db.commit()
+                            db.refresh(asset)
                             
                         if asset:
                             from sqlalchemy.orm.attributes import flag_modified
+                            import copy
                             
                             if host_data.get("os") and host_data["os"] != "Unknown":
                                 asset.operating_system = host_data["os"]
                             if host_data.get("ports"):
-                                asset.ports = host_data["ports"]
+                                asset.ports = copy.deepcopy(host_data["ports"])
                                 flag_modified(asset, "ports")
                             if host_data.get("services"):
-                                asset.services = host_data["services"]
+                                asset.services = copy.deepcopy(host_data["services"])
                                 flag_modified(asset, "services")
                             if host_data.get("mac_address"):
                                 asset.mac_address = host_data["mac_address"]
@@ -661,6 +668,7 @@ def run_vulnerability_scan(self, scan_id: str, asset_ip: str, asset_name: str, c
                                 asset.ip_address = host_ip
                                 
                             asset.last_scan_raw_output = json.dumps(host_data, indent=2)
+                            db.commit()
                     db.commit()
             finally:
                 db.close()
@@ -746,12 +754,30 @@ def run_vulnerability_scan(self, scan_id: str, asset_ip: str, asset_name: str, c
                             if isinstance(port_list, str):
                                 port_list = [p.strip() for p in port_list.split(",") if p.strip()]
                                 for p in port_list:
-                                    port_num = p.split('/')[0]
-                                    open_ports_list.append(port_num)
+                                    port_id = p.split('/')[0]
+                                    service_name = "unknown"
+                                    if "(" in p and ")" in p:
+                                        service_name = p.split('(')[1].split(')')[0].lower()
+                                    
+                                    if "http" in service_name and "ssl" not in service_name and "https" not in service_name:
+                                        open_ports_list.append(f"http://{host_ip}:{port_id}")
+                                    elif "https" in service_name or "ssl" in service_name:
+                                        open_ports_list.append(f"https://{host_ip}:{port_id}")
+                                    else:
+                                        open_ports_list.append(f"http://{host_ip}:{port_id}")  # fallback for zap
                             elif isinstance(port_list, list):
                                 for p in port_list:
                                     if isinstance(p, dict) and p.get("state") == "open":
-                                        open_ports_list.append(str(p.get("port")))
+                                        port_id = str(p.get("port"))
+                                        service_name = p.get("service", "unknown").lower()
+                                        tunnel = p.get("tunnel")
+                                        
+                                        if "http" in service_name and tunnel != "ssl" and "https" not in service_name:
+                                            open_ports_list.append(f"http://{host_ip}:{port_id}")
+                                        elif "https" in service_name or tunnel == "ssl":
+                                            open_ports_list.append(f"https://{host_ip}:{port_id}")
+                                        else:
+                                            open_ports_list.append(f"http://{host_ip}:{port_id}")  # fallback for zap
                                 
                         asset = db.query(AssetEntity).filter(AssetEntity.ip_address == asset_ip).first()
                         if not asset:
@@ -762,17 +788,20 @@ def run_vulnerability_scan(self, scan_id: str, asset_ip: str, asset_name: str, c
                         if not asset:
                             asset = AssetEntity(name=asset_ip, ip_address=host_ip, company_id=scan_company_id)
                             db.add(asset)
+                            db.commit()
+                            db.refresh(asset)
                             
                         if asset:
                             from sqlalchemy.orm.attributes import flag_modified
+                            import copy
                             
                             if host_data.get("os") and host_data["os"] != "Unknown":
                                 asset.operating_system = host_data["os"]
                             if host_data.get("ports"):
-                                asset.ports = host_data["ports"]
+                                asset.ports = copy.deepcopy(host_data["ports"])
                                 flag_modified(asset, "ports")
                             if host_data.get("services"):
-                                asset.services = host_data["services"]
+                                asset.services = copy.deepcopy(host_data["services"])
                                 flag_modified(asset, "services")
                             if host_data.get("mac_address"):
                                 asset.mac_address = host_data["mac_address"]
@@ -787,19 +816,20 @@ def run_vulnerability_scan(self, scan_id: str, asset_ip: str, asset_name: str, c
                                 asset.ip_address = host_ip
                                 
                             asset.last_scan_raw_output = json.dumps(host_data, indent=2)
+                            db.commit()
                     db.commit()
             finally:
                 db.close()
                 
-            if not open_ports_list:
-                logger.info(f"No open ports found on {asset_ip}. Skipping Phase 2 ZAP scan.")
-                from src.vulnerabilities.application.services.tasks import update_scan_progress
-                update_scan_progress(scan_id, asset_ip, "COMPLETED")
-                return True
-                
             # --- PHASE 2: OWASP ZAP Vulnerability Scan ---
-            logger.info(f"Phase 2: Running OWASP ZAP on {asset_ip}")
-            vulns = ZAPAdapter.run_scan(asset_ip, credentials=vault_secret)
+            zap_targets = [asset_ip]
+            for p in open_ports_list:
+                if p not in zap_targets:
+                    zap_targets.append(p)
+            zap_targets_str = ",".join(zap_targets)
+            
+            logger.info(f"Phase 2: Running OWASP ZAP on targets: {zap_targets_str}")
+            vulns = ZAPAdapter.run_scan(zap_targets_str, credentials=vault_secret)
             from src.vulnerabilities.application.services.tasks import parse_zap_report
             parse_zap_report.delay(vulns, asset_ip, scan_id)
             return True

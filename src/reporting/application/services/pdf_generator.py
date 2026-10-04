@@ -188,6 +188,19 @@ def generate_vulnerability_pdf(
     story.append(Paragraph("3. Détail du Host Scanné (Cible)", heading_style))
     story.append(HRFlowable(width="100%", thickness=1.5, color=BRAND_LIME, spaceAfter=15))
     
+    ports_str = "N/A"
+    if asset.ports:
+        if isinstance(asset.ports, list):
+            ports_list = []
+            for p in asset.ports:
+                if isinstance(p, dict) and "port" in p:
+                    ports_list.append(str(p["port"]))
+                else:
+                    ports_list.append(str(p))
+            ports_str = ", ".join(ports_list)
+        else:
+            ports_str = str(asset.ports)
+            
     context_data = [
         ["Propriété / Paramètre", "Valeur Détectée"],
         ["Nom de la machine", name_str],
@@ -195,7 +208,7 @@ def generate_vulnerability_pdf(
         ["Adresse MAC", getattr(asset, "mac_address", "N/A") or "N/A"],
         ["Système d'Exploitation", asset.operating_system or "Linux / Unix"],
         ["Zone Réseau", asset.network_zone or "Interne"],
-        ["Ports Ouverts Détectés", asset.ports or "80/tcp, 443/tcp, 22/tcp"]
+        ["Ports Ouverts Détectés", ports_str]
     ]
     t_context = Table(context_data, colWidths=[180, 340])
     t_context.setStyle(TableStyle([
@@ -438,12 +451,25 @@ def generate_scan_vulnerability_pdf(
         story.append(Paragraph(f"Host: {name_str}", heading_style))
         story.append(HRFlowable(width="100%", thickness=1.5, color=BRAND_LIME, spaceAfter=15))
         
+        ports_str = "N/A"
+        if asset.ports:
+            if isinstance(asset.ports, list):
+                ports_list = []
+                for p in asset.ports:
+                    if isinstance(p, dict) and "port" in p:
+                        ports_list.append(str(p["port"]))
+                    else:
+                        ports_list.append(str(p))
+                ports_str = ", ".join(ports_list)
+            else:
+                ports_str = str(asset.ports)
+                
         context_data = [
             ["Propriété", "Valeur"],
             ["Nom de la machine", name_str],
             ["IP", asset.ip_address or "N/A"],
             ["OS", asset.operating_system or "Linux / Unix"],
-            ["Ports Ouverts", asset.ports or "N/A"]
+            ["Ports Ouverts", ports_str]
         ]
         t_context = Table(context_data, colWidths=[180, 340])
         t_context.setStyle(TableStyle([
