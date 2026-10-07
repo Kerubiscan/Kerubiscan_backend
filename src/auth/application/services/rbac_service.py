@@ -45,6 +45,12 @@ ROLE_PERMISSIONS = {
     ]
 }
 
+# Role names as they exist in Keycloak (realm-export.json) when they differ from the Role enum.
+# "System Administrator" never matched "Systems Administrator": those users had no permission at all.
+ROLE_ALIASES = {
+    "System Administrator": Role.SYSTEMS_ADMINISTRATOR,
+}
+
 class RBACService:
     @staticmethod
     def resolve_permissions(roles: List[str]) -> Set[Permission]:
@@ -55,7 +61,7 @@ class RBACService:
         user_permissions = set()
         for role_str in roles:
             try:
-                role_enum = Role(role_str)
+                role_enum = ROLE_ALIASES.get(role_str) or Role(role_str)
                 if role_enum in ROLE_PERMISSIONS:
                     user_permissions.update(ROLE_PERMISSIONS[role_enum])
             except ValueError:

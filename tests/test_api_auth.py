@@ -39,6 +39,24 @@ def test_every_route_requires_authentication():
     assert not missing, "Routes without authentication:\n" + "\n".join(missing)
 
 
+def test_every_keycloak_role_grants_permissions():
+    """Each realm role of realm-export.json must be known by the RBAC (name mismatch = no access)."""
+    import json
+    from src.auth.application.services.rbac_service import RBACService
+    realm = json.loads((SRC.parent / "realm-export.json").read_text(encoding="utf-8-sig"))
+    roles = [r["name"] for r in realm.get("roles", {}).get("realm", [])]
+    app_roles = [r for r in roles if not r.startswith(("default-roles-", "offline_access", "uma_authorization"))]
+    assert app_roles
+    unknown = [r for r in app_roles if not RBACService.resolve_permissions([r])]
+    assert not unknown, f"Keycloak roles without any permission: {unknown}"
+
+
+def test_system_administrator_can_scan():
+    from src.auth.application.services.rbac_service import RBACService
+    from src.auth.domain.entities import Permission
+    assert Permission.SCAN_EXECUTE in RBACService.resolve_permissions(["System Administrator"])
+
+
 def test_launching_a_scan_requires_scan_execute():
     from src.auth.application.services.rbac_service import RBACService
     from src.auth.domain.entities import Permission
