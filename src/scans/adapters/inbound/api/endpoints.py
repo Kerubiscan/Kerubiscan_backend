@@ -1,16 +1,30 @@
+import io
+import ipaddress
+import logging
+from typing import List, Optional
+
 from fastapi import APIRouter, Depends, HTTPException, status
-from datetime import datetime
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
+
 from src.core.database import get_db
 from src.companies.domain.entities import CompanyEntity
 from src.scans.domain.entities import ScanEntity, ScanType, ScanStatus, ScannerEngine
+from src.scans.domain.targets import InvalidTargetError, validate_targets, split_targets, parse_target
 from src.assets.domain.entities import AssetEntity
-from src.auth.adapters.inbound.api.dependencies import get_current_user
+from src.auth.adapters.inbound.api.dependencies import require_permissions
+from src.auth.domain.entities import Permission
 from src.audit.domain.models import AuditLog
-from typing import List, Optional
+from src.scheduling.domain.entities import ScheduleEntity
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+# Default config_id for 'Full and fast'
+OPENVAS_FULL_AND_FAST = "daba56c8-73ec-11df-a475-002264764cea"
+
 
 class ScannerStatus(BaseModel):
     status: str
@@ -27,10 +41,10 @@ class CompanyResponse(BaseModel):
 class ScanCreateRequest(BaseModel):
     company_name: Optional[str] = None
     company_id: Optional[str] = None
-    target: str
+    target: str  # comma separated IPs, CIDRs, domains or http(s) URLs
     network_zone: Optional[str] = None
-    scan_type: str # "DISCOVERY" or "VULNERABILITY"
-    scanner_engine: str = "OPENVAS" # "OPENVAS", "NMAP", "NUCLEI", "NESSUS"
+    scan_type: str  # "DISCOVERY", "VULNERABILITY" or "WEB_APP"
+    scanner_engine: str = "OPENVAS"  # "OPENVAS", "NMAP", "NUCLEI", "OWASP_ZAP"
     policy_id: Optional[str] = None
     credential_id: Optional[str] = None
     scheduled_for: Optional[str] = None
@@ -55,6 +69,7 @@ class ScanResponse(BaseModel):
     status: str
     progress: int = 0
     target_states: Optional[dict] = None
+    vulnerabilities_found: Optional[int] = None
     executive_summary: Optional[str] = None
     policy_id: Optional[str] = None
     credential_id: Optional[str] = None
@@ -64,20 +79,115 @@ class ScanResponse(BaseModel):
     class Config:
         from_attributes = True
 
-from src.scheduling.domain.entities import ScheduleEntity
+
+def _to_response(scan: ScanEntity) -> ScanResponse:
+    return ScanResponse(
+        id=scan.id,
+        company_id=scan.company_id,
+        name=scan.name,
+        target=scan.target,
+        network_zone=scan.network_zone,
+        scan_type=scan.scan_type.name,
+        scanner_engine=scan.scanner_engine.name,
+        status=scan.status.name,
+        progress=scan.progress,
+        target_states=scan.target_states,
+        vulnerabilities_found=scan.vulnerabilities_found,
+        executive_summary=scan.executive_summary,
+        policy_id=scan.policy_id,
+        credential_id=scan.credential_id,
+        recurrence_rule=scan.recurrence_rule,
+        next_run_at=scan.next_run_at.isoformat() if scan.next_run_at else None,
+        created_at=scan.created_at.isoformat() if scan.created_at else None
+    )
+
+
+def _user_id(user: dict) -> str:
+    return user.get("sub") or user.get("id") or "unknown"
+
+
+def _username(user: dict) -> str:
+    return user.get("preferred_username") or user.get("username") or "system"
+
+
+def _parse_engine(value: str) -> ScannerEngine:
+    key = (value or "").strip().upper()
+    if key == "ZAP":
+        key = "OWASP_ZAP"
+    if key not in ScannerEngine.__members__:
+        raise HTTPException(status_code=400, detail=f"Moteur de scan inconnu : {value!r}. "
+                                                    f"Valeurs possibles : {', '.join(ScannerEngine.__members__)}")
+    return ScannerEngine[key]
+
+
+def _parse_scan_type(value: str) -> ScanType:
+    key = (value or "").strip().upper()
+    if key not in ScanType.__members__:
+        raise HTTPException(status_code=400, detail=f"Type de scan inconnu : {value!r}")
+    # WEB_APP is stored as VULNERABILITY (as before): the engine choice drives the web scan, and
+    # older databases may not have WEB_APP in their PostgreSQL enum.
+    return ScanType.DISCOVERY if key == "DISCOVERY" else ScanType.VULNERABILITY
+
+
+def _validate_scan_targets(raw: str, scan_type: ScanType) -> List[str]:
+    try:
+        parsed = validate_targets(raw)
+    except InvalidTargetError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if scan_type == ScanType.DISCOVERY and any(t.is_url for t in parsed):
+        raise HTTPException(status_code=400, detail="Une découverte d'hôtes porte sur des IP, réseaux ou domaines, pas sur des URL")
+    return [t.raw for t in parsed]
+
+
+def _queue_scan(scan: ScanEntity, targets: List[str]):
+    from src.scans.application.services.tasks import run_discovery_scan, run_vulnerability_scan
+    if scan.scan_type == ScanType.DISCOVERY:
+        run_discovery_scan.delay(scan.id, ",".join(targets), scan.network_zone or "Internal", scan.company_id)
+    else:
+        for target in targets:
+            run_vulnerability_scan.delay(scan.id, target, target, OPENVAS_FULL_AND_FAST)
+
+
+def scan_assets(db: Session, scan: ScanEntity) -> List[AssetEntity]:
+    """Assets covered by a scan: same company, not deleted, matching each target.
+
+    A domain target matches the asset that holds the domain (or, for assets created before the
+    domain fix, the asset named after it); a network target matches the assets inside it.
+    """
+    base = db.query(AssetEntity).filter(AssetEntity.company_id == scan.company_id, AssetEntity.is_deleted == False)  # noqa: E712
+    found = {}
+    for raw in split_targets(scan.target):
+        try:
+            target = parse_target(raw)
+        except InvalidTargetError:
+            continue
+        if target.kind == "cidr":
+            network = ipaddress.ip_network(target.host, strict=False)
+            for asset in base.all():
+                for value in (asset.ip_address, asset.resolved_ip):
+                    try:
+                        if value and ipaddress.ip_address(value) in network:
+                            found[asset.id] = asset
+                            break
+                    except ValueError:
+                        pass
+        else:
+            for asset in base.filter((AssetEntity.ip_address == target.host) | (AssetEntity.name == target.host)).all():
+                found[asset.id] = asset
+    return list(found.values())
+
 
 @router.get("/status", response_model=ScannerStatus)
-def get_scanner_status(db: Session = Depends(get_db)):
+def get_scanner_status(db: Session = Depends(get_db), current_user: dict = Depends(require_permissions([Permission.SCAN_READ]))):
     in_progress = db.query(ScanEntity).filter(
         ScanEntity.status.in_([ScanStatus.IN_PROGRESS, ScanStatus.PENDING])
     ).count()
     scheduled = db.query(ScheduleEntity).count()
-    
+
     last_scan = db.query(ScanEntity).filter(
         ScanEntity.status.in_([ScanStatus.COMPLETED, ScanStatus.FAILED])
     ).order_by(ScanEntity.created_at.desc()).first()
-    
-    # Calculate time ago roughly, or just format
+
     if last_scan and last_scan.created_at:
         last_scan_time = last_scan.created_at.strftime("%Y-%m-%d %H:%M")
     else:
@@ -91,27 +201,33 @@ def get_scanner_status(db: Session = Depends(get_db)):
     )
 
 @router.get("/companies", response_model=List[CompanyResponse])
-def get_companies(db: Session = Depends(get_db)):
+def get_companies(db: Session = Depends(get_db), current_user: dict = Depends(require_permissions([Permission.ASSET_READ]))):
     return db.query(CompanyEntity).all()
 
 @router.delete("/companies/{company_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_company(company_id: str, db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)):
+def delete_company(company_id: str, db: Session = Depends(get_db),
+                   current_user: dict = Depends(require_permissions([Permission.SCAN_DELETE, Permission.ASSET_DELETE]))):
     company = db.query(CompanyEntity).filter(CompanyEntity.id == company_id).first()
     if not company:
         raise HTTPException(status_code=404, detail="Company not found")
-        
+
     try:
         db.delete(company)
         db.commit()
-    except Exception as e:
+    except Exception:
         db.rollback()
         raise HTTPException(status_code=400, detail="Cannot delete company. It may have associated scans or assets.")
-    
+
     return None
 
 
 @router.post("", response_model=ScanResponse)
-def create_scan(req: ScanCreateRequest, db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)):
+def create_scan(req: ScanCreateRequest, db: Session = Depends(get_db),
+                current_user: dict = Depends(require_permissions([Permission.SCAN_EXECUTE]))):
+    s_type = _parse_scan_type(req.scan_type)
+    s_engine = _parse_engine(req.scanner_engine)
+    targets = _validate_scan_targets(req.target, s_type)
+
     company = None
     if req.company_id:
         company = db.query(CompanyEntity).filter(CompanyEntity.id == req.company_id).first()
@@ -123,30 +239,22 @@ def create_scan(req: ScanCreateRequest, db: Session = Depends(get_db), current_u
             db.add(company)
             db.commit()
             db.refresh(company)
-            
+
     if not company:
         raise HTTPException(status_code=400, detail="Either company_id or company_name must be provided and valid")
-        
-    s_type = ScanType.DISCOVERY if req.scan_type.upper() == "DISCOVERY" else ScanType.VULNERABILITY
-    s_engine = ScannerEngine[req.scanner_engine.upper()] if req.scanner_engine.upper() in ScannerEngine.__members__ else ScannerEngine.OPENVAS
-    
-    targets = [t.strip() for t in req.target.split(",") if t.strip()]
-    target_states = {t: "PENDING" for t in targets}
-    
-    if len(targets) > 1:
-        scan_name = f"Multi scan for {company.name}"
-    else:
-        scan_name = f"Scan for {req.target}"
-    
+
+    target_value = ",".join(targets)
+    scan_name = f"Multi-Target Scan ({len(targets)} targets)" if len(targets) > 1 else f"Scan for {target_value}"
+
     scan = ScanEntity(
         company_id=company.id,
         name=scan_name,
-        target=req.target,
+        target=target_value,
         network_zone=req.network_zone,
         scan_type=s_type,
         scanner_engine=s_engine,
         status=ScanStatus.PENDING if req.scheduled_for else ScanStatus.IN_PROGRESS,
-        target_states=target_states,
+        target_states={t: "PENDING" for t in targets},
         policy_id=req.policy_id,
         credential_id=req.credential_id,
         recurrence_rule=req.recurrence_rule,
@@ -156,50 +264,25 @@ def create_scan(req: ScanCreateRequest, db: Session = Depends(get_db), current_u
     db.add(scan)
     db.commit()
     db.refresh(scan)
-    
-    audit = AuditLog(
-        user_id=current_user.get("sub") or current_user.get("id", "unknown"),
-        username=current_user.get("preferred_username") or current_user.get("username", "system"),
+
+    db.add(AuditLog(
+        user_id=_user_id(current_user),
+        username=_username(current_user),
         action="CREATE",
         resource_type="SCAN",
         resource_id=str(scan.id),
-        details={"scan_name": scan.name, "target": scan.target}
-    )
-    db.add(audit)
+        details={"scan_name": scan.name, "target": scan.target, "engine": s_engine.name, "type": s_type.name}
+    ))
     db.commit()
-    
-    # Queue the scan via Celery
-    from src.scans.application.services.tasks import run_discovery_scan, run_vulnerability_scan
-    
-    if s_type == ScanType.DISCOVERY:
-        run_discovery_scan.delay(scan.id, req.target, req.network_zone or "Internal", company.id)
-    else:
-        # Default config_id for 'Full and fast'
-        config_id = "daba56c8-73ec-11df-a475-002264764cea"
-        for ip in targets:
-            run_vulnerability_scan.delay(scan.id, ip, ip, config_id)
-        
-    return ScanResponse(
-        id=scan.id,
-        company_id=scan.company_id,
-        name=scan.name,
-        target=scan.target,
-        network_zone=scan.network_zone,
-        scan_type=scan.scan_type.name,
-        scanner_engine=scan.scanner_engine.name,
-        status=scan.status.name,
-        progress=scan.progress,
-        target_states=scan.target_states,
-        executive_summary=scan.executive_summary,
-        policy_id=scan.policy_id,
-        credential_id=scan.credential_id,
-        recurrence_rule=scan.recurrence_rule,
-        next_run_at=scan.next_run_at.isoformat() if scan.next_run_at else None,
-        created_at=scan.created_at.isoformat() if scan.created_at else None
-    )
+
+    if not req.scheduled_for:
+        _queue_scan(scan, targets)
+
+    return _to_response(scan)
 
 @router.get("", response_model=List[ScanResponse])
-def get_scans(company_id: Optional[str] = None, network_zone: Optional[str] = None, status: Optional[str] = None, db: Session = Depends(get_db)):
+def get_scans(company_id: Optional[str] = None, network_zone: Optional[str] = None, status: Optional[str] = None,
+              db: Session = Depends(get_db), current_user: dict = Depends(require_permissions([Permission.SCAN_READ]))):
     query = db.query(ScanEntity).filter(ScanEntity.is_deleted.is_not(True))
     if company_id:
         query = query.filter(ScanEntity.company_id == company_id)
@@ -210,127 +293,78 @@ def get_scans(company_id: Optional[str] = None, network_zone: Optional[str] = No
             query = query.filter(ScanEntity.status == ScanStatus[status.upper()])
         except KeyError:
             pass  # ignore invalid status values
-    scans = query.order_by(ScanEntity.created_at.desc()).all()
-    
-    # mapping enum to string
-    return [
-        ScanResponse(
-            id=s.id,
-            company_id=s.company_id,
-            name=s.name,
-            target=s.target,
-            network_zone=s.network_zone,
-            scan_type=s.scan_type.name,
-            scanner_engine=s.scanner_engine.name,
-            status=s.status.name,
-            progress=s.progress,
-            target_states=s.target_states,
-            executive_summary=s.executive_summary,
-            policy_id=s.policy_id,
-            credential_id=s.credential_id,
-            recurrence_rule=s.recurrence_rule,
-            next_run_at=s.next_run_at.isoformat() if s.next_run_at else None,
-            created_at=s.created_at.isoformat() if s.created_at else None
-        ) for s in scans
-    ]
+    return [_to_response(s) for s in query.order_by(ScanEntity.created_at.desc()).all()]
 
 @router.delete("/{scan_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_scan(scan_id: str, db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)):
+def delete_scan(scan_id: str, db: Session = Depends(get_db),
+                current_user: dict = Depends(require_permissions([Permission.SCAN_DELETE]))):
+    scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
+    if not scan:
+        raise HTTPException(status_code=404, detail="Scan not found")
     try:
-        scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
-        if not scan:
-            raise HTTPException(status_code=404, detail="Scan not found")
-            
         scan.is_deleted = True
-        
-        audit = AuditLog(
-            user_id=current_user.get("sub", "unknown"),
-            username=current_user.get("preferred_username") or current_user.get("username", "system"),
-            action="DELETE",
-            resource_type="SCAN",
-            resource_id=str(scan.id),
-            details={"scan_name": scan.name}
-        )
-        db.add(audit)
+        db.add(AuditLog(user_id=_user_id(current_user), username=_username(current_user), action="DELETE",
+                        resource_type="SCAN", resource_id=str(scan.id), details={"scan_name": scan.name}))
         db.commit()
-        return None
-    except Exception as e:
-        import traceback
-        error_msg = traceback.format_exc()
+    except Exception:
+        logger.exception(f"Failed to delete scan {scan_id}")
         db.rollback()
-        raise HTTPException(status_code=500, detail=str(error_msg))
+        raise HTTPException(status_code=500, detail="Échec de la suppression du scan")
+    return None
 
 @router.delete("", status_code=status.HTTP_204_NO_CONTENT)
-def delete_all_scans(db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)):
+def delete_all_scans(db: Session = Depends(get_db),
+                     current_user: dict = Depends(require_permissions([Permission.SCAN_DELETE]))):
     try:
-        scans = db.query(ScanEntity).filter(ScanEntity.is_deleted == False).all()
+        scans = db.query(ScanEntity).filter(ScanEntity.is_deleted == False).all()  # noqa: E712
         for scan in scans:
             scan.is_deleted = True
-            
-        audit = AuditLog(
-            user_id=current_user.get("sub", "unknown"),
-            username=current_user.get("preferred_username") or current_user.get("username", "system"),
-            action="DELETE_ALL",
-            resource_type="SCAN",
-            resource_id="ALL",
-            details={"count": len(scans)}
-        )
-        db.add(audit)
+        db.add(AuditLog(user_id=_user_id(current_user), username=_username(current_user), action="DELETE_ALL",
+                        resource_type="SCAN", resource_id="ALL", details={"count": len(scans)}))
         db.commit()
-        return None
-    except Exception as e:
-        import traceback
-        error_msg = traceback.format_exc()
+    except Exception:
+        logger.exception("Failed to delete all scans")
         db.rollback()
-        raise HTTPException(status_code=500, detail=str(error_msg))
+        raise HTTPException(status_code=500, detail="Échec de la suppression des scans")
+    return None
 
 @router.put("/{scan_id}", response_model=ScanResponse)
-def update_scan(scan_id: str, req: ScanUpdateRequest, db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)):
+def update_scan(scan_id: str, req: ScanUpdateRequest, db: Session = Depends(get_db),
+                current_user: dict = Depends(require_permissions([Permission.SCAN_EXECUTE]))):
     scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
     if not scan or scan.is_deleted:
         raise HTTPException(status_code=404, detail="Scan not found")
-        
-    old_details = {"name": scan.name, "target": scan.target, "network_zone": scan.network_zone, "scanner_engine": scan.scanner_engine.name}
-    
+
+    old_details = {"name": scan.name, "target": scan.target, "network_zone": scan.network_zone,
+                   "scanner_engine": scan.scanner_engine.name, "policy_id": scan.policy_id, "credential_id": scan.credential_id}
+
     if req.name is not None:
         scan.name = req.name
     if req.target is not None:
-        scan.target = req.target
+        scan.target = ",".join(_validate_scan_targets(req.target, scan.scan_type))
     if req.network_zone is not None:
         scan.network_zone = req.network_zone
     if req.scanner_engine is not None:
-        s_engine = ScannerEngine[req.scanner_engine.upper()] if req.scanner_engine.upper() in ScannerEngine.__members__ else ScannerEngine.OPENVAS
-        scan.scanner_engine = s_engine
-        
-    audit = AuditLog(
-        user_id=current_user.get("id", "unknown"),
-        username=current_user.get("username", "system"),
+        scan.scanner_engine = _parse_engine(req.scanner_engine)
+    # These two fields used to be silently ignored
+    if req.policy_id is not None:
+        scan.policy_id = req.policy_id or None
+    if req.credential_id is not None:
+        scan.credential_id = req.credential_id or None
+
+    db.add(AuditLog(
+        user_id=_user_id(current_user),
+        username=_username(current_user),
         action="UPDATE",
         resource_type="SCAN",
         resource_id=str(scan.id),
-        details={"old": old_details, "new": {"name": scan.name, "target": scan.target, "network_zone": scan.network_zone, "scanner_engine": scan.scanner_engine.name}}
-    )
-    db.add(audit)
+        details={"old": old_details, "new": {"name": scan.name, "target": scan.target, "network_zone": scan.network_zone,
+                                             "scanner_engine": scan.scanner_engine.name, "policy_id": scan.policy_id,
+                                             "credential_id": scan.credential_id}}
+    ))
     db.commit()
     db.refresh(scan)
-    
-    return ScanResponse(
-        id=scan.id,
-        company_id=scan.company_id,
-        name=scan.name,
-        target=scan.target,
-        network_zone=scan.network_zone,
-        scan_type=scan.scan_type.name,
-        scanner_engine=scan.scanner_engine.name,
-        status=scan.status.name,
-        progress=scan.progress,
-        target_states=scan.target_states,
-        executive_summary=scan.executive_summary,
-        recurrence_rule=scan.recurrence_rule,
-        next_run_at=scan.next_run_at.isoformat() if scan.next_run_at else None,
-        created_at=scan.created_at.isoformat() if scan.created_at else None
-    )
-
+    return _to_response(scan)
 
 
 class SummaryGenerateRequest(BaseModel):
@@ -342,413 +376,219 @@ class SummaryUpdateRequest(BaseModel):
     summary: str
 
 @router.post("/{scan_id}/generate-summary")
-async def generate_scan_summary(scan_id: str, req: SummaryGenerateRequest, db: Session = Depends(get_db)):
+async def generate_scan_summary(scan_id: str, req: SummaryGenerateRequest, db: Session = Depends(get_db),
+                                current_user: dict = Depends(require_permissions([Permission.SCAN_READ]))):
     scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
     if not scan:
         raise HTTPException(status_code=404, detail="Scan not found")
-        
+
     from src.vulnerabilities.domain.entities import VulnerabilityEntity
-    
-    # Get top 5 vulnerabilities by contextual_risk_score
+    asset_ids = [a.id for a in scan_assets(db, scan)]
     vulns = db.query(VulnerabilityEntity).filter(
-        VulnerabilityEntity.asset_id.in_(
-            db.query(AssetEntity.id).filter(AssetEntity.ip_address == scan.target)
-        )
-    ).order_by(VulnerabilityEntity.contextual_risk_score.desc()).limit(5).all()
-    
+        VulnerabilityEntity.asset_id.in_(asset_ids)
+    ).order_by(VulnerabilityEntity.contextual_risk_score.desc().nullslast()).limit(5).all() if asset_ids else []
+
     vuln_data = [{"title": v.title, "cvss": v.cvss_base_score, "severity": getattr(v.severity, "name", str(v.severity))} for v in vulns]
-    
+
     from src.scans.application.services.tasks import generate_ai_summary_task
-    
-    # Enqueue task
     task = generate_ai_summary_task.delay(vuln_data, req.language, req.instructions, req.provider)
-    
     return {"task_id": task.id, "status": "processing"}
 
 @router.put("/{scan_id}/summary", response_model=ScanResponse)
-def update_scan_summary(scan_id: str, req: SummaryUpdateRequest, db: Session = Depends(get_db)):
+def update_scan_summary(scan_id: str, req: SummaryUpdateRequest, db: Session = Depends(get_db),
+                        current_user: dict = Depends(require_permissions([Permission.SCAN_EXECUTE]))):
     scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
     if not scan:
         raise HTTPException(status_code=404, detail="Scan not found")
-        
     scan.executive_summary = req.summary
     db.commit()
     db.refresh(scan)
-    return ScanResponse(
-        id=scan.id,
-        company_id=scan.company_id,
-        name=scan.name,
-        target=scan.target,
-        network_zone=scan.network_zone,
-        scan_type=scan.scan_type.name,
-        scanner_engine=scan.scanner_engine.name,
-        status=scan.status.name,
-        progress=scan.progress,
-        target_states=scan.target_states,
-        executive_summary=scan.executive_summary,
-        recurrence_rule=scan.recurrence_rule,
-        next_run_at=scan.next_run_at.isoformat() if scan.next_run_at else None,
-        created_at=scan.created_at.isoformat() if scan.created_at else None
-    )
+    return _to_response(scan)
 
-from fastapi.responses import StreamingResponse
-import io
+
+def _vulns_by_asset(db: Session, assets: List[AssetEntity], engine: Optional[str] = None) -> dict:
+    from src.vulnerabilities.domain.entities import VulnerabilityEntity
+    result = {}
+    for a in assets:
+        q = db.query(VulnerabilityEntity).filter(VulnerabilityEntity.asset_id == a.id)
+        if engine:
+            q = q.filter(VulnerabilityEntity.source_engine == engine)
+        seen, deduped = set(), []
+        for v in q.all():
+            key = (v.title, v.port)
+            if key not in seen:
+                seen.add(key)
+                deduped.append(v)
+        result[str(a.id)] = deduped
+    return result
+
 
 @router.get("/{scan_id}/report/html")
 def download_scan_report(
-    scan_id: str, 
-    scanner_company: str = "KVS Security", 
-    target_company: str = "Client Company", 
-    db: Session = Depends(get_db)
+    scan_id: str,
+    scanner_company: str = "KVS Security",
+    target_company: str = "Client Company",
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(require_permissions([Permission.SCAN_READ]))
 ):
     scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
     if not scan:
         raise HTTPException(status_code=404, detail="Scan not found")
-        
-    import ipaddress
-    
-    targets = [t.strip() for t in scan.target.split(",")] if scan.target else []
-    
-    subnets = [t for t in targets if '/' in t]
-    exact_ips = [t for t in targets if '/' not in t]
-    
-    raw_assets = []
-    if exact_ips:
-        raw_assets.extend(
-            db.query(AssetEntity).filter(
-                (AssetEntity.ip_address.in_(exact_ips)) | (AssetEntity.name.in_(exact_ips))
-            ).all()
-        )
-        
-    if subnets:
-        company_assets = db.query(AssetEntity).filter(AssetEntity.company_id == scan.company_id).all()
-        for asset in company_assets:
-            if not asset.ip_address: continue
-            
-            # Skip if already added
-            if any(a.id == asset.id for a in raw_assets):
-                continue
-                
-            try:
-                asset_ip_obj = ipaddress.ip_address(asset.ip_address)
-                for subnet in subnets:
-                    try:
-                        if asset_ip_obj in ipaddress.ip_network(subnet, strict=False):
-                            raw_assets.append(asset)
-                            break
-                    except ValueError:
-                        pass
-            except ValueError:
-                pass
-    
-    # Deduplicate: one asset object per unique IP address
-    seen_ips: dict = {}
-    for a in raw_assets:
-        ip = a.ip_address
-        if ip not in seen_ips:
-            seen_ips[ip] = a
-        elif a.ports and not seen_ips[ip].ports:
-            seen_ips[ip] = a  # prefer the record that has port data
-    assets = list(seen_ips.values())
-    
+
+    assets = scan_assets(db, scan)
     if not assets:
         assets = [AssetEntity(id="dummy", name=scan.target, ip_address=scan.target, network_zone=scan.network_zone)]
-        
-    from src.vulnerabilities.domain.entities import VulnerabilityEntity
-    all_vulns = {}
-    
-    # Determine the engine from the scan, default to OPENVAS if not set
     engine = scan.scanner_engine.value if scan.scanner_engine else "OPENVAS"
-    
-    for a in assets:
-        if a.id != "dummy":
-            vulns = db.query(VulnerabilityEntity).filter(
-                VulnerabilityEntity.asset_id == a.id,
-                VulnerabilityEntity.source_engine == engine
-            ).all()
-            # Also deduplicate vulnerabilities by title
-            seen_titles: dict = {}
-            deduped = []
-            for v in vulns:
-                if v.title not in seen_titles:
-                    seen_titles[v.title] = True
-                    deduped.append(v)
-            all_vulns[str(a.id)] = deduped
-    
+    all_vulns = _vulns_by_asset(db, [a for a in assets if a.id != "dummy"], engine)
+
     from src.reporting.application.services.html_generator import generate_vulnerability_html, generate_discovery_html
-    
+
     display_name = scan.name
     if "," in display_name and len(display_name) > 40:
-        company = db.query(CompanyEntity).filter(CompanyEntity.id == scan.company_id).first()
-        company_name = company.name if company else target_company
-        display_name = f"Multi scan for {company_name}"
-    
-    if scan.scan_type and getattr(scan.scan_type, 'value', str(scan.scan_type)).lower() == "discovery":
-        html_bytes = generate_discovery_html(
-            assets=assets,
-            scanner_company_name=scanner_company,
-            target_company_name=target_company,
-            scan_name=display_name,
-            scan_date=scan.created_at
-        )
+        display_name = "Multi-Target Scan Batch"
+
+    if scan.scan_type == ScanType.DISCOVERY:
+        html_bytes = generate_discovery_html(assets=assets, scanner_company_name=scanner_company,
+                                             target_company_name=target_company, scan_name=display_name)
     else:
-        html_bytes = generate_vulnerability_html(
-            assets=assets,
-            all_vulnerabilities=all_vulns,
-            executive_summary=scan.executive_summary,
-            scanner_company_name=scanner_company,
-            target_company_name=target_company,
-            scan_name=display_name,
-            scan_date=scan.created_at
-        )
-    
-    # Use a short, clean filename using the scan ID to avoid any browser encoding issues
+        html_bytes = generate_vulnerability_html(assets=assets, all_vulnerabilities=all_vulns,
+                                                 executive_summary=scan.executive_summary,
+                                                 scanner_company_name=scanner_company,
+                                                 target_company_name=target_company, scan_name=display_name)
+
     short_id = str(scan.id)[:8]
     return StreamingResponse(
-        io.BytesIO(html_bytes), 
-        media_type="text/html", 
+        io.BytesIO(html_bytes),
+        media_type="text/html",
         headers={"Content-Disposition": f'attachment; filename="rapport_{short_id}.html"'}
     )
 
 @router.get("/tasks/{task_id}")
-def get_task_status(task_id: str):
+def get_task_status(task_id: str, current_user: dict = Depends(require_permissions([Permission.SCAN_READ]))):
     from src.core.celery_app import celery_app
     from celery.result import AsyncResult
     task = AsyncResult(task_id, app=celery_app)
-    
-    response = {
-        "task_id": task_id,
-        "status": task.status,
-        "result": task.result if task.ready() else None
-    }
-    return response
+    return {"task_id": task_id, "status": task.status, "result": task.result if task.ready() else None}
 
 class ScannerUpdateRequest(BaseModel):
     engine: str
 
 @router.post("/scanners/update")
-def trigger_scanner_update(req: ScannerUpdateRequest, db: Session = Depends(get_db), user=Depends(get_current_user)):
+def trigger_scanner_update(req: ScannerUpdateRequest, db: Session = Depends(get_db),
+                           user: dict = Depends(require_permissions([Permission.SCAN_EXECUTE]))):
     """Triggers an asynchronous update of the scanner database/templates."""
+    from src.scans.application.services.tasks import update_nuclei_templates, update_nmap_scripts, update_zap_addons
     engine = req.engine.upper()
-    
-    if engine == "NUCLEI":
-        from src.scans.application.services.tasks import update_nuclei_templates
-        update_nuclei_templates.delay()
-    elif engine == "NMAP":
-        from src.scans.application.services.tasks import update_nmap_scripts
-        update_nmap_scripts.delay()
-    elif engine == "ZAP":
-        from src.scans.application.services.tasks import update_zap_addons
-        update_zap_addons.delay()
-    elif engine == "ALL":
-        from src.scans.application.services.tasks import update_nuclei_templates, update_nmap_scripts, update_zap_addons
-        update_nuclei_templates.delay()
-        update_nmap_scripts.delay()
-        update_zap_addons.delay()
-    else:
+    tasks = {
+        "NUCLEI": [update_nuclei_templates],
+        "NMAP": [update_nmap_scripts],
+        "ZAP": [update_zap_addons],
+        "OWASP_ZAP": [update_zap_addons],
+        "ALL": [update_nuclei_templates, update_nmap_scripts, update_zap_addons],
+    }.get(engine)
+    if tasks is None:
         raise HTTPException(status_code=400, detail=f"Unsupported scanner engine for update: {engine}")
-    
-    db.add(AuditLog(
-        user_id=str(user.id) if user else "system",
-        username=user.username if user else "system",
-        action="TRIGGER_SCANNER_UPDATE",
-        resource_type="SCANNER",
-        resource_id=engine,
-        details={"status": "STARTED"}
-    ))
+    for t in tasks:
+        t.delay()
+
+    db.add(AuditLog(user_id=_user_id(user), username=_username(user), action="TRIGGER_SCANNER_UPDATE",
+                    resource_type="SCANNER", resource_id=engine, details={"status": "STARTED"}))
     db.commit()
-    
     return {"message": f"Update triggered for {engine}", "status": "STARTED"}
 
-from pydantic import BaseModel
 class PdfReportRequest(BaseModel):
     language: str = "English"
     executive_summary: str = None
 
 @router.post("/{scan_id}/report/pdf")
 def download_scan_report_pdf(
-    scan_id: str, 
+    scan_id: str,
     request_body: PdfReportRequest,
-    scanner_company: str = "KVS Security", 
-    target_company: str = "Client Company", 
-    db: Session = Depends(get_db)
+    scanner_company: str = "KVS Security",
+    target_company: str = "Client Company",
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(require_permissions([Permission.SCAN_READ]))
 ):
     scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
     if not scan:
         raise HTTPException(status_code=404, detail="Scan not found")
-        
-    import ipaddress
-    
-    targets = [t.strip() for t in scan.target.split(",")] if scan.target else []
-    
-    subnets = [t for t in targets if '/' in t]
-    exact_ips = [t for t in targets if '/' not in t]
-    
-    raw_assets = []
-    if exact_ips:
-        raw_assets.extend(
-            db.query(AssetEntity).filter(
-                AssetEntity.ip_address.in_(exact_ips)
-            ).all()
-        )
-    for subnet in subnets:
-        try:
-            network = ipaddress.ip_network(subnet, strict=False)
-            all_assets = db.query(AssetEntity).all()
-            for a in all_assets:
-                try:
-                    if ipaddress.ip_address(a.ip_address) in network:
-                        if a not in raw_assets:
-                            raw_assets.append(a)
-                except ValueError:
-                    pass
-        except ValueError:
-            pass
-            
-    assets = raw_assets
-    all_vulns_by_asset = {}
-    for a in assets:
-        asset_vulns = db.query(VulnerabilityEntity).filter(VulnerabilityEntity.asset_id == str(a.id)).all()
-        # deduplicate
-        deduped = []
-        seen = set()
-        for v in asset_vulns:
-            key = (v.cve_id, v.title, v.asset_id)
-            if key not in seen:
-                seen.add(key)
-                deduped.append(v)
-        all_vulns_by_asset[str(a.id)] = deduped
-    
+
+    assets = scan_assets(db, scan)
+    all_vulns_by_asset = _vulns_by_asset(db, assets)
+
     from src.reporting.application.services.pdf_generator import generate_scan_vulnerability_pdf
-    
+
     if len(assets) > 1:
-        display_name = scan.name
-        if "," in display_name and len(display_name) > 40:
-            company = db.query(CompanyEntity).filter(CompanyEntity.id == scan.company_id).first()
-            company_name = company.name if company else target_company
-            display_name = f"Multi scan for {company_name}"
+        display_name = target_company
     elif len(assets) == 1:
         display_name = (assets[0].name.strip() if assets[0].name and assets[0].name.strip() else assets[0].ip_address)
         if "Auto-added" in display_name:
             display_name = display_name.replace("Auto-added Host", "").replace("Auto-added Web Host", "").replace("(", "").replace(")", "").strip()
     else:
         display_name = scan.name
-        
-    dummy_asset = AssetEntity(name=display_name, ip_address=scan.target)
-    
+
     pdf_bytes = generate_scan_vulnerability_pdf(
         assets=assets,
         all_vulnerabilities=all_vulns_by_asset,
         executive_summary=request_body.executive_summary or scan.executive_summary,
         scanner_company_name=scanner_company,
         target_company_name=target_company,
-        scan_name=display_name,
-        scan_date=scan.created_at
+        scan_name=display_name
     )
-    
+
     short_id = str(scan.id)[:8]
     return StreamingResponse(
-        io.BytesIO(pdf_bytes), 
-        media_type="application/pdf", 
+        io.BytesIO(pdf_bytes),
+        media_type="application/pdf",
         headers={"Content-Disposition": f'attachment; filename="report_{short_id}.pdf"'}
     )
 
 @router.put("/{scan_id}/pause", response_model=ScanResponse)
-def pause_scan(scan_id: str, db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)):
+def pause_scan(scan_id: str, db: Session = Depends(get_db),
+               current_user: dict = Depends(require_permissions([Permission.SCAN_EXECUTE]))):
     """Pauses a running scan at the queue level by aborting pending target tasks."""
     scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
     if not scan or scan.is_deleted:
         raise HTTPException(status_code=404, detail="Scan not found")
-        
     if scan.status != ScanStatus.IN_PROGRESS and scan.status != ScanStatus.PENDING:
         raise HTTPException(status_code=400, detail=f"Cannot pause scan in state {scan.status.name}")
-        
+
     scan.status = ScanStatus.PAUSED
-    
-    # Audit log
-    audit = AuditLog(
-        user_id=current_user.get("id", "unknown"),
-        username=current_user.get("username", "system"),
-        action="PAUSE",
-        resource_type="SCAN",
-        resource_id=str(scan.id),
-        details={"status": "PAUSED"}
-    )
-    db.add(audit)
+    db.add(AuditLog(user_id=_user_id(current_user), username=_username(current_user), action="PAUSE",
+                    resource_type="SCAN", resource_id=str(scan.id), details={"status": "PAUSED"}))
     db.commit()
     db.refresh(scan)
-    
-    # Return updated scan response
-    return ScanResponse(
-        id=scan.id, company_id=scan.company_id, name=scan.name, target=scan.target,
-        network_zone=scan.network_zone, scan_type=scan.scan_type.name,
-        scanner_engine=scan.scanner_engine.name, status=scan.status.name,
-        progress=scan.progress, target_states=scan.target_states,
-        executive_summary=scan.executive_summary, policy_id=scan.policy_id,
-        credential_id=scan.credential_id, recurrence_rule=scan.recurrence_rule,
-        next_run_at=scan.next_run_at.isoformat() if scan.next_run_at else None,
-        created_at=scan.created_at.isoformat() if scan.created_at else None
-    )
+    return _to_response(scan)
 
 @router.put("/{scan_id}/resume", response_model=ScanResponse)
-def resume_scan(scan_id: str, db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)):
-    """Resumes a paused scan by re-queueing tasks for any targets that are still PENDING or IN_PROGRESS."""
+def resume_scan(scan_id: str, db: Session = Depends(get_db),
+                current_user: dict = Depends(require_permissions([Permission.SCAN_EXECUTE]))):
+    """Resumes a paused scan by re-queueing tasks for any targets that are still PENDING."""
     scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
     if not scan or scan.is_deleted:
         raise HTTPException(status_code=404, detail="Scan not found")
-        
     if scan.status != ScanStatus.PAUSED:
         raise HTTPException(status_code=400, detail=f"Cannot resume scan in state {scan.status.name}")
-        
+
     scan.status = ScanStatus.IN_PROGRESS
-    
-    # Find pending targets to re-queue
     targets_to_requeue = []
     if scan.target_states:
         new_states = dict(scan.target_states)
         for t_ip, t_state in new_states.items():
             if t_state in ["PENDING", "IN_PROGRESS"]:
-                # Reset to pending for the UI and the task logic
                 new_states[t_ip] = "PENDING"
                 targets_to_requeue.append(t_ip)
         scan.target_states = new_states
         from sqlalchemy.orm.attributes import flag_modified
         flag_modified(scan, "target_states")
-    
-    # Commit status update so the tasks know it's not paused anymore
     db.commit()
-    
-    # Audit log
-    audit = AuditLog(
-        user_id=current_user.get("id", "unknown"),
-        username=current_user.get("username", "system"),
-        action="RESUME",
-        resource_type="SCAN",
-        resource_id=str(scan.id),
-        details={"status": "IN_PROGRESS", "requeued_targets": len(targets_to_requeue)}
-    )
-    db.add(audit)
+
+    db.add(AuditLog(user_id=_user_id(current_user), username=_username(current_user), action="RESUME",
+                    resource_type="SCAN", resource_id=str(scan.id),
+                    details={"status": "IN_PROGRESS", "requeued_targets": len(targets_to_requeue)}))
     db.commit()
     db.refresh(scan)
-    
-    # Re-queue the pending tasks
-    from src.scans.application.services.tasks import run_vulnerability_scan, run_discovery_scan
-    if targets_to_requeue:
-        if scan.scan_type == ScanType.DISCOVERY:
-            run_discovery_scan.delay(scan.id, scan.target, scan.network_zone or "Internal", scan.company_id)
-        else:
-            config_id = "daba56c8-73ec-11df-a475-002264764cea"
-            for ip in targets_to_requeue:
-                run_vulnerability_scan.delay(scan.id, ip, ip, config_id)
-    
-    return ScanResponse(
-        id=scan.id, company_id=scan.company_id, name=scan.name, target=scan.target,
-        network_zone=scan.network_zone, scan_type=scan.scan_type.name,
-        scanner_engine=scan.scanner_engine.name, status=scan.status.name,
-        progress=scan.progress, target_states=scan.target_states,
-        executive_summary=scan.executive_summary, policy_id=scan.policy_id,
-        credential_id=scan.credential_id, recurrence_rule=scan.recurrence_rule,
-        next_run_at=scan.next_run_at.isoformat() if scan.next_run_at else None,
-        created_at=scan.created_at.isoformat() if scan.created_at else None
-    )
 
+    if targets_to_requeue:
+        _queue_scan(scan, targets_to_requeue if scan.scan_type != ScanType.DISCOVERY else split_targets(scan.target))
+    return _to_response(scan)

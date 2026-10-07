@@ -11,6 +11,11 @@ class Permission(str, Enum):
     SECRET_WRITE = "secret:write"
     SECRET_DELETE = "secret:delete"
     
+    # Scan permissions (launching a scan is an offensive action on a target)
+    SCAN_READ = "scan:read"
+    SCAN_EXECUTE = "scan:execute"
+    SCAN_DELETE = "scan:delete"
+
     # Audit permissions
     AUDIT_READ = "audit:read"
     

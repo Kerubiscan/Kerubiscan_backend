@@ -62,7 +62,8 @@ async def enrich_vulnerabilities_with_ai(db: Session, vulnerabilities: list, lan
 async def generate_executive_report_html(
     asset_id: str, 
     request_data: ReportGenerationRequest,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(require_permissions([Permission.ASSET_READ]))
 ):
     asset = db.query(AssetEntity).filter(AssetEntity.id == asset_id).first()
     if not asset:
@@ -116,7 +117,8 @@ async def generate_executive_report_html(
 async def generate_executive_report_pdf(
     asset_id: str, 
     request_data: ReportGenerationRequest,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(require_permissions([Permission.ASSET_READ]))
 ):
     asset = db.query(AssetEntity).filter(AssetEntity.id == asset_id).first()
     if not asset:
