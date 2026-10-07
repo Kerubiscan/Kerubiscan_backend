@@ -244,7 +244,7 @@ def create_scan(req: ScanCreateRequest, db: Session = Depends(get_db),
         raise HTTPException(status_code=400, detail="Either company_id or company_name must be provided and valid")
 
     target_value = ",".join(targets)
-    scan_name = f"Multi-Target Scan ({len(targets)} targets)" if len(targets) > 1 else f"Scan for {target_value}"
+    scan_name = f"Multi scan for {company.name}" if len(targets) > 1 else f"Scan for {target_value}"
 
     scan = ScanEntity(
         company_id=company.id,
@@ -406,6 +406,14 @@ def update_scan_summary(scan_id: str, req: SummaryUpdateRequest, db: Session = D
     return _to_response(scan)
 
 
+def _display_name(db: Session, scan: ScanEntity, fallback_company: str) -> str:
+    """Report title: the scan name, or "Multi scan for <company>" for multi-target scans."""
+    if len(split_targets(scan.target)) > 1 or ("," in scan.name and len(scan.name) > 40):
+        company = db.query(CompanyEntity).filter(CompanyEntity.id == scan.company_id).first()
+        return f"Multi scan for {company.name if company else fallback_company}"
+    return scan.name
+
+
 def _vulns_by_asset(db: Session, assets: List[AssetEntity], engine: Optional[str] = None) -> dict:
     from src.vulnerabilities.domain.entities import VulnerabilityEntity
     result = {}
@@ -443,18 +451,18 @@ def download_scan_report(
 
     from src.reporting.application.services.html_generator import generate_vulnerability_html, generate_discovery_html
 
-    display_name = scan.name
-    if "," in display_name and len(display_name) > 40:
-        display_name = "Multi-Target Scan Batch"
+    display_name = _display_name(db, scan, target_company)
 
     if scan.scan_type == ScanType.DISCOVERY:
         html_bytes = generate_discovery_html(assets=assets, scanner_company_name=scanner_company,
-                                             target_company_name=target_company, scan_name=display_name)
+                                             target_company_name=target_company, scan_name=display_name,
+                                             scan_date=scan.created_at)
     else:
         html_bytes = generate_vulnerability_html(assets=assets, all_vulnerabilities=all_vulns,
                                                  executive_summary=scan.executive_summary,
                                                  scanner_company_name=scanner_company,
-                                                 target_company_name=target_company, scan_name=display_name)
+                                                 target_company_name=target_company, scan_name=display_name,
+                                                 scan_date=scan.created_at)
 
     short_id = str(scan.id)[:8]
     return StreamingResponse(
@@ -519,7 +527,7 @@ def download_scan_report_pdf(
     from src.reporting.application.services.pdf_generator import generate_scan_vulnerability_pdf
 
     if len(assets) > 1:
-        display_name = target_company
+        display_name = _display_name(db, scan, target_company)
     elif len(assets) == 1:
         display_name = (assets[0].name.strip() if assets[0].name and assets[0].name.strip() else assets[0].ip_address)
         if "Auto-added" in display_name:
@@ -533,7 +541,8 @@ def download_scan_report_pdf(
         executive_summary=request_body.executive_summary or scan.executive_summary,
         scanner_company_name=scanner_company,
         target_company_name=target_company,
-        scan_name=display_name
+        scan_name=display_name,
+        scan_date=scan.created_at
     )
 
     short_id = str(scan.id)[:8]

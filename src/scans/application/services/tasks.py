@@ -543,6 +543,9 @@ def _run_nuclei(ctx: ScanContext, target: ScanTarget) -> str:
     from src.scans.adapters.outbound.nuclei_adapter import NucleiAdapter, normalize_nuclei
     states = []
     for asset_id, inputs, host, had_ports in _web_work(ctx, target, include_network=True):
+        if inputs and target.kind != "cidr" and not target.is_url:
+            # The bare target is also given to Nuclei, which runs its own HTTP probing on it (5bae702)
+            inputs = inputs + [t for t in [_identity(target, host)] if t not in inputs]
         if not inputs:
             states.append(_no_input_state(host, had_ports))
             continue

@@ -4,6 +4,7 @@ Normalised finding (dict) produced by the engines:
     title, severity (VulnSeverity value), cvss, cve_id, cve_ids, description, remediation,
     port, service, evidence (list of URLs / locations)
 """
+import copy
 import json
 import logging
 from dataclasses import dataclass
@@ -88,10 +89,10 @@ def update_asset_from_host(asset: AssetEntity, host: Dict) -> None:
     if host.get("os") and host["os"] != "Unknown":
         asset.operating_system = host["os"]
     if host.get("ports"):
-        asset.ports = host["ports"]
+        asset.ports = copy.deepcopy(host["ports"])
         flag_modified(asset, "ports")
     if host.get("services"):
-        asset.services = host["services"]
+        asset.services = copy.deepcopy(host["services"])
         flag_modified(asset, "services")
     if host.get("mac_address"):
         asset.mac_address = host["mac_address"]

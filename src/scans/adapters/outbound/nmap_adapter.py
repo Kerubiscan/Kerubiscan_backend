@@ -26,9 +26,11 @@ PROFILES = {
     "internet": {"timing": "-T3", "max_retries": "4", "host_timeout": "180m"},
 }
 
-# 'vuln and safe' keeps intrusive checks out of default scans. vulscan was removed from the
-# default set: it matches on product names only and produced hundreds of false positives per host.
-DEFAULT_VULN_SCRIPTS = "vuln and safe,vulners"
+# The whole 'vuln' category is run so that web vulnerabilities are actually tested (team choice in
+# 5bae702), except scripts that are also in the 'dos' category: they can crash the scanned service.
+# vulscan was removed from the default set: it matches on product names only and produced hundreds
+# of false positives per host.
+DEFAULT_VULN_SCRIPTS = "(vuln and not dos),vulners"
 
 
 def _validate_targets(raw: str) -> List[str]:
