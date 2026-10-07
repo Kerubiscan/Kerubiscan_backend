@@ -177,6 +177,7 @@ def test_watchdog_resumes_a_lost_openvas_follow_up_instead_of_closing(db, compan
     watchdog.scan_watchdog()
     assert _reload(db, scan_id).target_states["192.168.3.179"] == "IN_PROGRESS"     # not closed
     assert polls and polls[-1][1]["args"][:3] == [scan_id, "t-179", "report-of-t-179"]
+    assert polls[-1][1]["kwargs"]["started_at"]                                # 72 h cap kept
 
 
 def test_watchdog_closes_openvas_target_whose_task_vanished(db, company, gvm):

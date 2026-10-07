@@ -72,7 +72,12 @@ def _check_openvas_target(adapter, scan: ScanEntity, target: str) -> Optional[tu
     if task and task["status"] in OPENVAS_RUNNING:
         report_id = adapter.get_task_report_id(task["id"])
         from src.scans.application.services.tasks import poll_scan_status
-        poll_scan_status.apply_async(args=[scan.id, task["id"], report_id, target], countdown=5)
+        # Keep the 72 h cap: counted from the recorded start, or from now for scans of the previous version
+        entry = (scan.target_meta or {}).get(target) or {}
+        started = _parse(entry.get("started_at"))
+        started_at = started.timestamp() if started else datetime.now(timezone.utc).timestamp()
+        poll_scan_status.apply_async(args=[scan.id, task["id"], report_id, target],
+                                     kwargs={"started_at": started_at}, countdown=5)
         logger.warning(f"Watchdog: follow-up of OpenVAS task {task['id']} ({target}, scan {scan.id}) was lost, resumed")
         progress.heartbeat(scan.id, target, engine_task=task["id"])
         return None
