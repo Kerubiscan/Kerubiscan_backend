@@ -15,7 +15,6 @@ class ScannerEngine(enum.Enum):
     OPENVAS = "OPENVAS"
     NMAP = "NMAP"
     NUCLEI = "NUCLEI"
-    NESSUS = "NESSUS"
     OWASP_ZAP = "OWASP_ZAP"
 
 class ScanStatus(enum.Enum):

@@ -1,16 +1,20 @@
-from src.core.celery_app import celery_app
-from src.scans.application.services.tasks import update_scan_progress
-from lxml import etree
 import logging
-from sqlalchemy.sql import func
-from src.core.database import SessionLocal
-from src.vulnerabilities.domain.entities import VulnerabilityEntity
-from src.vulnerabilities.domain.models import VulnSeverity, VulnStatus
-from src.assets.domain.entities import AssetEntity
-from src.scans.domain.entities import ScanEntity
+from typing import Dict, List
 from sqlalchemy.orm import Session
 
+from src.core.celery_app import celery_app
+from src.core.database import SessionLocal
+from src.scans.application.services import progress
+from src.scans.application.services.progress import update_scan_progress
+from src.scans.domain.entities import ScanEntity
+from src.scans.domain.targets import parse_target, InvalidTargetError
+from src.vulnerabilities.domain import severity as sev
+from src.vulnerabilities.application.services.ingest import (  # noqa: F401  (calculate_contextual_risk re-exported)
+    resolve_asset, update_asset_from_host, ingest_findings, calculate_contextual_risk,
+)
+
 logger = logging.getLogger(__name__)
+
 
 def safe_float(val, default=0.0) -> float:
     try:
@@ -18,640 +22,125 @@ def safe_float(val, default=0.0) -> float:
     except (ValueError, TypeError):
         return default
 
-def map_threat_to_severity(threat: str) -> VulnSeverity:
-    if not threat: return VulnSeverity.INFO
-    threat = threat.lower()
-    if threat == "critical": return VulnSeverity.CRITICAL
-    if threat == "high": return VulnSeverity.HIGH
-    if threat == "medium": return VulnSeverity.MEDIUM
-    if threat == "low": return VulnSeverity.LOW
-    return VulnSeverity.INFO
-
-def calculate_contextual_risk(base_score: float, criticality) -> float:
-    # Asset criticality: Low=0.5, Medium=0.75, High=1.0, Critical=1.25
-    multiplier = 1.0
-    crit_str = str(criticality.value) if hasattr(criticality, 'value') else str(criticality)
-    
-    if crit_str == "Low": multiplier = 0.5
-    elif crit_str == "Medium": multiplier = 0.75
-    elif crit_str == "High": multiplier = 1.0
-    elif crit_str == "Critical": multiplier = 1.25
-    
-    return round(base_score * multiplier, 1)
 
 def send_scan_summary_email(scan, asset, target_ip, new_vulns_to_insert, scanner_name):
     from src.notifications.application.services.smtp import send_alert_email
     admin_email = getattr(scan, 'notify_email', None) if scan else None
     if not admin_email: admin_email = "admin@KVS.local"
-    
+
     counts = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0, "INFO": 0}
     for v in new_vulns_to_insert:
-        sev = v.severity.name if hasattr(v.severity, 'name') else str(v.severity).split('.')[-1]
-        if sev in counts: counts[sev] += 1
-        
+        name = v.severity.name if hasattr(v.severity, 'name') else str(v.severity).split('.')[-1]
+        if name in counts: counts[name] += 1
+
     content = f"{counts['CRITICAL']} critical, {counts['HIGH']} high, {counts['MEDIUM']} medium and {counts['LOW']} low vulnerabilities were found."
-    
-    send_alert_email(
-        to_email=admin_email,
-        subject=f"Scan Completed: {asset.name} ({scanner_name})",
-        content=content,
-        is_html=False
-    )
+    send_alert_email(to_email=admin_email, subject=f"Scan Completed: {asset.name} ({scanner_name})", content=content, is_html=False)
+
+
+def _identity_for(target_raw: str, host_ip: str) -> str:
+    """Asset identity of a scanned host: the domain for a domain scan, the host IP otherwise."""
+    try:
+        target = parse_target(target_raw)
+    except InvalidTargetError:
+        return host_ip or target_raw
+    if target.kind == "cidr":
+        return host_ip or target_raw
+    return target.host
+
 
 @celery_app.task
-def parse_scan_report(report_xml: str, target_ip: str, scan_id: str = None):
-    logger.info(f"Parsing scan report for {target_ip} (Scan {scan_id})")
+def parse_scan_report(report_xml: str, target_ip: str, scan_id: str = None, final_state: str = progress.COMPLETED):
+    """Stores an OpenVAS report. `target_ip` is the target as typed by the user."""
+    from src.vulnerabilities.application.services.openvas_report import normalize_openvas
+    logger.info(f"Parsing OpenVAS report for {target_ip} (Scan {scan_id})")
     db: Session = SessionLocal()
-    
-    new_alerts = []
-    
     try:
         scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first() if scan_id else None
-        
-        # Find the asset
-        asset = db.query(AssetEntity).filter(
-            (AssetEntity.ip_address == target_ip) | (AssetEntity.name == target_ip)
-        ).first()
-        if not asset:
-            logger.info(f"Asset with IP {target_ip} not found. Creating it automatically.")
-            if not scan:
-                logger.error(f"Scan {scan_id} not found. Cannot create asset.")
-                return
-            
-            asset = AssetEntity(
-                company_id=scan.company_id,
-                name=target_ip,
-                ip_address=target_ip,
-                asset_type="Unknown",
-                network_zone=scan.network_zone or "Internal",
-                operating_system="Unknown"
-            )
-            db.add(asset)
-            db.commit()
-            db.refresh(asset)
-            
-        root = etree.fromstring(report_xml.encode('utf-8'))
-        
-        # Extract OS and Ports to enrich the Asset
-        host_elements = root.xpath(f"//report/report/host[ip='{target_ip}']")
-        if host_elements:
-            host_elem = host_elements[0]
-            os_details = host_elem.xpath(".//detail[name='Best OS']/value/text()")
-            if not os_details:
-                os_details = host_elem.xpath(".//detail[name='OS']/value/text()")
-            if os_details and os_details[0].strip():
-                asset.operating_system = os_details[0].strip()
-                
-        host_ports = []
-        results_for_host = root.xpath(f"//result[host='{target_ip}']")
-        for r in results_for_host:
-            port_elem = r.find('port')
-            if port_elem is not None and port_elem.text:
-                p_text = port_elem.text.strip()
-                if p_text != "general/tcp" and p_text != "general/udp" and p_text not in host_ports:
-                    host_ports.append(p_text)
-                    
-        if host_ports:
-            asset.ports = ", ".join(host_ports)
-            
-        asset.last_scan_raw_output = report_xml
-            
-        db.commit()
-        
-        # Extract results
-        results = root.xpath("//report/report/results/result")
-        logger.info(f"Found {len(results)} raw results in report.")
-        
-        # 1. Load existing vulnerabilities into memory
-        existing_vulns_list = db.query(VulnerabilityEntity).filter(VulnerabilityEntity.asset_id == asset.id).all()
-        existing_by_cve = {v.cve_id: v for v in existing_vulns_list if v.cve_id}
-        existing_by_title = {v.title: v for v in existing_vulns_list if not v.cve_id}
-        
-        new_vulns_to_insert = []
-        
-        for result in results:
-            threat = result.findtext("threat")
-            if threat in ["Log", "False Positive"]:
-                continue # Skip pure logs
-                
-            nvt = result.find("nvt")
-            if nvt is None: continue
-            
-            cve_id = nvt.findtext("cve")
-            if cve_id == "NOCVE": cve_id = None
-            
-            if not cve_id:
-                cve_refs = nvt.xpath(".//ref[@type='cve']/@id")
-                if cve_refs:
-                    cve_id = cve_refs[0]
-            
-            title = nvt.findtext("name")
-            if not title: continue
-            title = title[:250]
-            
-            cvss_str = nvt.findtext("cvss_base")
-            cvss_base_score = safe_float(cvss_str)
-            
-            description = result.findtext("description")
-            remediation = nvt.findtext("solution")
-            
-            severity = map_threat_to_severity(threat)
-            if severity == VulnSeverity.INFO and cvss_base_score:
-                if cvss_base_score >= 9.0: severity = VulnSeverity.CRITICAL
-                elif cvss_base_score >= 7.0: severity = VulnSeverity.HIGH
-                elif cvss_base_score >= 4.0: severity = VulnSeverity.MEDIUM
-                elif cvss_base_score > 0.0: severity = VulnSeverity.LOW
-
-            contextual_risk = calculate_contextual_risk(cvss_base_score, asset.criticality)
-            
-            port_str = result.findtext("port")
-            port_num = None
-            service_name = None
-            if port_str:
-                if "/" in port_str:
-                    p_num_str = port_str.split("/")[0]
-                    if p_num_str.isdigit():
-                        port_num = int(p_num_str)
-                    service_name = port_str.split("/")[1] if len(port_str.split("/")) > 1 else None
-                elif port_str.isdigit():
-                    port_num = int(port_str)
-            
-            # 2. In-memory deduplication (scoped to OPENVAS)
-            existing_vulns_list = db.query(VulnerabilityEntity).filter(
-                VulnerabilityEntity.asset_id == asset.id,
-                VulnerabilityEntity.source_engine == "OPENVAS"
-            ).all()
-            existing_by_cve = {v.cve_id: v for v in existing_vulns_list if v.cve_id}
-            existing_by_title = {v.title: v for v in existing_vulns_list}
-            existing_vuln = None
-            if cve_id and cve_id in existing_by_cve:
-                existing_vuln = existing_by_cve[cve_id]
-            elif title in existing_by_title:
-                existing_vuln = existing_by_title[title]
-                
-            if existing_vuln:
-                # Update last seen and check for regression
-                existing_vuln.last_seen_at = func.now()
-                if existing_vuln.status == VulnStatus.FIXED:
-                    # Regression detected
-                    logger.warning(f"Regression detected for {title} on {target_ip}")
-                    existing_vuln.status = VulnStatus.NEW
-                    if severity in [VulnSeverity.CRITICAL, VulnSeverity.HIGH]:
-                        new_alerts.append(f"[{severity.name}] {title}")
-            else:
-                # Create new vulnerability in memory
-                new_vuln = VulnerabilityEntity(
-                    asset_id=asset.id,
-                    cve_id=cve_id,
-                    title=title,
-                    description=description,
-                    remediation=remediation,
-                    cvss_base_score=cvss_base_score,
-                    contextual_risk_score=contextual_risk,
-                    severity=severity,
-                    port=port_num,
-                    service=service_name,
-                    source_engine="OPENVAS",
-                    status=VulnStatus.NEW
-                )
-                new_vulns_to_insert.append(new_vuln)
-                
-                # Update our memory dictionary so we don't add duplicates if the XML contains the same finding twice
-                if cve_id:
-                    existing_by_cve[cve_id] = new_vuln
-                else:
-                    existing_by_title[title] = new_vuln
-                    
-                if severity in [VulnSeverity.CRITICAL, VulnSeverity.HIGH]:
-                    new_alerts.append(f"[{severity.name}] {title}")
-                    
-        # 3. Bulk insert and single commit
-        if new_vulns_to_insert:
-            parsed_vulns = []
-            for v in new_vulns_to_insert:
-                parsed_vulns.append({
-                    "title": v.title,
-                    "cve": v.cve_id,
-                    "severity": v.severity.name if hasattr(v.severity, 'name') else str(v.severity),
-                    "cvss": v.cvss_base_score
-                })
-            db.add_all(new_vulns_to_insert)
-            
+        hosts = normalize_openvas(report_xml)
+        total = 0
+        for host_ip, data in hosts.items():
+            asset = resolve_asset(db, scan.company_id if scan else None, _identity_for(target_ip, host_ip),
+                                  resolved_ip=host_ip, network_zone=scan.network_zone if scan else None)
+            if data["os"]:
+                asset.operating_system = data["os"]
+            if data["ports"] and not asset.ports:
+                asset.ports = ", ".join(data["ports"])
+            result = ingest_findings(db, asset, "OPENVAS", data["findings"])
+            total += result.total
+            db.flush()
+            try:
+                send_scan_summary_email(scan, asset, target_ip, result.new, "OpenVAS")
+            except Exception as e:
+                logger.warning(f"Scan summary email failed: {e}")
         if scan:
-            scan.vulnerabilities_found = (scan.vulnerabilities_found or 0) + len(results)
-            
+            scan.vulnerabilities_found = (scan.vulnerabilities_found or 0) + total
         db.commit()
-                
-        logger.info("Finished parsing report.")
-        
-        # Send Email Alerts
-        send_scan_summary_email(scan, asset, target_ip, new_vulns_to_insert, "OpenVAS")
-        
+        logger.info(f"OpenVAS report for {target_ip}: {len(hosts)} host(s), {total} findings stored")
         if scan_id:
-            update_scan_progress(scan_id, target_ip, "COMPLETED")
-        
+            update_scan_progress(scan_id, target_ip, final_state)
     except Exception as e:
-        logger.error(f"Error parsing report: {str(e)}")
+        logger.exception(f"Error parsing OpenVAS report: {str(e)}")
         db.rollback()
         if scan_id:
-            update_scan_progress(scan_id, target_ip, "FAILED")
+            update_scan_progress(scan_id, target_ip, progress.FAILED)
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------------------------
+# Tasks below were used by the previous version, which parsed results in separate tasks.
+# They are kept so that messages still queued during an upgrade are processed correctly.
+
+def _legacy_to_finding(v: Dict) -> Dict:
+    cvss = sev.to_cvss(v.get("cvss_score", v.get("cvss")))
+    return {
+        "title": v.get("title") or v.get("name") or v.get("id") or "Finding",
+        "severity": sev.resolve(v.get("severity"), cvss).value,
+        "cvss": cvss,
+        "cve_id": v.get("cve_id"),
+        "cve_ids": v.get("cve_ids") or [],
+        "description": v.get("description") or v.get("output") or "",
+        "remediation": v.get("remediation") or "",
+        "port": v.get("port"),
+        "service": v.get("service"),
+        "evidence": [v["matched_at"]] if v.get("matched_at") else [],
+    }
+
+
+def _legacy_ingest(engine: str, findings: List[Dict], target_ip: str, scan_id: str, host: Dict = None):
+    db: Session = SessionLocal()
+    try:
+        scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first() if scan_id else None
+        asset = resolve_asset(db, scan.company_id if scan else None, _identity_for(target_ip, (host or {}).get("ip")),
+                              resolved_ip=(host or {}).get("ip"), network_zone=scan.network_zone if scan else None)
+        if host:
+            update_asset_from_host(asset, host)
+        result = ingest_findings(db, asset, engine, findings)
+        if scan:
+            scan.vulnerabilities_found = (scan.vulnerabilities_found or 0) + result.total
+        db.commit()
+        if scan_id:
+            update_scan_progress(scan_id, target_ip, progress.COMPLETED)
+    except Exception as e:
+        logger.exception(f"Error parsing legacy {engine} report: {e}")
+        db.rollback()
+        if scan_id:
+            update_scan_progress(scan_id, target_ip, progress.FAILED)
     finally:
         db.close()
 
 
 @celery_app.task
 def parse_nmap_report(host_data: dict, target_ip: str, scan_id: str = None):
-    logger.info(f"Parsing Nmap report for {target_ip} (Scan {scan_id})")
-    db: Session = SessionLocal()
-    new_alerts = []
-    try:
-        scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first() if scan_id else None
-        
-        asset = db.query(AssetEntity).filter(
-            (AssetEntity.ip_address == target_ip) | (AssetEntity.name == target_ip)
-        ).first()
-        if not asset:
-            logger.info(f"Asset with IP {target_ip} not found. Creating it automatically.")
-            if not scan:
-                logger.error(f"Scan {scan_id} not found. Cannot create asset.")
-                return
-            
-            asset = AssetEntity(
-                company_id=scan.company_id,
-                name=target_ip,
-                ip_address=target_ip,
-                asset_type="Unknown",
-                network_zone=scan.network_zone or "Internal",
-                operating_system="Unknown"
-            )
-            db.add(asset)
-            db.commit()
-            db.refresh(asset)
-
-        if host_data.get("os") and host_data["os"] != "Unknown":
-            asset.operating_system = host_data["os"]
-        if host_data.get("ports"):
-            asset.ports = host_data["ports"]
-        if host_data.get("services"):
-            asset.services = host_data["services"]
-            
-        import json
-        asset.last_scan_raw_output = json.dumps(host_data, indent=2)
-            
-        db.commit()
-
-        vulns = host_data.get("vulns", [])
-        
-        # 1. Load existing vulnerabilities into memory (scoped to NMAP)
-        existing_vulns_list = db.query(VulnerabilityEntity).filter(
-            VulnerabilityEntity.asset_id == asset.id,
-            VulnerabilityEntity.source_engine == "NMAP"
-        ).all()
-        existing_by_title = {v.title: v for v in existing_vulns_list}
-        
-        new_vulns_to_insert = []
-        
-        seen_titles = set()
-        for v in vulns:
-            title = v.get("id", "Nmap Vuln")[:250]
-            seen_titles.add(title)
-            output = v.get("output", "")
-            cve_id = v.get("cve_id")
-            cvss_score = safe_float(v.get("cvss"))
-            
-            # Determine severity based on CVSS score if available
-            severity = VulnSeverity.INFO
-            if cvss_score:
-                if cvss_score >= 9.0:
-                    severity = VulnSeverity.CRITICAL
-                elif cvss_score >= 7.0:
-                    severity = VulnSeverity.HIGH
-                elif cvss_score >= 4.0:
-                    severity = VulnSeverity.MEDIUM
-                elif cvss_score > 0.0:
-                    severity = VulnSeverity.LOW
-            
-            if severity == VulnSeverity.INFO:
-                out_lower = output.lower()
-                
-                # Check for critical keywords
-                if "critical" in out_lower or any(k in out_lower for k in ["remote code execution", "rce", "sql injection", "sqli", "command injection"]):
-                    severity = VulnSeverity.CRITICAL
-                elif "high" in out_lower or any(k in out_lower for k in ["cross-site scripting", "xss", "buffer overflow", "privilege escalation", "authentication bypass", "vulnerable"]):
-                    severity = VulnSeverity.HIGH
-                elif "medium" in out_lower or any(k in out_lower for k in ["denial of service", "dos", "information disclosure", "directory traversal", "csrf"]):
-                    severity = VulnSeverity.MEDIUM
-                elif "low" in out_lower:
-                    severity = VulnSeverity.LOW
-                elif cve_id:
-                    # If it has a CVE but no score/keywords, default to MEDIUM instead of INFO to ensure visibility
-                    severity = VulnSeverity.MEDIUM
-            # 2. In-memory deduplication
-            existing_vuln = existing_by_title.get(title)
-            
-            if existing_vuln:
-                existing_vuln.last_seen_at = func.now()
-                if existing_vuln.status == VulnStatus.FIXED:
-                    existing_vuln.status = VulnStatus.NEW
-                    if severity in [VulnSeverity.CRITICAL, VulnSeverity.HIGH]:
-                        new_alerts.append(f"[{severity.name}] {title}")
-            else:
-                new_vuln = VulnerabilityEntity(
-                    asset_id=asset.id,
-                    title=title,
-                    description=output,
-                    severity=severity,
-                    cve_id=cve_id,
-                    cvss_base_score=cvss_score,
-                    source_engine="NMAP",
-                    status=VulnStatus.NEW
-                )
-                new_vulns_to_insert.append(new_vuln)
-                existing_by_title[title] = new_vuln
-                
-                if severity in [VulnSeverity.CRITICAL, VulnSeverity.HIGH]:
-                    new_alerts.append(f"[{severity.name}] {title}")
-
-        # 3. Bulk insert and single commit
-        if new_vulns_to_insert:
-            db.add_all(new_vulns_to_insert)
-            
-        # User requested: Do not automatically delete or mark as FIXED.
-        # Just retain them, and the dashboard will filter by time.
-                
-        if scan:
-            scan.vulnerabilities_found = len(vulns)
-            
-        db.commit()
-
-        logger.info(f"Finished parsing Nmap report. Found {len(vulns)} scripts output.")
-
-        # Send Email Alerts
-        send_scan_summary_email(scan, asset, target_ip, new_vulns_to_insert, "Nmap")
-
-        if scan_id:
-            update_scan_progress(scan_id, target_ip, "COMPLETED")
-            
-    except Exception as e:
-        logger.error(f"Error parsing Nmap report: {str(e)}")
-        db.rollback()
-        if scan_id:
-            update_scan_progress(scan_id, target_ip, "FAILED")
-    finally:
-        db.close()
+    _legacy_ingest("NMAP", [_legacy_to_finding(v) for v in host_data.get("vulns", [])], target_ip, scan_id, host_data)
 
 
 @celery_app.task
 def parse_nuclei_report(vuln_data_list: list, target_ip: str, scan_id: str = None):
-    logger.info(f"Parsing Nuclei report for {target_ip} (Scan {scan_id})")
-    db: Session = SessionLocal()
-    new_alerts = []
-    try:
-        scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first() if scan_id else None
-        
-        asset = db.query(AssetEntity).filter(
-            (AssetEntity.ip_address == target_ip) | (AssetEntity.name == target_ip)
-        ).first()
-        if not asset:
-            logger.info(f"Asset with IP {target_ip} not found. Creating it automatically.")
-            if not scan:
-                logger.error(f"Scan {scan_id} not found. Cannot create asset.")
-                return
-            
-            asset = AssetEntity(
-                company_id=scan.company_id,
-                name=target_ip,
-                ip_address=target_ip,
-                asset_type="Unknown",
-                network_zone=scan.network_zone or "Internal",
-                operating_system="Unknown"
-            )
-            db.add(asset)
-            db.commit()
-            db.refresh(asset)
-
-        import json
-        asset.last_scan_raw_output = json.dumps(vuln_data_list, indent=2)
-        db.commit()
-
-        # 1. Load existing vulnerabilities into memory
-        existing_vulns_list = db.query(VulnerabilityEntity).filter(VulnerabilityEntity.asset_id == asset.id).all()
-        existing_by_title = {v.title: v for v in existing_vulns_list}
-        
-        new_vulns_to_insert = []
-
-        seen_titles = set()
-        for v in vuln_data_list:
-            title = v.get("name", "Nuclei Vuln")[:250]
-            seen_titles.add(title)
-            cve_id = v.get("cve_id")
-            
-            # Map severity
-            sev_str = v.get("severity", "info").lower()
-            severity = VulnSeverity.INFO
-            if sev_str == "critical": severity = VulnSeverity.CRITICAL
-            elif sev_str == "high": severity = VulnSeverity.HIGH
-            elif sev_str == "medium": severity = VulnSeverity.MEDIUM
-            elif sev_str == "low": severity = VulnSeverity.LOW
-
-            description = v.get("description", "")
-            if v.get("matched_at"):
-                description += f"\nMatched at: {v.get('matched_at')}"
-            if v.get("extracted_results"):
-                description += f"\nExtracted: {', '.join(v.get('extracted_results'))}"
-                
-            remediation = v.get("remediation", "")
-            cvss_score = safe_float(v.get("cvss_score"))
-            
-            if severity == VulnSeverity.INFO and cvss_score:
-                if cvss_score >= 9.0: severity = VulnSeverity.CRITICAL
-                elif cvss_score >= 7.0: severity = VulnSeverity.HIGH
-                elif cvss_score >= 4.0: severity = VulnSeverity.MEDIUM
-                elif cvss_score > 0.0: severity = VulnSeverity.LOW
-
-            contextual_risk = calculate_contextual_risk(cvss_score, asset.criticality)
-
-            # 2. In-memory deduplication
-            existing_vuln = existing_by_title.get(title)
-            
-            if existing_vuln:
-                existing_vuln.last_seen_at = func.now()
-                if existing_vuln.status == VulnStatus.FIXED:
-                    existing_vuln.status = VulnStatus.NEW
-                    if severity in [VulnSeverity.CRITICAL, VulnSeverity.HIGH]:
-                        new_alerts.append(f"[{severity.name}] {title}")
-            else:
-                new_vuln = VulnerabilityEntity(
-                    asset_id=asset.id,
-                    cve_id=cve_id,
-                    title=title,
-                    description=description,
-                    remediation=remediation,
-                    cvss_base_score=cvss_score,
-                    contextual_risk_score=contextual_risk,
-                    severity=severity,
-                    source_engine="NUCLEI",
-                    status=VulnStatus.NEW
-                )
-                new_vulns_to_insert.append(new_vuln)
-                existing_by_title[title] = new_vuln
-                
-                if severity in [VulnSeverity.CRITICAL, VulnSeverity.HIGH]:
-                    new_alerts.append(f"[{severity.name}] {title}")
-
-        # 3. Bulk insert and single commit
-        if new_vulns_to_insert:
-            db.add_all(new_vulns_to_insert)
-            
-        # User requested: Do not automatically delete or mark as FIXED.
-        # Just retain them, and the dashboard will filter by time.
-            
-        if scan:
-            scan.vulnerabilities_found = len(vuln_data_list)
-            
-        db.commit()
-
-        logger.info(f"Finished parsing Nuclei report. Processed {len(vuln_data_list)} findings.")
-
-        # Send Email Alerts
-        send_scan_summary_email(scan, asset, target_ip, new_vulns_to_insert, "Nuclei")
-
-        if scan_id:
-            update_scan_progress(scan_id, target_ip, "COMPLETED")
-
-    except Exception as e:
-        logger.error(f"Error parsing Nuclei report: {str(e)}")
-        db.rollback()
-        if scan_id:
-            update_scan_progress(scan_id, target_ip, "FAILED")
-    finally:
-        db.close()
+    from src.scans.adapters.outbound.nuclei_adapter import normalize_nuclei
+    _legacy_ingest("NUCLEI", normalize_nuclei(vuln_data_list), target_ip, scan_id)
 
 
 @celery_app.task
 def parse_zap_report(vuln_data_list: list, target_ip: str, scan_id: str = None):
-    logger.info(f"Parsing ZAP report for {target_ip} (Scan {scan_id})")
-    db: Session = SessionLocal()
-    new_alerts = []
-    try:
-        scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first() if scan_id else None
-        
-        asset = db.query(AssetEntity).filter(
-            (AssetEntity.ip_address == target_ip) | (AssetEntity.name == target_ip)
-        ).first()
-        if not asset:
-            logger.info(f"Asset with IP {target_ip} not found. Creating it automatically.")
-            if not scan:
-                logger.error(f"Scan {scan_id} not found. Cannot create asset.")
-                return
-            
-            asset = AssetEntity(
-                company_id=scan.company_id,
-                name=target_ip,
-                ip_address=target_ip,
-                asset_type="Unknown",
-                network_zone=scan.network_zone or "Internal",
-                operating_system="Unknown"
-            )
-            db.add(asset)
-            db.commit()
-            db.refresh(asset)
-
-        import json
-        asset.last_scan_raw_output = json.dumps(vuln_data_list, indent=2)
-        db.commit()
-
-        # 1. Load existing vulnerabilities into memory
-        existing_vulns_list = db.query(VulnerabilityEntity).filter(VulnerabilityEntity.asset_id == asset.id).all()
-        existing_by_title = {v.title: v for v in existing_vulns_list}
-        
-        new_vulns_to_insert = []
-
-        for v in vuln_data_list:
-            title = v.get("name", "ZAP Vuln")[:250]
-            cve_id = v.get("cve_id")
-            
-            # Map severity
-            sev_str = v.get("severity", "info").lower()
-            severity = VulnSeverity.INFO
-            if sev_str == "critical": severity = VulnSeverity.CRITICAL
-            elif sev_str == "high": severity = VulnSeverity.HIGH
-            elif sev_str == "medium": severity = VulnSeverity.MEDIUM
-            elif sev_str == "low": severity = VulnSeverity.LOW
-
-            description = v.get("description", "")
-            if v.get("reference"):
-                description += f"\nReferences:\n{v.get('reference')}"
-                
-            remediation = v.get("remediation", "")
-            cvss_score = safe_float(v.get("cvss_score"))
-            
-            if severity == VulnSeverity.INFO and cvss_score:
-                if cvss_score >= 9.0: severity = VulnSeverity.CRITICAL
-                elif cvss_score >= 7.0: severity = VulnSeverity.HIGH
-                elif cvss_score >= 4.0: severity = VulnSeverity.MEDIUM
-                elif cvss_score > 0.0: severity = VulnSeverity.LOW
-
-            contextual_risk = calculate_contextual_risk(cvss_score, asset.criticality)
-
-            # 2. In-memory deduplication
-            existing_vuln = existing_by_title.get(title)
-            
-            if existing_vuln:
-                existing_vuln.last_seen_at = func.now()
-                if existing_vuln.status == VulnStatus.FIXED:
-                    existing_vuln.status = VulnStatus.NEW
-                    if severity in [VulnSeverity.CRITICAL, VulnSeverity.HIGH]:
-                        new_alerts.append(f"[{severity.name}] {title}")
-            else:
-                new_vuln = VulnerabilityEntity(
-                    asset_id=asset.id,
-                    cve_id=cve_id,
-                    title=title,
-                    description=description,
-                    remediation=remediation,
-                    cvss_base_score=cvss_score,
-                    contextual_risk_score=contextual_risk,
-                    severity=severity,
-                    source_engine="OWASP_ZAP",
-                    status=VulnStatus.NEW
-                )
-                new_vulns_to_insert.append(new_vuln)
-                existing_by_title[title] = new_vuln
-                
-                if severity in [VulnSeverity.CRITICAL, VulnSeverity.HIGH]:
-                    new_alerts.append(f"[{severity.name}] {title}")
-
-        # 3. Bulk insert and single commit
-        if new_vulns_to_insert:
-            parsed_vulns = []
-            for v in new_vulns_to_insert:
-                parsed_vulns.append({
-                    "title": v.title,
-                    "cve": v.cve_id,
-                    "severity": v.severity.name if hasattr(v.severity, 'name') else str(v.severity),
-                    "cvss": v.cvss_base_score
-                })
-            logger.info(f"ZAP new parsed findings:\n{json.dumps(parsed_vulns, indent=2)}")
-            db.add_all(new_vulns_to_insert)
-            
-        if scan:
-            scan.vulnerabilities_found = (scan.vulnerabilities_found or 0) + len(vuln_data_list)
-            
-        db.commit()
-
-        logger.info(f"Finished parsing ZAP report. Processed {len(vuln_data_list)} findings.")
-
-        # Send Email Alerts
-        send_scan_summary_email(scan, asset, target_ip, new_vulns_to_insert, "ZAP")
-
-        if scan_id:
-            update_scan_progress(scan_id, target_ip, "COMPLETED")
-
-    except Exception as e:
-        logger.error(f"Error parsing ZAP report: {str(e)}")
-        db.rollback()
-        if scan_id:
-            update_scan_progress(scan_id, target_ip, "FAILED")
-    finally:
-        db.close()
+    _legacy_ingest("OWASP_ZAP", [_legacy_to_finding(v) for v in vuln_data_list], target_ip, scan_id)

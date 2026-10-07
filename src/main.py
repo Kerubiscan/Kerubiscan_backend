@@ -74,11 +74,12 @@ async def lifespan(app: FastAPI):
             
             # Delete Audit Logs older than 30 days to prevent infinite table growth
             conn.execute(text("DELETE FROM audit_logs WHERE timestamp < NOW() - INTERVAL '30 days'"))
-            
-            # Auto-pause scans that were orphaned (interrupted by a server crash/shutdown)
-            conn.execute(text("UPDATE scans SET status = 'PAUSED' WHERE status = 'IN_PROGRESS'"))
-            
-            print("Successfully cleared database bloat and paused orphaned scans.")
+
+            # Running scans are no longer paused here: the API restarting does not stop the Celery
+            # workers, and pausing then resuming re-queued targets that were still being scanned.
+            # Scans interrupted by a worker crash are re-delivered by Celery (acks_late).
+
+            print("Successfully cleared database bloat.")
     except Exception as e:
         print(f"Failed to clear database bloat: {e}")
         

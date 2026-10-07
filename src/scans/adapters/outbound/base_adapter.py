@@ -10,6 +10,10 @@ logger = logging.getLogger(__name__)
 class ScanError(RuntimeError):
     pass
 
+
+class ScanTimeout(ScanError):
+    """The scanner exceeded its time budget (retrying would only waste the worker's time)."""
+
 @dataclass
 class Finding:
     id: str
@@ -68,7 +72,7 @@ class BaseScannerAdapter:
                 logger.error(f"Scanner process timed out after {timeout} seconds.")
                 os.killpg(proc.pid, signal.SIGKILL)
                 proc.wait()
-                raise ScanError(f"Scan timed out after {timeout} seconds.")
+                raise ScanTimeout(f"Scan timed out after {timeout} seconds.")
                 
         with open(err_file_path, "r", encoding="utf-8", errors="replace") as f:
             stderr_tail = f.read()[-500:]

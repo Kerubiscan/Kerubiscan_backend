@@ -21,6 +21,8 @@ class AssetEntity(Base):
     ports = Column(JSON, nullable=True)
     services = Column(JSON, nullable=True)
     mac_address = Column(String, nullable=True)
+    # IP resolved during the last scan when ip_address holds a hostname (domain scans)
+    resolved_ip = Column(String, nullable=True)
     last_scan_raw_output = Column(Text, nullable=True)
     
     is_deleted = Column(Boolean, default=False, nullable=False, index=True)

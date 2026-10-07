@@ -17,6 +17,22 @@ celery_app.conf.update(
     task_track_started=True,
     task_time_limit=3600 * 24, # 24 hours max for scans
     task_ignore_result=True, # Prevent Redis memory bloat from useless task returns
+    # A scan is acknowledged only once finished, so a worker crash/restart re-queues it.
+    task_acks_late=True,
+    task_reject_on_worker_lost=True,
+    worker_prefetch_multiplier=1,
+    # Must exceed the longest task, otherwise Redis re-delivers running scans and they run twice.
+    broker_transport_options={"visibility_timeout": 3600 * 26},
+    # Long scans get their own queue so that scheduling, OpenVAS polling and parsing are never
+    # stuck behind them (a schedule fired late used to be skipped).
+    task_routes={
+        "run_vulnerability_scan": {"queue": "scans"},
+        "run_discovery_scan": {"queue": "scans"},
+        # Templates/scripts live in the scanning container's filesystem: update them there
+        "update_nuclei_templates": {"queue": "scans"},
+        "update_nmap_scripts": {"queue": "scans"},
+        "update_zap_addons": {"queue": "scans"},
+    },
 )
 
 from celery.schedules import crontab

@@ -123,10 +123,14 @@ class GVMAdapter(ScanEnginePort):
             
         try:
             # We want the raw XML to parse it later
-            response = self.gmp.get_report(report_id=report_id, details=True, ignore_pagination=True)
+            # Explicit filter (same as the Greenbone UI default) so results do not depend on the user's saved filter
+            response = self.gmp.get_report(report_id=report_id, details=True, ignore_pagination=True,
+                                           filter_string="apply_overrides=1 min_qod=70 rows=-1")
             from lxml import etree
             xml_report = etree.tostring(response, encoding='unicode')
-            logger.info(f"OpenVAS raw XML report:\n{xml_report}")
+            # The full report used to be logged here: one report wiped every other log line (rotation at 100 KB)
+            logger.info(f"OpenVAS report {report_id} retrieved ({len(xml_report)} bytes)")
+            logger.debug(xml_report)
             return xml_report
         except GvmError as e:
             logger.error(f"Failed to get report: {str(e)}")
