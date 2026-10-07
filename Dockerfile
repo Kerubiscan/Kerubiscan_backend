@@ -16,6 +16,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     unzip \
     git \
     default-jre \
+    fonts-open-sans \
     && rm -rf /var/lib/apt/lists/*
 
 # Install OWASP ZAP
@@ -37,6 +38,9 @@ RUN wget https://raw.githubusercontent.com/vulnersCom/nmap-vulners/master/vulner
 # Install python dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir --default-timeout=1000 --retries 10 -r requirements.txt
+
+# Headless Chromium prints the HTML reports to PDF (identical layout in both formats)
+RUN playwright install --with-deps chromium
 
 # Copy application code
 COPY src/ /app/src/

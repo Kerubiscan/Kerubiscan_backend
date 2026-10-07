@@ -431,6 +431,29 @@ def _vulns_by_asset(db: Session, assets: List[AssetEntity], engine: Optional[str
     return result
 
 
+def _scan_report_html(db: Session, scan: ScanEntity, scanner_company: str, target_company: str,
+                      executive_summary: Optional[str]) -> bytes:
+    """HTML report of a scan. The PDF report is the print rendering of this same document."""
+    assets = scan_assets(db, scan)
+    if not assets:
+        assets = [AssetEntity(id="dummy", name=scan.target, ip_address=scan.target, network_zone=scan.network_zone)]
+    engine = scan.scanner_engine.value if scan.scanner_engine else "OPENVAS"
+    all_vulns = _vulns_by_asset(db, [a for a in assets if a.id != "dummy"], engine)
+
+    from src.reporting.application.services.html_generator import generate_vulnerability_html, generate_discovery_html
+
+    display_name = _display_name(db, scan, target_company)
+    if scan.scan_type == ScanType.DISCOVERY:
+        return generate_discovery_html(assets=assets, scanner_company_name=scanner_company,
+                                       target_company_name=target_company, scan_name=display_name,
+                                       scan_date=scan.created_at)
+    return generate_vulnerability_html(assets=assets, all_vulnerabilities=all_vulns,
+                                       executive_summary=executive_summary,
+                                       scanner_company_name=scanner_company,
+                                       target_company_name=target_company, scan_name=display_name,
+                                       scan_date=scan.created_at)
+
+
 @router.get("/{scan_id}/report/html")
 def download_scan_report(
     scan_id: str,
@@ -443,33 +466,14 @@ def download_scan_report(
     if not scan:
         raise HTTPException(status_code=404, detail="Scan not found")
 
-    assets = scan_assets(db, scan)
-    if not assets:
-        assets = [AssetEntity(id="dummy", name=scan.target, ip_address=scan.target, network_zone=scan.network_zone)]
-    engine = scan.scanner_engine.value if scan.scanner_engine else "OPENVAS"
-    all_vulns = _vulns_by_asset(db, [a for a in assets if a.id != "dummy"], engine)
-
-    from src.reporting.application.services.html_generator import generate_vulnerability_html, generate_discovery_html
-
-    display_name = _display_name(db, scan, target_company)
-
-    if scan.scan_type == ScanType.DISCOVERY:
-        html_bytes = generate_discovery_html(assets=assets, scanner_company_name=scanner_company,
-                                             target_company_name=target_company, scan_name=display_name,
-                                             scan_date=scan.created_at)
-    else:
-        html_bytes = generate_vulnerability_html(assets=assets, all_vulnerabilities=all_vulns,
-                                                 executive_summary=scan.executive_summary,
-                                                 scanner_company_name=scanner_company,
-                                                 target_company_name=target_company, scan_name=display_name,
-                                                 scan_date=scan.created_at)
-
+    html_bytes = _scan_report_html(db, scan, scanner_company, target_company, scan.executive_summary)
     short_id = str(scan.id)[:8]
     return StreamingResponse(
         io.BytesIO(html_bytes),
         media_type="text/html",
         headers={"Content-Disposition": f'attachment; filename="rapport_{short_id}.html"'}
     )
+
 
 @router.get("/tasks/{task_id}")
 def get_task_status(task_id: str, current_user: dict = Depends(require_permissions([Permission.SCAN_READ]))):
@@ -521,29 +525,24 @@ def download_scan_report_pdf(
     if not scan:
         raise HTTPException(status_code=404, detail="Scan not found")
 
-    assets = scan_assets(db, scan)
-    all_vulns_by_asset = _vulns_by_asset(db, assets)
+    summary = request_body.executive_summary or scan.executive_summary
+    html_bytes = _scan_report_html(db, scan, scanner_company, target_company, summary)
 
-    from src.reporting.application.services.pdf_generator import generate_scan_vulnerability_pdf
+    def legacy_pdf() -> bytes:
+        from src.reporting.application.services.pdf_generator import generate_scan_vulnerability_pdf
+        assets = scan_assets(db, scan)
+        return generate_scan_vulnerability_pdf(
+            assets=assets,
+            all_vulnerabilities=_vulns_by_asset(db, assets, scan.scanner_engine.value if scan.scanner_engine else None),
+            executive_summary=summary,
+            scanner_company_name=scanner_company,
+            target_company_name=target_company,
+            scan_name=_display_name(db, scan, target_company),
+            scan_date=scan.created_at
+        )
 
-    if len(assets) > 1:
-        display_name = _display_name(db, scan, target_company)
-    elif len(assets) == 1:
-        display_name = (assets[0].name.strip() if assets[0].name and assets[0].name.strip() else assets[0].ip_address)
-        if "Auto-added" in display_name:
-            display_name = display_name.replace("Auto-added Host", "").replace("Auto-added Web Host", "").replace("(", "").replace(")", "").strip()
-    else:
-        display_name = scan.name
-
-    pdf_bytes = generate_scan_vulnerability_pdf(
-        assets=assets,
-        all_vulnerabilities=all_vulns_by_asset,
-        executive_summary=request_body.executive_summary or scan.executive_summary,
-        scanner_company_name=scanner_company,
-        target_company_name=target_company,
-        scan_name=display_name,
-        scan_date=scan.created_at
-    )
+    from src.reporting.application.services.pdf_renderer import render_pdf
+    pdf_bytes = render_pdf(html_bytes, fallback=legacy_pdf)
 
     short_id = str(scan.id)[:8]
     return StreamingResponse(
@@ -551,6 +550,7 @@ def download_scan_report_pdf(
         media_type="application/pdf",
         headers={"Content-Disposition": f'attachment; filename="report_{short_id}.pdf"'}
     )
+
 
 @router.put("/{scan_id}/pause", response_model=ScanResponse)
 def pause_scan(scan_id: str, db: Session = Depends(get_db),
