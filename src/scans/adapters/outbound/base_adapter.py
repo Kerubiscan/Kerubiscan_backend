@@ -49,6 +49,17 @@ class Finding:
 
 class BaseScannerAdapter:
     @staticmethod
+    def _kill(proc) -> None:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except (AttributeError, ProcessLookupError, PermissionError):
+            proc.kill()  # Windows (no process groups) or already gone
+        try:
+            proc.wait(timeout=30)
+        except Exception:
+            pass
+
+    @staticmethod
     def run_process(cmd: List[str], timeout: int, err_file_path: Optional[str] = None, env: Optional[Dict[str, str]] = None) -> Tuple[int, str]:
         """Runs a scanner subprocess in a new process group with timeout and standard error capturing."""
         if not err_file_path:
@@ -70,9 +81,12 @@ class BaseScannerAdapter:
                 proc.wait(timeout=timeout)
             except subprocess.TimeoutExpired:
                 logger.error(f"Scanner process timed out after {timeout} seconds.")
-                os.killpg(proc.pid, signal.SIGKILL)
-                proc.wait()
+                BaseScannerAdapter._kill(proc)
                 raise ScanTimeout(f"Scan timed out after {timeout} seconds.")
+            except BaseException:
+                # e.g. Celery SoftTimeLimitExceeded: the scanner must not keep running orphaned
+                BaseScannerAdapter._kill(proc)
+                raise
                 
         with open(err_file_path, "r", encoding="utf-8", errors="replace") as f:
             stderr_tail = f.read()[-500:]

@@ -39,6 +39,8 @@ class ScanEntity(Base):
     vulnerabilities_found = Column(Integer, default=0, nullable=True)
     executive_summary = Column(String, nullable=True)
     target_states = Column(JSON, default=dict, nullable=False)
+    # {target: {"started_at", "updated_at" (ISO UTC), "detail" (reason shown to the user), "engine_task" (OpenVAS task id)}}
+    target_meta = Column(JSON, nullable=True)
     recurrence_rule = Column(String, nullable=True)
     next_run_at = Column(DateTime(timezone=True), nullable=True)
     policy_id = Column(String(36), ForeignKey("policies.id"), nullable=True)

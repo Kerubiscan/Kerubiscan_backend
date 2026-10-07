@@ -110,7 +110,7 @@ class NucleiAdapter(BaseScannerAdapter):
             for proxy_var in ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy", "NO_PROXY", "no_proxy"]:
                 env.pop(proxy_var, None)
 
-            returncode, stderr_tail = NucleiAdapter.run_process(cmd=cmd, timeout=86400, err_file_path=err_file, env=env)
+            returncode, stderr_tail = NucleiAdapter.run_process(cmd=cmd, timeout=12 * 3600, err_file_path=err_file, env=env)
             if returncode != 0:
                 raise ScanError(f"Nuclei exited with code {returncode}: {stderr_tail}")
             if not os.path.exists(out_file):

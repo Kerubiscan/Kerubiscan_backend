@@ -49,7 +49,8 @@ def _identity_for(target_raw: str, host_ip: str) -> str:
 
 
 @celery_app.task
-def parse_scan_report(report_xml: str, target_ip: str, scan_id: str = None, final_state: str = progress.COMPLETED):
+def parse_scan_report(report_xml: str, target_ip: str, scan_id: str = None, final_state: str = progress.COMPLETED,
+                      detail: str = None):
     """Stores an OpenVAS report. `target_ip` is the target as typed by the user."""
     from src.vulnerabilities.application.services.openvas_report import normalize_openvas
     logger.info(f"Parsing OpenVAS report for {target_ip} (Scan {scan_id})")
@@ -72,17 +73,19 @@ def parse_scan_report(report_xml: str, target_ip: str, scan_id: str = None, fina
                 send_scan_summary_email(scan, asset, target_ip, result.new, "OpenVAS")
             except Exception as e:
                 logger.warning(f"Scan summary email failed: {e}")
+        db.flush()
         if scan:
-            scan.vulnerabilities_found = (scan.vulnerabilities_found or 0) + total
+            from src.scans.application.services.scan_assets import count_scan_findings
+            scan.vulnerabilities_found = count_scan_findings(db, scan)
         db.commit()
         logger.info(f"OpenVAS report for {target_ip}: {len(hosts)} host(s), {total} findings stored")
         if scan_id:
-            update_scan_progress(scan_id, target_ip, final_state)
+            update_scan_progress(scan_id, target_ip, final_state, detail=detail)
     except Exception as e:
         logger.exception(f"Error parsing OpenVAS report: {str(e)}")
         db.rollback()
         if scan_id:
-            update_scan_progress(scan_id, target_ip, progress.FAILED)
+            update_scan_progress(scan_id, target_ip, progress.FAILED, detail=f"Analyse du rapport OpenVAS impossible : {e}"[:300])
     finally:
         db.close()
 
@@ -115,9 +118,11 @@ def _legacy_ingest(engine: str, findings: List[Dict], target_ip: str, scan_id: s
                               resolved_ip=(host or {}).get("ip"), network_zone=scan.network_zone if scan else None)
         if host:
             update_asset_from_host(asset, host)
-        result = ingest_findings(db, asset, engine, findings)
+        ingest_findings(db, asset, engine, findings)
+        db.flush()
         if scan:
-            scan.vulnerabilities_found = (scan.vulnerabilities_found or 0) + result.total
+            from src.scans.application.services.scan_assets import count_scan_findings
+            scan.vulnerabilities_found = count_scan_findings(db, scan)
         db.commit()
         if scan_id:
             update_scan_progress(scan_id, target_ip, progress.COMPLETED)

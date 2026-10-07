@@ -64,11 +64,18 @@ def resolve_asset(db: Session, company_id: Optional[str], identity: str, resolve
     """
     asset = _active_assets(db, company_id).filter(AssetEntity.ip_address == identity).first()
     if asset is None:
-        # Assets created before this fix stored the domain in `name` and the resolved IP in `ip_address`
-        asset = _active_assets(db, company_id).filter(AssetEntity.name == identity).first()
-        if asset is not None and asset.ip_address != identity:
-            logger.info(f"Asset {asset.id}: restoring scanned identity {identity} (was {asset.ip_address})")
-            asset.ip_address = identity
+        # Assets created by scans before this fix stored the domain in `name` and the resolved IP in
+        # `ip_address`. Only those are restored: an asset created by hand (asset_type set by the form)
+        # keeps the IP its user entered.
+        legacy = _active_assets(db, company_id).filter(
+            AssetEntity.name == identity,
+            (AssetEntity.asset_type.is_(None)) | (AssetEntity.asset_type == "Unknown"),
+        ).first()
+        if legacy is not None and legacy.ip_address != identity and _is_ip(legacy.ip_address):
+            logger.info(f"Asset {legacy.id}: restoring scanned identity {identity} (was {legacy.ip_address})")
+            legacy.resolved_ip = legacy.ip_address
+            legacy.ip_address = identity
+            asset = legacy
     if asset is None:
         asset = AssetEntity(
             company_id=company_id,
@@ -83,6 +90,15 @@ def resolve_asset(db: Session, company_id: Optional[str], identity: str, resolve
     if resolved_ip and resolved_ip != identity:
         asset.resolved_ip = resolved_ip
     return asset
+
+
+def _is_ip(value: Optional[str]) -> bool:
+    import ipaddress
+    try:
+        ipaddress.ip_address(value or "")
+        return True
+    except ValueError:
+        return False
 
 
 def update_asset_from_host(asset: AssetEntity, host: Dict) -> None:

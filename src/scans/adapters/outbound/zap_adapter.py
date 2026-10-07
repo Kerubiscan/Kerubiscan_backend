@@ -165,9 +165,9 @@ class ZAPAdapter:
             for ascan_id in (i for i in ascan_ids if i is not None):
                 ZAPAdapter._wait(zap_url, api_key, "ascan", ascan_id, deadline, 10)
 
-            alerts = []
-            for target in reached:
-                alerts.extend(ZAPAdapter._api(zap_url, api_key, "/JSON/core/view/alerts/", baseurl=target).get("alerts", []))
+            # All alerts, kept when they belong to a scanned host: filtering by base URL lost the
+            # alerts of http:// targets redirected to https://
+            alerts = alerts_for_hosts(ZAPAdapter._api(zap_url, api_key, "/JSON/core/view/alerts/").get("alerts", []), reached)
             logger.info(f"ZAP finished: {len(alerts)} alert instances on {len(reached)} URL(s)")
 
             try:
@@ -203,6 +203,11 @@ class ZAPAdapter:
     def _parse_zap_alerts(alerts: List[Dict]) -> List[Dict]:
         """Kept for compatibility: returns the normalised findings."""
         return normalize_zap(alerts)
+
+
+def alerts_for_hosts(alerts: List[Dict], targets: List[str]) -> List[Dict]:
+    hosts = {(urlsplit(t).hostname or "").lower() for t in targets}
+    return [a for a in alerts if (urlsplit(a.get("url", a.get("uri", "")) or "").hostname or "").lower() in hosts]
 
 
 def _risk(alert: Dict) -> str:

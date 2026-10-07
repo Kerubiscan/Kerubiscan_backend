@@ -1,5 +1,4 @@
 import io
-import ipaddress
 import logging
 from typing import List, Optional
 
@@ -11,12 +10,13 @@ from sqlalchemy.orm import Session
 from src.core.database import get_db
 from src.companies.domain.entities import CompanyEntity
 from src.scans.domain.entities import ScanEntity, ScanType, ScanStatus, ScannerEngine
-from src.scans.domain.targets import InvalidTargetError, validate_targets, split_targets, parse_target
+from src.scans.domain.targets import InvalidTargetError, validate_targets, split_targets
 from src.assets.domain.entities import AssetEntity
 from src.auth.adapters.inbound.api.dependencies import require_permissions
 from src.auth.domain.entities import Permission
 from src.audit.domain.models import AuditLog
 from src.scheduling.domain.entities import ScheduleEntity
+from src.scans.application.services.scan_assets import scan_assets
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +69,8 @@ class ScanResponse(BaseModel):
     status: str
     progress: int = 0
     target_states: Optional[dict] = None
+    # Reason shown for each target (failure, timeout, OpenVAS queue...) and its timestamps
+    target_details: Optional[dict] = None
     vulnerabilities_found: Optional[int] = None
     executive_summary: Optional[str] = None
     policy_id: Optional[str] = None
@@ -92,6 +94,7 @@ def _to_response(scan: ScanEntity) -> ScanResponse:
         status=scan.status.name,
         progress=scan.progress,
         target_states=scan.target_states,
+        target_details=scan.target_meta,
         vulnerabilities_found=scan.vulnerabilities_found,
         executive_summary=scan.executive_summary,
         policy_id=scan.policy_id,
@@ -146,35 +149,6 @@ def _queue_scan(scan: ScanEntity, targets: List[str]):
     else:
         for target in targets:
             run_vulnerability_scan.delay(scan.id, target, target, OPENVAS_FULL_AND_FAST)
-
-
-def scan_assets(db: Session, scan: ScanEntity) -> List[AssetEntity]:
-    """Assets covered by a scan: same company, not deleted, matching each target.
-
-    A domain target matches the asset that holds the domain (or, for assets created before the
-    domain fix, the asset named after it); a network target matches the assets inside it.
-    """
-    base = db.query(AssetEntity).filter(AssetEntity.company_id == scan.company_id, AssetEntity.is_deleted == False)  # noqa: E712
-    found = {}
-    for raw in split_targets(scan.target):
-        try:
-            target = parse_target(raw)
-        except InvalidTargetError:
-            continue
-        if target.kind == "cidr":
-            network = ipaddress.ip_network(target.host, strict=False)
-            for asset in base.all():
-                for value in (asset.ip_address, asset.resolved_ip):
-                    try:
-                        if value and ipaddress.ip_address(value) in network:
-                            found[asset.id] = asset
-                            break
-                    except ValueError:
-                        pass
-        else:
-            for asset in base.filter((AssetEntity.ip_address == target.host) | (AssetEntity.name == target.host)).all():
-                found[asset.id] = asset
-    return list(found.values())
 
 
 @router.get("/status", response_model=ScannerStatus)
@@ -590,6 +564,10 @@ def resume_scan(scan_id: str, db: Session = Depends(get_db),
         scan.target_states = new_states
         from sqlalchemy.orm.attributes import flag_modified
         flag_modified(scan, "target_states")
+    if not targets_to_requeue:
+        # Every target finished while the scan was paused: it used to stay IN_PROGRESS forever
+        from src.scans.application.services.progress import recompute_status
+        recompute_status(scan)
     db.commit()
 
     db.add(AuditLog(user_id=_user_id(current_user), username=_username(current_user), action="RESUME",

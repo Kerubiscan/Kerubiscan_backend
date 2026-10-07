@@ -37,6 +37,10 @@ PROFILES = {
 # of false positives per host.
 DEFAULT_VULN_SCRIPTS = "(vuln and not dos),vulners"
 
+# Phase 1 + phase 2 must fit in the Celery soft time limit (23 h) of a scan task
+PHASE1_TIMEOUT_S = 8 * 3600
+PHASE2_TIMEOUT_S = 12 * 3600
+
 
 def _validate_targets(raw: str) -> List[str]:
     out = []
@@ -155,14 +159,14 @@ class NmapAdapter(BaseScannerAdapter):
         logger.info(f"Running Nmap detailed discovery on {target} (profile={profile})")
         cmd = ["nmap", "-sS", "-sV", "-O", "-Pn", *_profile_args(profile), *_build_port_args(ports),
                "--script", "nbstat,smb-os-discovery"]
-        return NmapAdapter._run(cmd, target, 86400, credentials)
+        return NmapAdapter._run(cmd, target, PHASE1_TIMEOUT_S, credentials)
 
     @staticmethod
     def run_vulnerability_scan(target: str, ports: Optional[str] = None, credentials: Optional[Dict] = None,
                                profile: str = "lan", scripts: str = DEFAULT_VULN_SCRIPTS) -> List[Dict]:
         logger.info(f"Running Nmap vulnerability scan on {target} (profile={profile})")
         cmd = ["nmap", "-sS", "-sV", "-Pn", *_profile_args(profile), *_build_port_args(ports), "--script", scripts]
-        return NmapAdapter._run(cmd, target, 86400, credentials)
+        return NmapAdapter._run(cmd, target, PHASE2_TIMEOUT_S, credentials)
 
     # ------------------------------------------------------------------ parsing
 

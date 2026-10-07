@@ -46,10 +46,16 @@ celery_app.conf.beat_schedule = {
         'task': 'update_nuclei_templates',
         'schedule': crontab(hour=0, minute=0), # Run daily at midnight
     },
+    # Closes or resumes scan targets whose follow-up was lost (see watchdog.py)
+    'scan-watchdog-every-10-minutes': {
+        'task': 'scan_watchdog',
+        'schedule': crontab(minute='*/10'),
+    },
 }
 
 celery_app.autodiscover_tasks([
     'src.scans.application.services.tasks',
     'src.vulnerabilities.application.services.tasks',
-    'src.scheduling.application.services.tasks'
+    'src.scheduling.application.services.tasks',
+    'src.scans.application.services.watchdog',
 ])

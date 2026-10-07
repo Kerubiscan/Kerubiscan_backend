@@ -113,6 +113,40 @@ class GVMAdapter(ScanEnginePort):
             logger.error(f"Failed to get task status: {str(e)}")
             raise
 
+    def stop_task(self, task_id: str) -> bool:
+        if not self.gmp:
+            raise Exception("Not connected to GVM")
+        try:
+            self.gmp.stop_task(task_id=task_id)
+            logger.info(f"OpenVAS task {task_id} stopped")
+            return True
+        except GvmError as e:
+            logger.warning(f"Could not stop OpenVAS task {task_id}: {e}")
+            return False
+
+    def get_task_report_id(self, task_id: str) -> str:
+        """Report of the running (or last) execution of a task, to resume its follow-up."""
+        if not self.gmp:
+            raise Exception("Not connected to GVM")
+        response = self.gmp.get_task(task_id=task_id)
+        ids = response.xpath("//task/current_report/report/@id") or response.xpath("//task/last_report/report/@id")
+        return ids[0] if ids else ""
+
+    def find_tasks(self, name_part: str) -> List[dict]:
+        """Tasks whose name contains `name_part` (task names embed the scan id)."""
+        if not self.gmp:
+            raise Exception("Not connected to GVM")
+        response = self.gmp.get_tasks(filter_string=f"name~{name_part} rows=-1")
+        tasks = []
+        for task in response.xpath("//task[@id]"):
+            tasks.append({
+                "id": task.get("id"),
+                "name": task.findtext("name") or "",
+                "status": task.findtext("status") or "",
+                "progress": task.findtext("progress") or "",
+            })
+        return tasks
+
     def get_task_status(self, task_id: str) -> str:
         status, _ = self.get_task_status_and_progress(task_id)
         return status
