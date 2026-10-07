@@ -138,9 +138,16 @@ def _looks_like_cidr(value: str) -> bool:
     return _is_ip(addr) and prefix.isdigit()
 
 
+_SEPARATORS = re.compile(r"[,;\s]+")
+
+
 def split_targets(raw: str) -> List[str]:
-    """Split a comma separated target string, removing blanks and duplicates (order kept)."""
-    return list(dict.fromkeys(t.strip() for t in (raw or "").split(",") if t.strip()))
+    """Split a list of targets, removing blanks and duplicates (order kept).
+
+    Accepted separators: comma, semicolon, spaces and new lines ("a.com, b.com", "a.com b.com",
+    one target per line...). A target (IP, network, domain or URL) never contains any of them.
+    """
+    return list(dict.fromkeys(t for t in _SEPARATORS.split(raw or "") if t))
 
 
 def validate_targets(raw: str) -> List[ScanTarget]:

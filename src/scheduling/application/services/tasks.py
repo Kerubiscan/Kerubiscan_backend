@@ -116,7 +116,7 @@ def check_scheduled_scans():
                 scan.next_run_at = None
                 db.commit()
 
-                targets = [t.strip() for t in scan.target.split(",") if t.strip()]
+                targets = split_targets(scan.target)
                 target_states = {t: "PENDING" for t in targets}
                 scan.target_states = target_states
                 from sqlalchemy.orm.attributes import flag_modified

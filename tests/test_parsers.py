@@ -96,3 +96,35 @@ def test_openvas_report_split_per_host_and_port():
         (443, "High", 7.5, "CVE-2014-0160"), (8443, "High", 7.5, "CVE-2014-0160"),
     ]
     assert [f["title"] for f in hosts["10.0.0.6"]["findings"]] == ["SSH Weak Encryption Algorithms"]
+
+
+def test_real_nmap_output_on_apache_2_4_49():
+    """Real Nmap 7.80 output: `-sV --script "(vuln and not dos),vulners"` on a local server announcing
+    Apache 2.4.49 (the test server answers 200 to any URL, hence the phpMyAdmin/LiteSpeed false positives)."""
+    host = NmapAdapter._parse_nmap_xml(read_fixture("nmap_real_apache_2449.xml"))[0]
+    assert host["ports"][0]["product"] == "Apache httpd" and host["ports"][0]["version"] == "2.4.49"
+    vulns = _by_title(host["vulns"])
+
+    path_traversal = vulns["CVE-2021-41773 – Apache httpd 2.4.49"]
+    # vulners rates it 9.8 (the parser keeps the score given by the source)
+    assert path_traversal["cvss"] == 9.8 and path_traversal["severity"] == "Critical" and path_traversal["port"] == 8099
+    assert sum(1 for v in host["vulns"] if v["severity"] == "Critical") > 10
+
+    # Scripts that tested and found nothing, and plain banners, are not vulnerabilities
+    titles = " ".join(vulns)
+    for noise in ("http-dombased-xss", "http-stored-xss", "http-server-header"):
+        assert noise not in titles
+    # "Found the following possible CSRF vulnerabilities" is a finding to confirm, not Info
+    csrf = vulns["Possible CSRF vulnerabilities (http-csrf)"]
+    assert csrf["severity"] == "Low" and "/login" in csrf["description"]
+    assert vulns["Slowloris DOS attack (http-slowloris-check)"]["cve_id"] == "CVE-2007-6750"
+    assert not [v for v in host["vulns"] if v["severity"] == "Info"]
+
+
+def test_nothing_found_outputs_are_ignored():
+    for sid, out in [("http-csrf", "Couldn't find any CSRF vulnerabilities."),
+                     ("http-enum", "No interesting files found."),
+                     ("smb-vuln-ms10-054", "false"),
+                     ("ssl-ccs-injection", "NOT VULNERABLE")]:
+        found = NmapAdapter._parse_script(sid, "\n" + out, 80, "http", "Apache")
+        assert found == [] or sid == "smb-vuln-ms10-054", (sid, found)

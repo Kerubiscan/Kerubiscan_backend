@@ -46,6 +46,14 @@ def test_split_targets_removes_blanks_and_duplicates():
     assert split_targets("site.com, www.site.com,,site.com") == ["site.com", "www.site.com"]
 
 
+@pytest.mark.parametrize("raw", [
+    "site.com,www.site.com", "site.com, www.site.com", "site.com ,  www.site.com",
+    "site.com www.site.com", "site.com;www.site.com", "site.com\nwww.site.com", " site.com\r\n www.site.com ,",
+])
+def test_every_usual_separator_is_accepted(raw):
+    assert [t.host for t in validate_targets(raw)] == ["site.com", "www.site.com"]
+
+
 def test_private_vs_public_profile():
     assert parse_target("192.168.1.0/24").is_private
     assert not parse_target("8.8.8.8").is_private

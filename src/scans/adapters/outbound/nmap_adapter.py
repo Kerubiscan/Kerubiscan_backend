@@ -18,6 +18,11 @@ _CVE_RE = re.compile(r"\bCVE-\d{4}-\d{4,}\b", re.IGNORECASE)
 _VULNERS_LINE = re.compile(r"\b(CVE-\d{4}-\d{4,})\b(?:\s+(\d{1,2}(?:\.\d)?))?")
 _RISK_FACTOR = re.compile(r"Risk factor:\s*(\w+)", re.IGNORECASE)
 _NOT_VULNERABLE = ("NOT VULNERABLE", "State: NOT VULNERABLE")
+# Outputs of 'vuln' scripts that tested and found nothing (real Nmap outputs)
+_NOTHING_FOUND = re.compile(r"Couldn't find|Could not find|\bNo\b[\w\s-]{0,40}\bfound\b|\bnot vulnerable\b", re.IGNORECASE)
+_POSSIBLE = re.compile(r"Found the following (possible|potential)\s+([^:\n]+)", re.IGNORECASE)
+# Informational scripts: their data is already stored with the ports/services, not a vulnerability
+_INFORMATIONAL_SCRIPTS = {"http-server-header", "http-title", "fingerprint-strings"}
 
 # Timing profiles. "lan" keeps the historical aggressive settings for internal networks;
 # "internet" is slower but does not lose ports on high latency links or behind rate limiting WAF/CDN.
@@ -231,13 +236,32 @@ class NmapAdapter(BaseScannerAdapter):
             return []
         if script_id == "vulners":
             return NmapAdapter._parse_vulners(output, port, service, product_label)
-        if script_id == "vulscan":
+        if script_id == "vulscan" or script_id in _INFORMATIONAL_SCRIPTS:
             return []
         if re.search(r"(?m)^\s*VULNERABLE:\s*$", output):
             return NmapAdapter._parse_vulnerable_blocks(script_id, output, port, service)
         if any(marker in output for marker in _NOT_VULNERABLE):
             return []
         cves = sorted({c.upper() for c in _CVE_RE.findall(output)})
+        possible = _POSSIBLE.search(output)
+        if possible:
+            # e.g. http-csrf "Found the following possible CSRF vulnerabilities": to be confirmed manually
+            what = possible.group(2).strip().rstrip(".")
+            return [{
+                "rule_id": f"nmap:{script_id}",
+                "title": f"Possible {what} ({script_id})",
+                "severity": (VulnSeverity.MEDIUM if "xss" in script_id.lower() else VulnSeverity.LOW).value,
+                "cvss": None,
+                "cve_id": cves[0] if cves else None,
+                "cve_ids": cves,
+                "description": f"Script Nmap {script_id} (à confirmer manuellement) :\n{output.strip()}",
+                "remediation": "",
+                "port": port,
+                "service": service,
+                "evidence": [],
+            }]
+        if not cves and _NOTHING_FOUND.search(output):
+            return []
         return [{
             "rule_id": f"nmap:{script_id}",
             "title": f"Résultat du script Nmap {script_id}",
