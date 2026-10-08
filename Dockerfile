@@ -26,13 +26,23 @@ RUN wget https://github.com/zaproxy/zaproxy/releases/download/v2.17.0/ZAP_2.17.0
     && rm ZAP_2.17.0_Linux.tar.gz \
     && ln -s /opt/zaproxy/zap.sh /usr/local/bin/zap
 
-# Get latest Nuclei directly from official image
-COPY --from=projectdiscovery/nuclei:latest /usr/local/bin/nuclei /usr/local/bin/nuclei
-RUN nuclei -ut || true
+# Nuclei, pinned to a fixed release (was COPY from projectdiscovery/nuclei:latest).
+# Pin NUCLEI_SHA256 to the checksum from the release's checksums.txt before production (see REVUE_SCANNER.md R13).
+ENV NUCLEI_VERSION=3.11.1
+RUN wget -q "https://github.com/projectdiscovery/nuclei/releases/download/v${NUCLEI_VERSION}/nuclei_${NUCLEI_VERSION}_linux_amd64.zip" -O /tmp/nuclei.zip \
+    && unzip -o /tmp/nuclei.zip nuclei -d /usr/local/bin/ \
+    && rm /tmp/nuclei.zip && chmod +x /usr/local/bin/nuclei
+# Download templates; fail the build if too few are present (was `|| true`, which hid failures)
+RUN nuclei -duc -ut \
+    && test "$(find /root/nuclei-templates -name '*.yaml' | wc -l)" -ge 100
 
-# Install Nmap vulners and vulscan scripts
-RUN wget https://raw.githubusercontent.com/vulnersCom/nmap-vulners/master/vulners.nse -O /usr/share/nmap/scripts/vulners.nse \
-    && git clone https://github.com/scipag/vulscan.git /usr/share/nmap/scripts/vulscan \
+# Nmap vulners script. Pinned to a tag rather than the moving master branch.
+# vulscan is intentionally NOT installed: it matches on product names only and floods reports (R13).
+# Before production: pin VULNERS_REF to a commit and verify a SHA256 (see REVUE_SCANNER.md R13).
+ENV VULNERS_REF=1.9
+RUN wget -q "https://raw.githubusercontent.com/vulnersCom/nmap-vulners/${VULNERS_REF}/vulners.nse" \
+      -O /usr/share/nmap/scripts/vulners.nse \
+    && test -s /usr/share/nmap/scripts/vulners.nse \
     && nmap --script-updatedb
 
 # Install python dependencies
