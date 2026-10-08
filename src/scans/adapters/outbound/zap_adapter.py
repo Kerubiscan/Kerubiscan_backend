@@ -133,11 +133,18 @@ class ZAPAdapter:
             ZAPAdapter._api(zap_url, api_key, "/JSON/spider/action/setOptionMaxDuration/", Integer=spider_minutes)
             ZAPAdapter._api(zap_url, api_key, "/JSON/ascan/action/setOptionMaxScanDurationInMins/", Integer=ascan_minutes)
             if basic_auth_b64:
-                # Added via the local API (goes over localhost HTTP, not the process cmdline)
-                ZAPAdapter._api(zap_url, api_key, "/JSON/replacer/action/addRule/",
-                                description="auth1", enabled="true", matchType="REQ_HEADER",
-                                matchString="Authorization", replacement=f"Basic {basic_auth_b64}")
-                logger.info("ZAP: authenticated scan enabled (HTTP Basic)")
+                # Added via the local API (goes over localhost HTTP, not the process cmdline).
+                # matchRegex is required by the replacer addRule endpoint; without it the call errors
+                # and would fail the whole authenticated scan.
+                try:
+                    ZAPAdapter._api(zap_url, api_key, "/JSON/replacer/action/addRule/",
+                                    description="auth1", enabled="true", matchType="REQ_HEADER",
+                                    matchString="Authorization", matchRegex="false",
+                                    replacement=f"Basic {basic_auth_b64}")
+                    logger.info("ZAP: authenticated scan enabled (HTTP Basic)")
+                except ScanError as e:
+                    # Degrade gracefully: scan unauthenticated rather than fail entirely
+                    logger.error(f"ZAP: could not set authentication, scanning unauthenticated: {e}")
             logger.info("ZAP daemon ready")
 
             reached = []

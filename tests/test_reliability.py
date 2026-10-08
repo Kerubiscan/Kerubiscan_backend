@@ -418,3 +418,16 @@ def test_openvas_refuses_scan_when_feed_not_ready(db, company, gvm):
         assert "Feed NVT" in scan.target_meta["10.0.0.5"]["detail"]
     finally:
         FakeGVM.feed_ok = (True, "Feed NVT 20261001")
+
+
+def test_feed_check_is_fail_open_on_read_error():
+    """A feed-check incompatibility must never block scanning (it only blocks when it is sure)."""
+    from src.scans.adapters.outbound.gvm_adapter import GVMAdapter
+
+    class Gmp:
+        def get_feeds(self):
+            raise RuntimeError("get_feeds unsupported by this image")
+    a = GVMAdapter.__new__(GVMAdapter)
+    a.gmp = Gmp()
+    ok, detail = a.check_feeds()
+    assert ok is True and "indéterminé" in detail

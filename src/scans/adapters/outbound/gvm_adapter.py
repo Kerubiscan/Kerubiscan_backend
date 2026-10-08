@@ -125,27 +125,40 @@ class GVMAdapter(ScanEnginePort):
             return False
 
     def check_feeds(self) -> tuple:
-        """(ok, detail). OpenVAS finds nothing without its NVT feed; refuse the scan if it is
-        missing or still syncing, with a clear reason."""
+        """(ok, detail). OpenVAS finds nothing without its NVT feed.
+
+        Fail-OPEN by design: this check must never block scanning because of its own incompatibility
+        with a given OpenVAS image. It returns False (block) only when it positively reads that the
+        NVT feed is still syncing or is absent while other feeds are present. Any other situation
+        (read error, unexpected structure, no feed returned) proceeds with a warning.
+        """
         if not self.gmp:
             raise Exception("Not connected to GVM")
         try:
             response = self.gmp.get_feeds()
-        except GvmError as e:
-            return False, f"Impossible de lire l'état du feed OpenVAS : {e}"
-        feeds = {}
-        for feed in response.xpath("//feed"):
-            ftype = feed.findtext("type") or "?"
-            feeds[ftype] = {
-                "version": feed.findtext("version") or "",
-                "syncing": bool(feed.xpath("currently_syncing")),
-            }
+            feeds = {}
+            for feed in response.xpath("//feed"):
+                ftype = (feed.findtext("type") or "").upper()
+                if ftype:
+                    feeds[ftype] = {
+                        "version": feed.findtext("version") or "",
+                        "syncing": bool(feed.xpath("currently_syncing")),
+                    }
+        except Exception as e:
+            logger.warning(f"Could not read OpenVAS feed status, proceeding anyway: {e}")
+            return True, "état du feed indéterminé (vérification ignorée)"
+
         nvt = feeds.get("NVT")
-        if not nvt or not nvt["version"]:
-            return False, "Feed NVT OpenVAS absent : la synchronisation n'est pas terminée"
-        if nvt["syncing"]:
+        if nvt and nvt["syncing"]:
             return False, "Feed OpenVAS en cours de synchronisation : réessayez plus tard"
-        return True, f"Feed NVT {nvt['version']}"
+        if nvt and nvt["version"]:
+            return True, f"Feed NVT {nvt['version']}"
+        if feeds and nvt is None:
+            # Other feeds present but no NVT one: the NVT feed is genuinely missing
+            return False, "Feed NVT OpenVAS absent : la synchronisation n'est pas terminée"
+        # Could not interpret the feeds (unknown structure / none returned): do not block
+        logger.warning(f"OpenVAS feed status inconclusive ({list(feeds)}), proceeding anyway")
+        return True, "état du feed indéterminé (vérification ignorée)"
 
     def get_task_creation_time(self, task_id: str) -> Optional[str]:
         """ISO creation time of a GVM task, to bound its follow-up when started_at is unknown."""
