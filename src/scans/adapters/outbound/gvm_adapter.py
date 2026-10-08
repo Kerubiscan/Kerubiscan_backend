@@ -124,6 +124,29 @@ class GVMAdapter(ScanEnginePort):
             logger.warning(f"Could not stop OpenVAS task {task_id}: {e}")
             return False
 
+    def check_feeds(self) -> tuple:
+        """(ok, detail). OpenVAS finds nothing without its NVT feed; refuse the scan if it is
+        missing or still syncing, with a clear reason."""
+        if not self.gmp:
+            raise Exception("Not connected to GVM")
+        try:
+            response = self.gmp.get_feeds()
+        except GvmError as e:
+            return False, f"Impossible de lire l'état du feed OpenVAS : {e}"
+        feeds = {}
+        for feed in response.xpath("//feed"):
+            ftype = feed.findtext("type") or "?"
+            feeds[ftype] = {
+                "version": feed.findtext("version") or "",
+                "syncing": bool(feed.xpath("currently_syncing")),
+            }
+        nvt = feeds.get("NVT")
+        if not nvt or not nvt["version"]:
+            return False, "Feed NVT OpenVAS absent : la synchronisation n'est pas terminée"
+        if nvt["syncing"]:
+            return False, "Feed OpenVAS en cours de synchronisation : réessayez plus tard"
+        return True, f"Feed NVT {nvt['version']}"
+
     def get_task_creation_time(self, task_id: str) -> Optional[str]:
         """ISO creation time of a GVM task, to bound its follow-up when started_at is unknown."""
         if not self.gmp:

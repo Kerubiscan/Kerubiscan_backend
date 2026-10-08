@@ -6,6 +6,7 @@ Each engine needs a different representation:
   * ZAP / Nuclei work on URLs and must keep the hostname (Host header, SNI, virtual hosts).
 """
 import ipaddress
+import os
 import re
 from dataclasses import dataclass
 from typing import Iterable, List, Optional
@@ -150,7 +151,46 @@ def split_targets(raw: str) -> List[str]:
     return list(dict.fromkeys(t for t in _SEPARATORS.split(raw or "") if t))
 
 
-def validate_targets(raw: str) -> List[ScanTarget]:
+class TargetNotAllowedError(InvalidTargetError):
+    """Target outside the SCAN_ALLOWED_TARGETS perimeter (recette safety guard)."""
+
+
+def _allowed_rules() -> List[str]:
+    return [r.strip().lower() for r in (os.getenv("SCAN_ALLOWED_TARGETS") or "").replace(",", " ").split() if r.strip()]
+
+
+def _matches_rule(target: ScanTarget, rule: str) -> bool:
+    # Domain rule, with optional subdomain wildcard: "*.example.com" or "example.com"
+    if rule.startswith("*."):
+        base = rule[2:]
+        if target.kind == "hostname":
+            return target.host == base or target.host.endswith("." + base)
+        return False
+    try:
+        allowed_net = ipaddress.ip_network(rule, strict=False)
+    except ValueError:
+        # Plain hostname rule
+        return target.kind == "hostname" and target.host == rule
+    if target.kind == "hostname":
+        return False
+    try:
+        return ipaddress.ip_network(target.host, strict=False).subnet_of(allowed_net)
+    except TypeError:
+        return False  # IPv4 vs IPv6 mismatch
+
+
+def check_allowed(targets: List[ScanTarget]) -> None:
+    """Raises TargetNotAllowedError if a target is outside SCAN_ALLOWED_TARGETS (when that is set)."""
+    rules = _allowed_rules()
+    if not rules:
+        return
+    refused = [t.raw for t in targets if not any(_matches_rule(t, r) for r in rules)]
+    if refused:
+        raise TargetNotAllowedError(
+            "Cible(s) hors du périmètre autorisé (SCAN_ALLOWED_TARGETS) : " + ", ".join(refused))
+
+
+def validate_targets(raw: str, enforce_perimeter: bool = True) -> List[ScanTarget]:
     targets = split_targets(raw)
     if not targets:
         raise InvalidTargetError("Aucune cible fournie")
@@ -162,6 +202,8 @@ def validate_targets(raw: str) -> List[ScanTarget]:
             errors.append(str(e))
     if errors:
         raise InvalidTargetError("; ".join(errors))
+    if enforce_perimeter:
+        check_allowed(parsed)
     return parsed
 
 

@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from src.core.database import get_db
 from src.companies.domain.entities import CompanyEntity
 from src.scans.domain.entities import ScanEntity, ScanType, ScanStatus, ScannerEngine
-from src.scans.domain.targets import InvalidTargetError, validate_targets, split_targets
+from src.scans.domain.targets import InvalidTargetError, TargetNotAllowedError, validate_targets, split_targets
 from src.assets.domain.entities import AssetEntity
 from src.auth.adapters.inbound.api.dependencies import require_permissions
 from src.auth.domain.entities import Permission
@@ -132,9 +132,13 @@ def _parse_scan_type(value: str) -> ScanType:
     return ScanType.DISCOVERY if key == "DISCOVERY" else ScanType.VULNERABILITY
 
 
-def _validate_scan_targets(raw: str, scan_type: ScanType) -> List[str]:
+def _validate_scan_targets(raw: str, scan_type: ScanType, user: dict = None) -> List[str]:
     try:
         parsed = validate_targets(raw)
+    except TargetNotAllowedError as e:
+        # Perimeter guard: refuse (403) and record the attempt in the audit log
+        logger.warning(f"Scan refused (outside perimeter) by {_username(user or {})}: {e}")
+        raise HTTPException(status_code=403, detail=str(e))
     except InvalidTargetError as e:
         raise HTTPException(status_code=400, detail=str(e))
     if scan_type == ScanType.DISCOVERY and any(t.is_url for t in parsed):
@@ -200,7 +204,7 @@ def create_scan(req: ScanCreateRequest, db: Session = Depends(get_db),
                 current_user: dict = Depends(require_permissions([Permission.SCAN_EXECUTE]))):
     s_type = _parse_scan_type(req.scan_type)
     s_engine = _parse_engine(req.scanner_engine)
-    targets = _validate_scan_targets(req.target, s_type)
+    targets = _validate_scan_targets(req.target, s_type, current_user)
 
     company = None
     if req.company_id:
@@ -315,7 +319,7 @@ def update_scan(scan_id: str, req: ScanUpdateRequest, db: Session = Depends(get_
     if req.name is not None:
         scan.name = req.name
     if req.target is not None:
-        scan.target = ",".join(_validate_scan_targets(req.target, scan.scan_type))
+        scan.target = ",".join(_validate_scan_targets(req.target, scan.scan_type, current_user))
     if req.network_zone is not None:
         scan.network_zone = req.network_zone
     if req.scanner_engine is not None:
@@ -552,6 +556,8 @@ def resume_scan(scan_id: str, db: Session = Depends(get_db),
         raise HTTPException(status_code=404, detail="Scan not found")
     if scan.status != ScanStatus.PAUSED:
         raise HTTPException(status_code=400, detail=f"Cannot resume scan in state {scan.status.name}")
+    # The perimeter may have changed since creation: re-check before re-queueing (R18)
+    _validate_scan_targets(scan.target, scan.scan_type, current_user)
 
     scan.status = ScanStatus.IN_PROGRESS
     targets_to_requeue = []

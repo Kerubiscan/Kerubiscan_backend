@@ -6,7 +6,7 @@ from src.core.database import SessionLocal
 from src.scheduling.domain.entities import ScheduleEntity
 from src.scans.domain.entities import ScanEntity, ScanType, ScanStatus, ScannerEngine
 from src.scans.application.services.tasks import run_discovery_scan, run_vulnerability_scan
-from src.scans.domain.targets import split_targets
+from src.scans.domain.targets import split_targets, validate_targets, InvalidTargetError
 from src.notifications.application.services.smtp import send_alert_email
 
 logger = logging.getLogger(__name__)
@@ -54,6 +54,11 @@ def check_scheduled_scans():
                         logger.error(f"Schedule {sched.id}: unknown engine {sched.scanner_engine}, skipped")
                         continue
                     s_engine = ScannerEngine[engine_str]
+                    try:
+                        validate_targets(sched.target)  # enforces SCAN_ALLOWED_TARGETS too
+                    except InvalidTargetError as e:
+                        logger.error(f"Schedule {sched.id} skipped: {e}")
+                        continue
                     targets = split_targets(sched.target)
 
                     scan = ScanEntity(

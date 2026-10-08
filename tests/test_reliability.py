@@ -58,6 +58,11 @@ class FakeGVM:
     def disconnect(self):
         pass
 
+    feed_ok = (True, "Feed NVT 20261001")
+
+    def check_feeds(self):
+        return FakeGVM.feed_ok
+
     def create_target(self, name, hosts, port_range=None, **kw):
         FakeGVM.last_port_range = port_range
         return "target-1"
@@ -401,3 +406,15 @@ def test_cleanup_task_exists_and_startup_no_longer_purges():
     main_src = (Path(__file__).resolve().parents[1] / "src" / "main.py").read_text(encoding="utf-8")
     assert "last_scan_raw_output = NULL" not in main_src         # purge removed from startup (R8)
     assert hasattr(watchdog, "cleanup_old_data")
+
+
+def test_openvas_refuses_scan_when_feed_not_ready(db, company, gvm):
+    FakeGVM.feed_ok = (False, "Feed NVT OpenVAS absent : la synchronisation n'est pas terminée")
+    try:
+        scan_id = _scan(db, company, "OPENVAS", {"10.0.0.5": "PENDING"})
+        assert scan_tasks.run_vulnerability_scan(scan_id, "10.0.0.5", "10.0.0.5", "cfg") is False
+        scan = _reload(db, scan_id)
+        assert scan.target_states["10.0.0.5"] == "FAILED"
+        assert "Feed NVT" in scan.target_meta["10.0.0.5"]["detail"]
+    finally:
+        FakeGVM.feed_ok = (True, "Feed NVT 20261001")

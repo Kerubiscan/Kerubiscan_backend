@@ -71,3 +71,24 @@ def test_web_urls_keep_the_domain_and_detect_cdn_ports():
     assert web_urls_from_ports("site.com", ports) == [
         "https://site.com", "http://site.com:8080", "http://site.com",
     ]
+
+
+def test_perimeter_guard(monkeypatch):
+    from src.scans.domain.targets import check_allowed, TargetNotAllowedError
+    monkeypatch.setenv("SCAN_ALLOWED_TARGETS", "10.0.0.0/24, *.lab.internal, scanme.example.com")
+    # allowed
+    check_allowed(validate_targets("10.0.0.5", enforce_perimeter=False))
+    check_allowed(validate_targets("10.0.0.0/28", enforce_perimeter=False))
+    check_allowed(validate_targets("app.lab.internal", enforce_perimeter=False))
+    check_allowed(validate_targets("https://app.lab.internal:8443/x", enforce_perimeter=False))
+    check_allowed(validate_targets("scanme.example.com", enforce_perimeter=False))
+    # refused
+    for bad in ["8.8.8.8", "10.0.1.5", "evil.com", "lab.internal.evil.com", "10.0.0.0/16"]:
+        with pytest.raises(TargetNotAllowedError):
+            check_allowed(validate_targets(bad, enforce_perimeter=False))
+
+
+def test_no_perimeter_means_everything_allowed(monkeypatch):
+    monkeypatch.delenv("SCAN_ALLOWED_TARGETS", raising=False)
+    from src.scans.domain.targets import check_allowed
+    check_allowed(validate_targets("8.8.8.8", enforce_perimeter=False))  # no raise

@@ -685,6 +685,12 @@ def _start_openvas(task, ctx: ScanContext, target: ScanTarget, target_raw: str, 
         update_scan_progress(ctx.scan_id, target_raw, progress.FAILED, detail="OpenVAS injoignable (connexion GVM impossible)")
         return False
     try:
+        feed_ok, feed_detail = adapter.check_feeds()
+        if not feed_ok:
+            logger.error(f"OpenVAS feed not ready for {target_raw}: {feed_detail}")
+            update_scan_progress(ctx.scan_id, target_raw, progress.FAILED, detail=f"OpenVAS : {feed_detail}")
+            return False
+        logger.info(f"OpenVAS feed ready ({feed_detail}) for {target_raw}")
         if ctx.credentials:
             logger.warning(f"OpenVAS: credentials are not passed to GVM yet, {target_raw} is scanned unauthenticated")
         target_id = adapter.create_target(f"Target_{asset_name}_{ctx.scan_id}", [target.host],
