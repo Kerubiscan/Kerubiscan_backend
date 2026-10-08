@@ -67,3 +67,16 @@ celery_app.autodiscover_tasks([
 
 # Import for its side effect: connects the worker shutdown handler (kills scanner children)
 import src.scans.application.services.worker_signals  # noqa: E402,F401
+
+# Register every ORM model in the worker, as src/main.py does for the API. Tasks only import some
+# of them, and SQLAlchemy then cannot resolve foreign keys such as scans.company_id -> companies
+# (NoReferencedTableError on the first query of a scan).
+import src.companies.domain.entities  # noqa: E402,F401
+import src.scans.domain.entities  # noqa: E402,F401
+import src.assets.domain.entities  # noqa: E402,F401
+import src.vulnerabilities.domain.entities  # noqa: E402,F401
+import src.policies.domain.entities  # noqa: E402,F401
+import src.scheduling.domain.entities  # noqa: E402,F401
+import src.reporting.domain.entities  # noqa: E402,F401
+import src.secrets.domain.entities  # noqa: E402,F401
+import src.audit.domain.models  # noqa: E402,F401

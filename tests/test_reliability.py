@@ -444,3 +444,28 @@ def test_nuclei_template_download_targets_the_templates_dir_without_duc(monkeypa
         nuclei_adapter.ensure_templates()
     assert calls and "-duc" not in calls[0]
     assert calls[0][-3:] == ["-ut", "-ud", str(tmp_path)]
+
+
+def test_worker_process_registers_every_model_for_foreign_keys(tmp_path):
+    # Seen on the test server: the worker only imported some models and every scan failed with
+    # NoReferencedTableError (scans.company_id -> companies). Must run in a fresh interpreter: the
+    # test session itself already imports every model.
+    import subprocess
+    from pathlib import Path
+    code = (
+        "import importlib\n"
+        "import src.core.celery_app\n"
+        "for m in ['src.scans.application.services.tasks', 'src.vulnerabilities.application.services.tasks',\n"
+        "          'src.scheduling.application.services.tasks', 'src.scans.application.services.watchdog']:\n"
+        "    importlib.import_module(m)\n"
+        "from src.core.database import Base\n"
+        "for t in Base.metadata.tables.values():\n"
+        "    for fk in t.foreign_keys:\n"
+        "        fk.column\n"
+        "print('OK')\n"
+    )
+    env = {**__import__("os").environ, "POSTGRES_URL": f"sqlite:///{(tmp_path / 'w.db').as_posix()}",
+           "REDIS_URL": "memory://"}
+    root = Path(__file__).resolve().parents[1]
+    res = subprocess.run([sys.executable, "-c", code], cwd=root, env=env, capture_output=True, text=True, timeout=120)
+    assert res.returncode == 0 and "OK" in res.stdout, res.stderr[-1500:]
