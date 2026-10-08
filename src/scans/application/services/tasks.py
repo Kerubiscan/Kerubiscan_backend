@@ -48,8 +48,11 @@ def update_nuclei_templates():
     """Background task to update Nuclei templates daily to ensure the latest CVEs are covered."""
     logger.info("Running daily Nuclei templates update...")
     import subprocess
+    from src.scans.adapters.outbound.nuclei_adapter import _templates_dir
     try:
-        result = subprocess.run(["/usr/local/bin/nuclei", "-ut"], capture_output=True, text=True, check=True)
+        # Same directory as the image build and the scans (NUCLEI_TEMPLATES_DIR)
+        result = subprocess.run(["/usr/local/bin/nuclei", "-ut", "-ud", _templates_dir()],
+                                capture_output=True, text=True, check=True, timeout=900)
         logger.info(f"Nuclei templates updated successfully: {result.stdout}")
     except subprocess.CalledProcessError as e:
         logger.error(f"Failed to update Nuclei templates: {e.stderr}")
