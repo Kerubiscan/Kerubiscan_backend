@@ -45,13 +45,12 @@ RUN mkdir -p "$NUCLEI_TEMPLATES_DIR" /root/.config/nuclei \
     && cp "$NUCLEI_TEMPLATES_DIR/.nuclei-ignore" /root/.config/nuclei/.nuclei-ignore \
     && test "$(find "$NUCLEI_TEMPLATES_DIR" -name '*.yaml' | wc -l)" -ge 100
 
-# Nmap vulners script. Pinned to a tag rather than the moving master branch.
+# Nmap vulners script: the one shipped with the distribution's nmap package. Its "ID  CVSS  URL"
+# output is what the parser reads. Do not download it from vulnersCom/nmap-vulners: the 2.x rewrite
+# (current master) prints a truncated table with the score first, so severities would be lost.
 # vulscan is intentionally NOT installed: it matches on product names only and floods reports (R13).
-# Before production: pin VULNERS_REF to a commit and verify a SHA256 (see REVUE_SCANNER.md R13).
-ENV VULNERS_REF=1.9
-RUN wget -q "https://raw.githubusercontent.com/vulnersCom/nmap-vulners/${VULNERS_REF}/vulners.nse" \
-      -O /usr/share/nmap/scripts/vulners.nse \
-    && test -s /usr/share/nmap/scripts/vulners.nse \
+RUN test -s /usr/share/nmap/scripts/vulners.nse \
+    && grep -q 'https://vulners.com/%s/%s' /usr/share/nmap/scripts/vulners.nse \
     && nmap --script-updatedb
 
 # Install python dependencies

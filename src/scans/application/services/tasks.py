@@ -62,14 +62,15 @@ def update_nuclei_templates():
 
 @celery_app.task(name="update_nmap_scripts")
 def update_nmap_scripts():
-    """Background task to update the Nmap vulners script."""
+    """Rebuilds the Nmap script database.
+
+    vulners.nse is NOT downloaded any more: it comes with the image's nmap package. The upstream
+    master (2.x) prints a different, truncated output that the parser cannot score. The vulnerability
+    data itself is queried live from vulners.com at scan time, so it stays current anyway.
+    """
     logger.info("Running Nmap scripts update...")
     import subprocess
     try:
-        subprocess.run(
-            ["wget", "https://raw.githubusercontent.com/vulnersCom/nmap-vulners/master/vulners.nse", "-O", "/usr/share/nmap/scripts/vulners.nse"],
-            capture_output=True, text=True, check=True
-        )
         subprocess.run(["nmap", "--script-updatedb"], capture_output=True, text=True, check=True)
         logger.info("Nmap scripts updated successfully")
     except subprocess.CalledProcessError as e:
