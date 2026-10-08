@@ -76,6 +76,9 @@ class FakeGVM:
     def get_task_report_id(self, task_id):
         return f"report-of-{task_id}"
 
+    def get_task_creation_time(self, task_id):
+        return None
+
     def get_report(self, report_id):
         return "<report/>"
 
@@ -271,3 +274,130 @@ def test_resuming_a_scan_whose_targets_all_finished_closes_it(db, company):
     scan_id = _scan(db, company, "NMAP", {"10.0.0.5": "COMPLETED", "10.0.0.6": "TIMEOUT"}, status=ScanStatus.PAUSED)
     response = endpoints.resume_scan(scan_id, db=db, current_user={"sub": "u", "preferred_username": "analyst"})
     assert response.status == "COMPLETED"                   # used to stay IN_PROGRESS forever
+
+
+# ----------------------------------------------------------------------------- stop / shutdown
+
+
+def test_stop_scan_revokes_tasks_and_stops_openvas(db, company, gvm, monkeypatch):
+    revoked = []
+    monkeypatch.setattr(scan_tasks.celery_app.control, "revoke", lambda tid, **kw: revoked.append((tid, kw)))
+    scan_id = _scan(db, company, "OPENVAS", {"10.0.0.5": "IN_PROGRESS", "10.0.0.6": "COMPLETED"},
+                    meta={"10.0.0.5": {"celery_task": "celery-1", "engine_task": "gvm-1"}})
+    FakeGVM.tasks["gvm-1"] = {"id": "gvm-1", "name": "x", "status": "Running", "progress": "20"}
+    n = scan_tasks.stop_scan_task(scan_id)
+    assert n == 1
+    assert revoked == [("celery-1", {"terminate": True, "signal": "SIGTERM"})]
+    assert FakeGVM.stopped == ["gvm-1"]
+    scan = _reload(db, scan_id)
+    assert scan.target_states == {"10.0.0.5": "INTERRUPTED", "10.0.0.6": "COMPLETED"}
+    assert "arrêté" in scan.target_meta["10.0.0.5"]["detail"]
+
+
+def test_worker_shutdown_kills_registered_scanner_processes(monkeypatch):
+    from src.scans.adapters.outbound import base_adapter
+
+    class FakeProc:
+        def __init__(self): self.killed = False
+        def poll(self): return None if not self.killed else 0
+        def kill(self): self.killed = True
+        def wait(self, timeout=None): return 0
+
+    killed = []
+    monkeypatch.setattr(base_adapter.BaseScannerAdapter, "_kill", staticmethod(lambda p: (p.kill(), killed.append(p))))
+    base_adapter._RUNNING_PROCS.clear()
+    p1, p2 = FakeProc(), FakeProc()
+    base_adapter._register(p1)
+    base_adapter._register(p2)
+    assert base_adapter.kill_all_running() == 2
+    assert p1.killed and p2.killed
+    base_adapter._RUNNING_PROCS.clear()
+
+
+def test_scan_task_received_by_default_worker_is_redispatched(db, make_scan, fakes, monkeypatch):  # noqa: F811
+    sent = []
+    monkeypatch.setattr(scan_tasks.run_vulnerability_scan, "apply_async", lambda *a, **kw: sent.append(kw))
+
+    scan_id = make_scan("10.0.0.5", "NMAP")
+    scan_tasks.run_vulnerability_scan.push_request(hostname="default@host", id="t1")
+    try:
+        scan_tasks.run_vulnerability_scan.run(scan_id, "10.0.0.5", "10.0.0.5", "cfg")
+    finally:
+        scan_tasks.run_vulnerability_scan.pop_request()
+    assert sent and sent[0]["queue"] == "scans"
+
+
+# ----------------------------------------------------------------------------- discovery R5
+
+
+def test_discovery_sets_every_target_state(db, company, monkeypatch):
+    scan_id = _scan(db, company, "NMAP", {"192.168.3.0/24": "PENDING"})
+    db_scan = _reload(db, scan_id)
+    db_scan.scan_type = ScanType.DISCOVERY
+    db.commit()
+    scan_tasks._finish_discovery(scan_id, ScanStatus.COMPLETED, {"hosts_found": 3})
+    scan = _reload(db, scan_id)
+    assert scan.status == ScanStatus.COMPLETED
+    assert scan.target_states == {"192.168.3.0/24": "COMPLETED"}      # was left PENDING (R5)
+
+
+# ----------------------------------------------------------------------------- secrets never on the cmdline
+
+
+def test_nuclei_credentials_go_to_a_config_file_not_the_command_line(db, monkeypatch, tmp_path):
+    from src.scans.adapters.outbound import nuclei_adapter
+    captured = {}
+
+    def fake_run(cmd, timeout, err_file_path=None, env=None):
+        captured["cmd"] = cmd
+        import os as _os
+        cfg = [c for c in cmd if c.endswith(".yaml")]
+        captured["cfg"] = open(cfg[0]).read() if cfg else ""
+        open(err_file_path, "w").close()
+        out = cmd[cmd.index("-jle") + 1]
+        open(out, "w").close()
+        return 0, ""
+    monkeypatch.setattr(nuclei_adapter.NucleiAdapter, "run_process", staticmethod(fake_run))
+    monkeypatch.setattr(nuclei_adapter, "ensure_templates", lambda: 1000)
+    nuclei_adapter.NucleiAdapter.run_scan(["http://site"], credentials={"credential_type": "HTTP", "username": "u", "password": "s3cr3t"})
+    assert "s3cr3t" not in " ".join(captured["cmd"])            # never on the command line
+    assert "Basic" in captured["cfg"]                           # but used, via the 0600 config file
+
+
+def test_zap_credentials_are_set_via_the_api_not_the_command_line(monkeypatch):
+    from src.scans.adapters.outbound import zap_adapter
+    calls = []
+
+    class FakeProc:
+        pid = 1234
+        def poll(self): return None
+        def wait(self, timeout=None): return 0
+    monkeypatch.setattr(zap_adapter.subprocess, "Popen", lambda cmd, **kw: (calls.append(("cmd", cmd)), FakeProc())[1])
+    monkeypatch.setattr(zap_adapter, "_register", lambda p: None)
+    monkeypatch.setattr(zap_adapter, "_unregister", lambda p: None)
+
+    def fake_api(zap_url, api_key, path, **params):
+        calls.append((path, params))
+        if "version" in path:
+            return {"version": "2.15"}
+        if path.endswith("/scan/"):
+            return {"scan": "0"}
+        return {"status": "100", "alerts": []}
+    monkeypatch.setattr(zap_adapter.ZAPAdapter, "_api", staticmethod(fake_api))
+    monkeypatch.setattr(zap_adapter.ZAPAdapter, "_wait", staticmethod(lambda *a, **kw: True))
+    monkeypatch.setattr(zap_adapter.os, "killpg", lambda *a: None, raising=False)
+    zap_adapter.ZAPAdapter.run_scan(["http://site.com"], credentials={"credential_type": "HTTP", "username": "u", "password": "s3cr3t"})
+    cmd = next(c for tag, c in calls if tag == "cmd")
+    assert "s3cr3t" not in " ".join(cmd)                         # not on the command line
+    addrule = [p for path, p in calls if isinstance(path, str) and "addRule" in path]
+    assert addrule and "s3cr3t" not in str(addrule)             # set via API, as base64 only
+
+
+# ----------------------------------------------------------------------------- retention
+
+
+def test_cleanup_task_exists_and_startup_no_longer_purges():
+    from pathlib import Path
+    main_src = (Path(__file__).resolve().parents[1] / "src" / "main.py").read_text(encoding="utf-8")
+    assert "last_scan_raw_output = NULL" not in main_src         # purge removed from startup (R8)
+    assert hasattr(watchdog, "cleanup_old_data")

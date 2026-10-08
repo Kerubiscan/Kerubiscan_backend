@@ -65,24 +65,10 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"Database initialization error: {e}")
     
-    # Automatically clear useless bloat (raw outputs and old audit logs) on application start
-    from sqlalchemy import text
-    try:
-        with engine.begin() as conn:
-            # Clear 10-20MB Raw XML Blobs
-            conn.execute(text("UPDATE assets SET last_scan_raw_output = NULL WHERE last_scan_raw_output IS NOT NULL"))
-            
-            # Delete Audit Logs older than 30 days to prevent infinite table growth
-            conn.execute(text("DELETE FROM audit_logs WHERE timestamp < NOW() - INTERVAL '30 days'"))
+    # No data is purged at startup any more (R8): nulling last_scan_raw_output erased the raw scanner
+    # output needed for diagnosis, and deleting audit logs removed evidence. Retention is handled by
+    # the Celery Beat task `cleanup_old_data` (configurable), not on every API restart.
 
-            # Running scans are no longer paused here: the API restarting does not stop the Celery
-            # workers, and pausing then resuming re-queued targets that were still being scanned.
-            # Scans interrupted by a worker crash are re-delivered by Celery (acks_late).
-
-            print("Successfully cleared database bloat.")
-    except Exception as e:
-        print(f"Failed to clear database bloat: {e}")
-        
     yield
 
 app = FastAPI(

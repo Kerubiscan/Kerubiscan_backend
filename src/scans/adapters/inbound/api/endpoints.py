@@ -579,3 +579,24 @@ def resume_scan(scan_id: str, db: Session = Depends(get_db),
     if targets_to_requeue:
         _queue_scan(scan, targets_to_requeue if scan.scan_type != ScanType.DISCOVERY else split_targets(scan.target))
     return _to_response(scan)
+
+
+@router.put("/{scan_id}/stop", response_model=ScanResponse)
+def stop_scan(scan_id: str, db: Session = Depends(get_db),
+              current_user: dict = Depends(require_permissions([Permission.SCAN_EXECUTE]))):
+    """Stops a running scan: revokes its Celery tasks, stops its OpenVAS tasks and kills the scanner
+    processes; non-finished targets become INTERRUPTED (partial results kept)."""
+    scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
+    if not scan or scan.is_deleted:
+        raise HTTPException(status_code=404, detail="Scan not found")
+    if scan.status not in (ScanStatus.IN_PROGRESS, ScanStatus.PENDING, ScanStatus.PAUSED):
+        raise HTTPException(status_code=400, detail=f"Cannot stop scan in state {scan.status.name}")
+
+    db.add(AuditLog(user_id=_user_id(current_user), username=_username(current_user), action="STOP",
+                    resource_type="SCAN", resource_id=str(scan.id), details={"previous_status": scan.status.name}))
+    db.commit()
+
+    from src.scans.application.services.tasks import stop_scan_task
+    stop_scan_task.delay(scan_id)
+    db.refresh(scan)
+    return _to_response(scan)

@@ -51,6 +51,11 @@ celery_app.conf.beat_schedule = {
         'task': 'scan_watchdog',
         'schedule': crontab(minute='*/10'),
     },
+    # Data retention (replaces the former purge on every API restart)
+    'cleanup-old-data-daily': {
+        'task': 'cleanup_old_data',
+        'schedule': crontab(hour=3, minute=30),
+    },
 }
 
 celery_app.autodiscover_tasks([
@@ -59,3 +64,6 @@ celery_app.autodiscover_tasks([
     'src.scheduling.application.services.tasks',
     'src.scans.application.services.watchdog',
 ])
+
+# Import for its side effect: connects the worker shutdown handler (kills scanner children)
+import src.scans.application.services.worker_signals  # noqa: E402,F401

@@ -1,11 +1,38 @@
 import os
 import signal
 import subprocess
+import threading
 import logging
 from dataclasses import dataclass
 from typing import List, Optional, Tuple, Dict, Any
 
 logger = logging.getLogger(__name__)
+
+# Scanner processes started in their own session survive the worker's death (start_new_session).
+# They are registered here so the worker's shutdown handler (worker_signals.py) can kill them
+# instead of leaving orphaned nmap/nuclei/java scanning for hours.
+_RUNNING_LOCK = threading.Lock()
+_RUNNING_PROCS: "set[subprocess.Popen]" = set()
+
+
+def _register(proc: subprocess.Popen) -> None:
+    with _RUNNING_LOCK:
+        _RUNNING_PROCS.add(proc)
+
+
+def _unregister(proc: subprocess.Popen) -> None:
+    with _RUNNING_LOCK:
+        _RUNNING_PROCS.discard(proc)
+
+
+def kill_all_running() -> int:
+    """Kills every registered scanner process. Called on worker shutdown."""
+    with _RUNNING_LOCK:
+        procs = list(_RUNNING_PROCS)
+    for proc in procs:
+        if proc.poll() is None:
+            BaseScannerAdapter._kill(proc)
+    return len(procs)
 
 class ScanError(RuntimeError):
     pass
@@ -69,14 +96,14 @@ class BaseScannerAdapter:
             
         with open(err_file_path, "w") as err:
             proc = subprocess.Popen(
-                cmd, 
+                cmd,
                 stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL, 
+                stdout=subprocess.DEVNULL,
                 stderr=err,
-                env=env or os.environ.copy(), 
+                env=env or os.environ.copy(),
                 start_new_session=True
             )
-            
+            _register(proc)
             try:
                 proc.wait(timeout=timeout)
             except subprocess.TimeoutExpired:
@@ -84,10 +111,12 @@ class BaseScannerAdapter:
                 BaseScannerAdapter._kill(proc)
                 raise ScanTimeout(f"Scan timed out after {timeout} seconds.")
             except BaseException:
-                # e.g. Celery SoftTimeLimitExceeded: the scanner must not keep running orphaned
+                # e.g. Celery SoftTimeLimitExceeded / worker shutdown: never leave the scanner orphaned
                 BaseScannerAdapter._kill(proc)
                 raise
-                
+            finally:
+                _unregister(proc)
+
         with open(err_file_path, "r", encoding="utf-8", errors="replace") as f:
             stderr_tail = f.read()[-500:]
             

@@ -1,3 +1,4 @@
+import os
 import logging
 import socket
 import time
@@ -30,6 +31,10 @@ DISCOVERY_CONFIG_ID = "2d3f051c-55ba-11e3-bf43-406186ea4fc5"
 # scans last for days and never complete.
 DEFAULT_GVM_PORT_RANGE = "T:1-65535,U:53,67-69,123,137-138,161-162,500,514,520,623,1900,4500,5353"
 OPENVAS_MAX_DURATION_S = 72 * 3600
+# A running task stuck at the same progress for this long is stopped (configurable)
+OPENVAS_STALL_S = int(os.getenv("OPENVAS_STALL_HOURS", "4")) * 3600
+# Bounds the follow-up when GVM is unreachable (30 min at 60 s/retry), so it does not loop forever
+POLL_MAX_CONNECT_RETRIES = 30
 OPENVAS_WAITING_STATUSES = {"New", "Requested", "Queued"}
 # Below the Celery hard limit (24 h): the target is closed with a reason instead of the worker being killed
 SCAN_SOFT_TIME_LIMIT_S = 23 * 3600
@@ -152,10 +157,16 @@ def run_discovery_scan(self, scan_id: str, target: str, network_zone: str, compa
 def _finish_discovery(scan_id: str, status: ScanStatus, details: dict):
     db = SessionLocal()
     try:
-        scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
+        scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).with_for_update().first()
         if scan:
             scan.status = status
             scan.progress = 100
+            # Every target state must be terminal too, otherwise the scan showed COMPLETED while its
+            # target still said PENDING (R5)
+            terminal = progress.COMPLETED if status == ScanStatus.COMPLETED else progress.FAILED
+            scan.target_states = {t: terminal for t in (scan.target_states or {})}
+            from sqlalchemy.orm.attributes import flag_modified
+            flag_modified(scan, "target_states")
             _audit(db, "SCAN_COMPLETED" if status == ScanStatus.COMPLETED else "SCAN_FAILED", scan_id,
                    {"status": status.name, **details})
             db.commit()
@@ -593,6 +604,13 @@ def _reason(e: BaseException) -> str:
 def run_vulnerability_scan(self, scan_id: str, asset_ip: str, asset_name: str, config_id: str):
     """Scans one target of a scan. `asset_ip` is the target as typed by the user (IP, CIDR, domain or URL)."""
     target_raw = asset_ip
+    # A scan task must run on the dedicated 'scans' worker. If Redis redelivered it to the default
+    # worker (short tasks), re-dispatch it instead of blocking that worker for hours.
+    hostname = getattr(self.request, "hostname", "") or ""
+    if hostname.startswith("default@"):
+        logger.warning(f"Scan task for {target_raw} received by {hostname}; re-dispatching to the scans queue")
+        run_vulnerability_scan.apply_async(args=[scan_id, asset_ip, asset_name, config_id], queue="scans")
+        return True
     logger.info(f"Starting vulnerability scan {scan_id} on {target_raw}")
     try:
         target = parse_target(target_raw)
@@ -604,6 +622,9 @@ def run_vulnerability_scan(self, scan_id: str, asset_ip: str, asset_name: str, c
     ctx = _load_context(scan_id, target_raw, target)
     if ctx is None:
         return True
+
+    # Record the Celery task id so "Stop scan" can revoke this running task
+    progress.heartbeat(scan_id, target_raw, celery_task=self.request.id)
 
     if target.is_hostname and not _resolve_dns(target.host):
         logger.error(f"Scan {scan_id}: DNS resolution failed for {target.host}")
@@ -696,11 +717,17 @@ def _scan_follow_up_state(scan_id: str) -> str:
 
 
 @celery_app.task(bind=True, max_retries=None)
-def poll_scan_status(self, scan_id: str, task_id: str, report_id: str, asset_ip: str, started_at: float = None):
+def poll_scan_status(self, scan_id: str, task_id: str, report_id: str, asset_ip: str, started_at: float = None,
+                     connect_failures: int = 0):
     from src.scans.adapters.outbound.gvm_adapter import GVMAdapter
+    base_kwargs = {"started_at": started_at}
     adapter = GVMAdapter()
     if not adapter.connect():
-        raise self.retry(countdown=60)
+        if connect_failures + 1 >= POLL_MAX_CONNECT_RETRIES:
+            update_scan_progress(scan_id, asset_ip, progress.FAILED,
+                                 detail=f"OpenVAS injoignable après {POLL_MAX_CONNECT_RETRIES} tentatives de suivi")
+            return False
+        raise self.retry(countdown=60, kwargs={**base_kwargs, "connect_failures": connect_failures + 1})
 
     try:
         follow_up = _scan_follow_up_state(scan_id)
@@ -714,7 +741,7 @@ def poll_scan_status(self, scan_id: str, task_id: str, report_id: str, asset_ip:
             return False
 
         status, progress_value = adapter.get_task_status_and_progress(task_id)
-        logger.info(f"OpenVAS task {task_id} ({asset_ip}): {status} {progress_value}%")
+        logger.info(f"Scan {scan_id} OpenVAS task {task_id} ({asset_ip}): {status} {progress_value}%")
 
         if status == "Done":
             parse_report(adapter, report_id, asset_ip, scan_id, progress.COMPLETED)
@@ -723,22 +750,56 @@ def poll_scan_status(self, scan_id: str, task_id: str, report_id: str, asset_ip:
             parse_report(adapter, report_id, asset_ip, scan_id, progress.INTERRUPTED,
                          detail=f"Tâche OpenVAS {status} : résultats partiels")
             return False
-        if started_at and time.time() - started_at > OPENVAS_MAX_DURATION_S:
+
+        # Total duration cap. started_at is absent from messages queued by the previous version:
+        # fall back to the GVM task creation time so the cap still applies.
+        if started_at is None:
+            created = _parse_iso_ts(adapter.get_task_creation_time(task_id))
+            started_at = created if created is not None else time.time()
+        elapsed = time.time() - started_at
+        if elapsed > OPENVAS_MAX_DURATION_S:
             logger.error(f"OpenVAS task {task_id} exceeded {OPENVAS_MAX_DURATION_S // 3600} h, stopping it")
             adapter.stop_task(task_id)
             parse_report(adapter, report_id, asset_ip, scan_id, progress.TIMEOUT,
                          detail=f"OpenVAS : durée maximale de {OPENVAS_MAX_DURATION_S // 3600} h dépassée (résultats partiels)")
             return False
+
+        # Stall detection: a task stuck at the same progress for too long is stopped
+        is_waiting = status in OPENVAS_WAITING_STATUSES
+        if not is_waiting:
+            stalled = progress.record_openvas_progress(scan_id, asset_ip, progress_value)
+            if stalled > OPENVAS_STALL_S:
+                logger.error(f"OpenVAS task {task_id} stuck at {progress_value}% for {int(stalled // 60)} min, stopping it")
+                adapter.stop_task(task_id)
+                parse_report(adapter, report_id, asset_ip, scan_id, progress.TIMEOUT,
+                             detail=f"OpenVAS : tâche figée à {progress_value}% pendant plus de {OPENVAS_STALL_S // 3600} h")
+                return False
+
         # Queued tasks are shown as such: a target waiting for a free OpenVAS slot is not "running"
-        progress.heartbeat(scan_id, asset_ip, progress.QUEUED if status in OPENVAS_WAITING_STATUSES else progress.IN_PROGRESS)
-        raise self.retry(countdown=30)
+        progress.heartbeat(scan_id, asset_ip, progress.QUEUED if is_waiting else progress.IN_PROGRESS)
+        # started_at now resolved; connect_failures reset to 0 since the connection worked
+        raise self.retry(countdown=30, kwargs={"started_at": started_at, "connect_failures": 0})
     except Retry:
         raise
     except Exception as e:
-        logger.error(f"Polling failed: {str(e)}")
-        raise self.retry(countdown=60)
+        logger.error(f"Scan {scan_id} OpenVAS polling failed for {asset_ip}: {e}")
+        if connect_failures + 1 >= POLL_MAX_CONNECT_RETRIES:
+            update_scan_progress(scan_id, asset_ip, progress.FAILED,
+                                 detail=f"Suivi OpenVAS impossible après {POLL_MAX_CONNECT_RETRIES} tentatives : {e}"[:300])
+            return False
+        raise self.retry(countdown=60, kwargs={**base_kwargs, "connect_failures": connect_failures + 1})
     finally:
         adapter.disconnect()
+
+
+def _parse_iso_ts(iso: Optional[str]) -> Optional[float]:
+    if not iso:
+        return None
+    try:
+        from datetime import datetime
+        return datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
 
 
 def parse_report(adapter, report_id: str, asset_ip: str, scan_id: str, final_state: str, detail: str = None):
@@ -748,6 +809,41 @@ def parse_report(adapter, report_id: str, asset_ip: str, scan_id: str, final_sta
 
 
 # --------------------------------------------------------------------------- AI
+
+@celery_app.task(name="stop_scan_task")
+def stop_scan_task(scan_id: str):
+    """Stops every non-finished target of a scan: revoke the Celery task, stop the OpenVAS task,
+    then mark the target INTERRUPTED (partial results, if any, are kept)."""
+    db = SessionLocal()
+    adapter = None
+    try:
+        scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
+        if not scan:
+            return 0
+        meta = scan.target_meta or {}
+        pending = [t for t, s in (scan.target_states or {}).items() if s not in progress.TERMINAL_STATES]
+    finally:
+        db.close()
+
+    for target in pending:
+        entry = meta.get(target) or {}
+        if entry.get("celery_task"):
+            # terminate=True kills the worker child running the scan; base_adapter then kills the scanner
+            celery_app.control.revoke(entry["celery_task"], terminate=True, signal="SIGTERM")
+        if entry.get("engine_task"):
+            if adapter is None:
+                from src.scans.adapters.outbound.gvm_adapter import GVMAdapter
+                adapter = GVMAdapter()
+                if not adapter.connect():
+                    adapter = None
+            if adapter is not None:
+                adapter.stop_task(entry["engine_task"])
+        update_scan_progress(scan_id, target, progress.INTERRUPTED, detail="Scan arrêté par un utilisateur")
+    if adapter is not None:
+        adapter.disconnect()
+    logger.info(f"Scan {scan_id} stopped: {len(pending)} target(s) interrupted")
+    return len(pending)
+
 
 @celery_app.task(name="generate_ai_summary_task", bind=True, max_retries=3, ignore_result=False)
 def generate_ai_summary_task(self, vuln_data: list, language: str = "French", extra_instructions: str = "", provider: str = None):

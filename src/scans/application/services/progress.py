@@ -58,7 +58,8 @@ def _locked_scan(db: Session, scan_id: str) -> Optional[ScanEntity]:
 
 
 def apply_target_state(db: Session, scan: ScanEntity, target: str, target_status: Optional[str] = None,
-                       detail: Optional[str] = None, engine_task: Optional[str] = None) -> None:
+                       detail: Optional[str] = None, engine_task: Optional[str] = None,
+                       celery_task: Optional[str] = None) -> None:
     """Updates state and metadata of one target on a scan loaded in `db` (caller commits)."""
     states = dict(scan.target_states or {})
     meta = dict(scan.target_meta or {})
@@ -77,6 +78,8 @@ def apply_target_state(db: Session, scan: ScanEntity, target: str, target_status
         entry["detail"] = detail[:500]
     if engine_task:
         entry["engine_task"] = engine_task
+    if celery_task:
+        entry["celery_task"] = celery_task
     meta[target] = entry
 
     scan.target_states = states
@@ -119,7 +122,8 @@ def update_scan_progress(scan_id: str, target: str, target_status: str, detail: 
         db.close()
 
 
-def heartbeat(scan_id: str, target: str, target_status: Optional[str] = None, engine_task: Optional[str] = None):
+def heartbeat(scan_id: str, target: str, target_status: Optional[str] = None, engine_task: Optional[str] = None,
+              celery_task: Optional[str] = None):
     """Records activity on a target (and optionally QUEUED/IN_PROGRESS) without ending it."""
     db: Session = SessionLocal()
     try:
@@ -129,10 +133,46 @@ def heartbeat(scan_id: str, target: str, target_status: Optional[str] = None, en
         current = (scan.target_states or {}).get(target)
         if current in TERMINAL_STATES:
             return  # never reopen a finished target
-        apply_target_state(db, scan, target, target_status, None, engine_task)
+        apply_target_state(db, scan, target, target_status, None, engine_task, celery_task)
         db.commit()
     finally:
         db.close()
+
+
+def record_openvas_progress(scan_id: str, target: str, value: int) -> float:
+    """Stores the OpenVAS progress and returns the seconds since it last changed (stall detection)."""
+    db: Session = SessionLocal()
+    try:
+        scan = _locked_scan(db, scan_id)
+        if not scan:
+            return 0.0
+        meta = dict(scan.target_meta or {})
+        entry = dict(meta.get(target) or {})
+        now = datetime.now(timezone.utc)
+        changed_at = _parse_iso(entry.get("ov_progress_at"))
+        if entry.get("ov_progress") != value or changed_at is None:
+            entry["ov_progress"] = value
+            entry["ov_progress_at"] = now.isoformat()
+            stalled = 0.0
+        else:
+            stalled = (now - changed_at).total_seconds()
+        meta[target] = entry
+        scan.target_meta = meta
+        flag_modified(scan, "target_meta")
+        db.commit()
+        return stalled
+    finally:
+        db.close()
+
+
+def _parse_iso(ts: Optional[str]) -> Optional[datetime]:
+    if not ts:
+        return None
+    try:
+        dt = datetime.fromisoformat(ts)
+    except ValueError:
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
 def recompute_status(scan: ScanEntity) -> None:

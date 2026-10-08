@@ -101,7 +101,12 @@ class NucleiAdapter(BaseScannerAdapter):
                 pwd = credentials.get("password", "")
                 if user or pwd:
                     b64_auth = base64.b64encode(f"{user}:{pwd}".encode("utf-8")).decode("utf-8")
-                    cmd.extend(["-H", f"Authorization: Basic {b64_auth}"])
+                    # The header goes in a 0600 config file, never on the command line (readable via ps)
+                    cfg_file = os.path.join(workdir, "nuclei-config.yaml")
+                    with open(cfg_file, "w", encoding="utf-8") as f:
+                        f.write(f'header:\n  - "Authorization: Basic {b64_auth}"\n')
+                    os.chmod(cfg_file, 0o600)
+                    cmd.extend(["-config", cfg_file])
                     logger.info("Nuclei: authenticated scan enabled (HTTP Basic)")
             elif credentials:
                 logger.warning(f"Nuclei: credential of type {c_type or 'UNKNOWN'} not usable by Nuclei, scan runs unauthenticated")

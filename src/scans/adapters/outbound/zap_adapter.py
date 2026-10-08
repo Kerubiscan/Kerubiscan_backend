@@ -14,7 +14,7 @@ import urllib3
 from html import unescape
 from typing import List, Dict, Union
 from urllib.parse import urlsplit
-from src.scans.adapters.outbound.base_adapter import ScanError
+from src.scans.adapters.outbound.base_adapter import ScanError, _register, _unregister
 from src.vulnerabilities.domain import severity as sev
 
 logger = logging.getLogger(__name__)
@@ -97,20 +97,13 @@ class ZAPAdapter:
                    "-port", str(free_port), "-config", f"api.key={api_key}"]
 
             c_type = str((credentials or {}).get("credential_type", "")).upper()
+            basic_auth_b64 = None
             if credentials and c_type in ("HTTP", "HTTP_BASIC"):
                 user = credentials.get("username", "")
                 pwd = credentials.get("password", "")
                 if user or pwd:
-                    b64_auth = base64.b64encode(f"{user}:{pwd}".encode("utf-8")).decode("utf-8")
-                    cmd.extend([
-                        "-config", "replacer.full_list(0).description=auth1",
-                        "-config", "replacer.full_list(0).enabled=true",
-                        "-config", "replacer.full_list(0).matchtype=REQ_HEADER",
-                        "-config", "replacer.full_list(0).matchstr=Authorization",
-                        "-config", "replacer.full_list(0).regex=false",
-                        "-config", f"replacer.full_list(0).replacement=Basic {b64_auth}"
-                    ])
-                    logger.info("ZAP: authenticated scan enabled (HTTP Basic)")
+                    # Kept for after startup: set via the local API, never on the command line (ps)
+                    basic_auth_b64 = base64.b64encode(f"{user}:{pwd}".encode("utf-8")).decode("utf-8")
             elif credentials:
                 logger.warning(f"ZAP: credential of type {c_type or 'UNKNOWN'} not usable by ZAP, scan runs unauthenticated")
 
@@ -122,6 +115,7 @@ class ZAPAdapter:
             log_handle = open(log_path, "w", encoding="utf-8", errors="replace")
             proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=log_handle, stderr=subprocess.STDOUT,
                                     env=env, start_new_session=True)
+            _register(proc)  # killed on worker shutdown like any scanner process
 
             zap_url = f"http://127.0.0.1:{free_port}"
             boot_deadline = time.time() + BOOT_TIMEOUT_S
@@ -138,6 +132,12 @@ class ZAPAdapter:
 
             ZAPAdapter._api(zap_url, api_key, "/JSON/spider/action/setOptionMaxDuration/", Integer=spider_minutes)
             ZAPAdapter._api(zap_url, api_key, "/JSON/ascan/action/setOptionMaxScanDurationInMins/", Integer=ascan_minutes)
+            if basic_auth_b64:
+                # Added via the local API (goes over localhost HTTP, not the process cmdline)
+                ZAPAdapter._api(zap_url, api_key, "/JSON/replacer/action/addRule/",
+                                description="auth1", enabled="true", matchType="REQ_HEADER",
+                                matchString="Authorization", replacement=f"Basic {basic_auth_b64}")
+                logger.info("ZAP: authenticated scan enabled (HTTP Basic)")
             logger.info("ZAP daemon ready")
 
             reached = []
@@ -182,11 +182,13 @@ class ZAPAdapter:
         except Exception as e:
             raise ScanError(f"ZAP scan failed: {e}") from e
         finally:
-            if proc and proc.poll() is None:
-                try:
-                    os.killpg(proc.pid, signal.SIGKILL)
-                except Exception:
-                    pass
+            if proc:
+                _unregister(proc)
+                if proc.poll() is None:
+                    try:
+                        os.killpg(proc.pid, signal.SIGKILL)
+                    except Exception:
+                        pass
             if log_handle:
                 log_handle.close()
             shutil.rmtree(zap_home_dir, ignore_errors=True)

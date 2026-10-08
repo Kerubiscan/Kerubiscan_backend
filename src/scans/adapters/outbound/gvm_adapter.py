@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, Optional
 from gvm.connections import TLSConnection, UnixSocketConnection
 from gvm.protocols.gmpv225 import Gmp
 from gvm.transforms import EtreeCheckCommandTransform
@@ -123,6 +123,13 @@ class GVMAdapter(ScanEnginePort):
         except GvmError as e:
             logger.warning(f"Could not stop OpenVAS task {task_id}: {e}")
             return False
+
+    def get_task_creation_time(self, task_id: str) -> Optional[str]:
+        """ISO creation time of a GVM task, to bound its follow-up when started_at is unknown."""
+        if not self.gmp:
+            raise Exception("Not connected to GVM")
+        times = self.gmp.get_task(task_id=task_id).xpath("//task/creation_time/text()")
+        return times[0] if times else None
 
     def get_task_report_id(self, task_id: str) -> str:
         """Report of the running (or last) execution of a task, to resume its follow-up."""

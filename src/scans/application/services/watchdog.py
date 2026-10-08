@@ -1,3 +1,4 @@
+import os
 """Watchdog: no scan target may stay "in progress" forever.
 
 Runs every 10 minutes (Celery Beat). For each target of a running scan, it looks at the last
@@ -170,6 +171,34 @@ def scan_watchdog():
             adapter.disconnect()
         db.close()
     return closed
+
+
+@celery_app.task(name="cleanup_old_data")
+def cleanup_old_data():
+    """Retention, replacing the former purge on every API restart (R8). Configurable.
+
+    AUDIT_RETENTION_DAYS (default 90, 0 = keep): deletes audit logs older than that.
+    RAW_OUTPUT_RETENTION_DAYS (default 30, 0 = keep): clears the heavy raw scanner output of assets
+    not scanned since then (the output stays available for recent scans, for diagnosis).
+    """
+    from sqlalchemy import text
+    audit_days = int(os.getenv("AUDIT_RETENTION_DAYS", "90"))
+    raw_days = int(os.getenv("RAW_OUTPUT_RETENTION_DAYS", "30"))
+    db = SessionLocal()
+    try:
+        if audit_days > 0:
+            db.execute(text("DELETE FROM audit_logs WHERE timestamp < NOW() - make_interval(days => :d)"), {"d": audit_days})
+        if raw_days > 0:
+            db.execute(text("UPDATE assets SET last_scan_raw_output = NULL "
+                            "WHERE last_scan_raw_output IS NOT NULL AND updated_at < NOW() - make_interval(days => :d)"),
+                       {"d": raw_days})
+        db.commit()
+        logger.info(f"Retention: audit logs > {audit_days} d deleted, raw outputs > {raw_days} d cleared")
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Retention task failed: {e}")
+    finally:
+        db.close()
 
 
 def _connect_openvas():
