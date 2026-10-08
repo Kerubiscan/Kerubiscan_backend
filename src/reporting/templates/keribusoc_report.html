@@ -120,6 +120,12 @@ table{margin:0!important}
  .button{box-shadow:none!important}
  .plugin-row:hover{background:#fff!important}
  a{text-decoration:none!important}
+ /* PDF and paper: every section expanded, interactive buttons hidden */
+ .vuln-table-wrapper{display:block!important}
+ tr[id^="id-vulndetail-"]{display:table-row!important}
+ .button,.expand,.expand-spacer{display:none!important}
+ .plugin-row{cursor:default!important}
+ tr,.table-wrapper h3{break-inside:avoid}
 }
 </style>
 </head>
@@ -269,7 +275,7 @@ table{margin:0!important}
                                     <div class="details-box">
                                         <div style="margin-bottom: 8px;">
                                             <strong>Description:</strong> 
-                                            <span style="color: #475569;">{{ v.description }}</span>
+                                            <span style="color: #475569; white-space: pre-line;">{{ v.description }}</span>
                                         </div>
                                         
                                         {% if v.ai_analysis %}
@@ -300,7 +306,7 @@ table{margin:0!important}
                                         {% else %}
                                         <div style="margin-bottom: 8px;">
                                             <strong style="color: #00963C;">Solution / Remediation:</strong> 
-                                            <span style="color: #00963C; font-weight: 600;">{{ v.remediation }}</span>
+                                            <span style="color: #00963C; font-weight: 600; white-space: pre-line;">{{ v.remediation }}</span>
                                         </div>
                                         {% endif %}
 

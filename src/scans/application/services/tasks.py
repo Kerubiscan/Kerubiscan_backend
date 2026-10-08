@@ -1,18 +1,47 @@
-from src.core.celery_app import celery_app
-from src.scans.adapters.outbound.gvm_adapter import GVMAdapter
+import os
 import logging
+import socket
+import time
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional, Tuple
+
 from lxml import etree
-from celery.exceptions import Retry
+from celery.exceptions import Retry, SoftTimeLimitExceeded
 from sqlalchemy.orm import Session
+
+from src.core.celery_app import celery_app
 from src.core.database import SessionLocal
 from src.scans.domain.entities import ScanEntity, ScanStatus, ScannerEngine
+from src.scans.domain.targets import (
+    ScanTarget, InvalidTargetError, parse_target, split_targets, build_url,
+    web_urls_from_ports, open_ports, is_web_service,
+)
+from src.scans.adapters.outbound.base_adapter import ScanError, ScanTimeout
+from src.scans.application.services import progress
+from src.scans.application.services.progress import update_scan_progress  # noqa: F401  (re-exported)
 from src.assets.domain.entities import AssetEntity
-from src.companies.domain.entities import CompanyEntity
 
 logger = logging.getLogger(__name__)
 
 # Standard OpenVAS Default Scanner ID
 DEFAULT_SCANNER_ID = "08b69003-5fc2-4037-a479-93b440211c73"
+# Fast GVM "Host Discovery" Config ID (purely host up/down detection)
+DISCOVERY_CONFIG_ID = "2d3f051c-55ba-11e3-bf43-406186ea4fc5"
+# All TCP ports plus the UDP services that matter. A full UDP sweep (U:1-65535) made OpenVAS
+# scans last for days and never complete.
+DEFAULT_GVM_PORT_RANGE = "T:1-65535,U:53,67-69,123,137-138,161-162,500,514,520,623,1900,4500,5353"
+OPENVAS_MAX_DURATION_S = 72 * 3600
+# A running task stuck at the same progress for this long is stopped (configurable)
+OPENVAS_STALL_S = int(os.getenv("OPENVAS_STALL_HOURS", "4")) * 3600
+# Bounds the follow-up when GVM is unreachable (30 min at 60 s/retry), so it does not loop forever
+POLL_MAX_CONNECT_RETRIES = 30
+OPENVAS_WAITING_STATUSES = {"New", "Requested", "Queued"}
+# Below the Celery hard limit (24 h): the target is closed with a reason instead of the worker being killed
+SCAN_SOFT_TIME_LIMIT_S = 23 * 3600
+WEB_PROBE_TIMEOUT_S = 15
+
+
+# --------------------------------------------------------------------------- maintenance tasks
 
 @celery_app.task(name="update_nuclei_templates")
 def update_nuclei_templates():
@@ -20,42 +49,31 @@ def update_nuclei_templates():
     logger.info("Running daily Nuclei templates update...")
     import subprocess
     try:
-        result = subprocess.run(
-            ["/usr/local/bin/nuclei", "-ut"],
-            capture_output=True, text=True, check=True
-        )
+        result = subprocess.run(["/usr/local/bin/nuclei", "-ut"], capture_output=True, text=True, check=True)
         logger.info(f"Nuclei templates updated successfully: {result.stdout}")
     except subprocess.CalledProcessError as e:
         logger.error(f"Failed to update Nuclei templates: {e.stderr}")
     except Exception as e:
         logger.error(f"Error during Nuclei template update: {str(e)}")
 
+
 @celery_app.task(name="update_nmap_scripts")
 def update_nmap_scripts():
-    """Background task to update Nmap vulners and vulscan databases."""
+    """Background task to update the Nmap vulners script."""
     logger.info("Running Nmap scripts update...")
     import subprocess
     try:
-        # Update vulners
         subprocess.run(
             ["wget", "https://raw.githubusercontent.com/vulnersCom/nmap-vulners/master/vulners.nse", "-O", "/usr/share/nmap/scripts/vulners.nse"],
             capture_output=True, text=True, check=True
         )
-        # Update vulscan
-        subprocess.run(
-            ["git", "-C", "/usr/share/nmap/scripts/vulscan", "pull"],
-            capture_output=True, text=True, check=True
-        )
-        # Update nmap script DB
-        subprocess.run(
-            ["nmap", "--script-updatedb"],
-            capture_output=True, text=True, check=True
-        )
+        subprocess.run(["nmap", "--script-updatedb"], capture_output=True, text=True, check=True)
         logger.info("Nmap scripts updated successfully")
     except subprocess.CalledProcessError as e:
         logger.error(f"Failed to update Nmap scripts: {e.stderr}")
     except Exception as e:
         logger.error(f"Error during Nmap scripts update: {str(e)}")
+
 
 @celery_app.task(name="update_zap_addons")
 def update_zap_addons():
@@ -63,884 +81,783 @@ def update_zap_addons():
     logger.info("Running ZAP add-ons update...")
     import subprocess
     try:
-        result = subprocess.run(
-            ["/opt/zaproxy/zap.sh", "-cmd", "-addonupdate"],
-            capture_output=True, text=True, check=True
-        )
+        result = subprocess.run(["/opt/zaproxy/zap.sh", "-cmd", "-addonupdate"], capture_output=True, text=True, check=True)
         logger.info(f"ZAP add-ons updated successfully: {result.stdout}")
     except subprocess.CalledProcessError as e:
         logger.error(f"Failed to update ZAP add-ons: {e.stderr}")
     except Exception as e:
         logger.error(f"Error during ZAP add-ons update: {str(e)}")
 
-def update_scan_progress(scan_id: str, ip: str, target_status: str):
-    db: Session = SessionLocal()
-    try:
-        scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
-        if scan and scan.target_states:
-            from sqlalchemy.orm.attributes import flag_modified
-            states = dict(scan.target_states)
-            states[ip] = target_status
-            scan.target_states = states
-            flag_modified(scan, "target_states")
-            
-            total = len(states)
-            completed = sum(1 for s in states.values() if s in ["COMPLETED", "FAILED", "ABANDONED"])
-            scan.progress = int((completed / total) * 100) if total > 0 else 100
-            
-            if completed == total:
-                scan.status = ScanStatus.COMPLETED
-                from src.audit.domain.models import AuditLog
-                db.add(AuditLog(user_id="system", username="celery_worker", action="SCAN_COMPLETED", resource_type="SCAN", resource_id=str(scan_id), details={"status": "COMPLETED"}))
-            db.commit()
-    finally:
-        db.close()
 
-# Fast GVM "Host Discovery" Config ID (purely host up/down detection)
-DISCOVERY_CONFIG_ID = "2d3f051c-55ba-11e3-bf43-406186ea4fc5"
+def _audit(db: Session, action: str, scan_id: str, details: dict):
+    from src.audit.domain.models import AuditLog
+    db.add(AuditLog(user_id="system", username="celery_worker", action=action, resource_type="SCAN",
+                    resource_id=str(scan_id), details=details))
+
+
+def _profile_for(targets: List[ScanTarget]) -> str:
+    """Aggressive timing only on internal networks; public targets get the 'internet' profile."""
+    return "lan" if targets and all(t.is_private for t in targets) else "internet"
+
+
+# --------------------------------------------------------------------------- discovery
 
 @celery_app.task(bind=True, name="run_discovery_scan")
 def run_discovery_scan(self, scan_id: str, target: str, network_zone: str, company_id: str):
-    logger.info(f"Starting OpenVAS discovery scan {scan_id} on target {target}")
+    logger.info(f"Starting discovery scan {scan_id} on target {target}")
     db: Session = SessionLocal()
-    from src.scans.domain.entities import ScannerEngine
-    scan_engine = ScannerEngine.NMAP # default
+    scan_engine = ScannerEngine.NMAP
     try:
         scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
         if not scan:
             return
-            
         if scan.status == ScanStatus.PAUSED:
             logger.info(f"Scan {scan_id} is PAUSED. Aborting discovery task.")
             return True
-            
         scan.status = ScanStatus.IN_PROGRESS
         scan_engine = scan.scanner_engine
         db.commit()
     finally:
         db.close()
-    
+
+    try:
+        parsed = [parse_target(t) for t in split_targets(target)]
+    except InvalidTargetError as e:
+        logger.error(f"Discovery scan {scan_id}: {e}")
+        _finish_discovery(scan_id, ScanStatus.FAILED, {"error": str(e)})
+        return False
+
     if scan_engine == ScannerEngine.NMAP:
-        try:
-            from src.scans.adapters.outbound.nmap_adapter import NmapAdapter
-            logger.info(f"Phase 1: Fast ping sweep on {target}")
-            hosts = NmapAdapter.run_discovery_scan(target)
-            
-            db = SessionLocal()
-            try:
-                # Phase 1: Save basic hosts
-                discovered_ips = []
-                for host_data in hosts:
-                    ip = host_data["ip"]
-                    discovered_ips.append(ip)
-                    existing_asset = db.query(AssetEntity).filter(
-                        AssetEntity.ip_address == ip, 
-                        AssetEntity.company_id == company_id,
-                        AssetEntity.is_deleted == False
-                    ).first()
-                    
-                    if not existing_asset:
-                        new_asset = AssetEntity(
-                            company_id=company_id,
-                            name=host_data["hostname"] or ip,
-                            ip_address=ip,
-                            asset_type="Unknown",
-                            network_zone=network_zone,
-                            mac_address=host_data.get("mac_address"),
-                            operating_system=host_data["os"],
-                            ports=host_data["ports"]
-                        )
-                        db.add(new_asset)
-                
-                scan_update = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
-                if scan_update:
-                    scan_update.progress = 50
-                db.commit()
-                
-                if discovered_ips:
-                    logger.info(f"Phase 2: Detailed scan on {len(discovered_ips)} discovered hosts one-by-one")
-                    total_hosts = len(discovered_ips)
-                    
-                    for index, ip in enumerate(discovered_ips, start=1):
-                        logger.info(f"Phase 2: Scanning host {index}/{total_hosts} ({ip})")
-                        detailed_hosts = NmapAdapter.run_detailed_discovery_scan(ip)
-                        
-                        if detailed_hosts:
-                            d_host = detailed_hosts[0]
-                            asset_to_update = db.query(AssetEntity).filter(
-                                AssetEntity.ip_address == d_host["ip"],
-                                AssetEntity.company_id == company_id,
-                                AssetEntity.is_deleted == False
-                            ).first()
-                            
-                            if asset_to_update:
-                                if d_host.get("hostname"):
-                                    asset_to_update.name = d_host["hostname"]
-                                if d_host.get("mac_address"):
-                                    asset_to_update.mac_address = d_host["mac_address"]
-                                if d_host.get("os") and d_host.get("os") != "Unknown":
-                                    asset_to_update.operating_system = d_host["os"]
-                                if d_host.get("ports"):
-                                    asset_to_update.ports = d_host["ports"]
-                                if d_host.get("services"):
-                                    asset_to_update.services = d_host["services"]
-                        
-                        # Update scan progress
-                        scan_update = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
-                        if scan_update:
-                            scan_update.progress = 50 + int(50 * (index / total_hosts))
-                        db.commit()
-                                
-                scan_update = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
-                if scan_update:
-                    scan_update.status = ScanStatus.COMPLETED
-                    from src.audit.domain.models import AuditLog
-                    db.add(AuditLog(user_id="system", username="celery_worker", action="SCAN_COMPLETED", resource_type="SCAN", resource_id=str(scan_id), details={"status": "COMPLETED"}))
-                    scan_update.progress = 100
-                db.commit()
-                logger.info(f"Nmap discovery scan {scan_id} completed successfully.")
-                return True
-            finally:
-                db.close()
-        except Exception as e:
-            logger.error(f"Nmap discovery failed: {str(e)}")
-            db = SessionLocal()
-            try:
-                scan_fail = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
-                if scan_fail:
-                    scan_fail.status = ScanStatus.FAILED
-                    from src.audit.domain.models import AuditLog
-                    db.add(AuditLog(user_id="system", username="celery_worker", action="SCAN_FAILED", resource_type="SCAN", resource_id=str(scan_id), details={"status": "FAILED"}))
-                    db.commit()
-            finally:
-                db.close()
-            raise e
-            
-    # Default to OpenVAS
+        return _run_nmap_discovery(scan_id, parsed, network_zone, company_id)
+
+    from src.scans.adapters.outbound.gvm_adapter import GVMAdapter
     adapter = GVMAdapter()
     if not adapter.connect():
         logger.error("Failed to connect to GVM")
-        self.retry(countdown=60)
-        return
-        
+        if self.request.retries < 10:
+            raise self.retry(countdown=60, max_retries=10)
+        _finish_discovery(scan_id, ScanStatus.FAILED, {"error": "OpenVAS injoignable"})
+        return False
+
     try:
-        # Create a target for the discovery scan (e.g., using a CIDR block)
-        target_id = adapter.create_target(f"Discovery_Target_{scan_id}", [target])
-        
-        # Create task using the Discovery config
-        task_id = adapter.create_task(
-            name=f"Discovery_Task_{scan_id}", 
-            target_id=target_id, 
-            scanner_id=DEFAULT_SCANNER_ID, 
-            config_id=DISCOVERY_CONFIG_ID
-        )
+        target_id = adapter.create_target(f"Discovery_Target_{scan_id}", [t.host for t in parsed])
+        task_id = adapter.create_task(name=f"Discovery_Task_{scan_id}", target_id=target_id,
+                                      scanner_id=DEFAULT_SCANNER_ID, config_id=DISCOVERY_CONFIG_ID)
         report_id = adapter.start_task(task_id)
-        
-        adapter.disconnect()
-        
-        # Poll the status asynchronously
         poll_discovery_scan_status.apply_async(args=[scan_id, task_id, report_id, network_zone, company_id], countdown=60)
         return True
-        
     except Exception as e:
         logger.error(f"Discovery scan initialization failed: {str(e)}")
+        _finish_discovery(scan_id, ScanStatus.FAILED, {"error": str(e)})
+        return False
+    finally:
         adapter.disconnect()
-        
-        db = SessionLocal()
-        try:
+
+
+def _finish_discovery(scan_id: str, status: ScanStatus, details: dict):
+    db = SessionLocal()
+    try:
+        scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).with_for_update().first()
+        if scan:
+            scan.status = status
+            scan.progress = 100
+            # Every target state must be terminal too, otherwise the scan showed COMPLETED while its
+            # target still said PENDING (R5)
+            terminal = progress.COMPLETED if status == ScanStatus.COMPLETED else progress.FAILED
+            scan.target_states = {t: terminal for t in (scan.target_states or {})}
+            from sqlalchemy.orm.attributes import flag_modified
+            flag_modified(scan, "target_states")
+            _audit(db, "SCAN_COMPLETED" if status == ScanStatus.COMPLETED else "SCAN_FAILED", scan_id,
+                   {"status": status.name, **details})
+            db.commit()
+    finally:
+        db.close()
+
+
+def _upsert_discovered_asset(db: Session, company_id: str, network_zone: str, host: Dict) -> AssetEntity:
+    asset = db.query(AssetEntity).filter(
+        AssetEntity.ip_address == host["ip"],
+        AssetEntity.company_id == company_id,
+        AssetEntity.is_deleted == False  # noqa: E712
+    ).first()
+    if not asset:
+        asset = AssetEntity(company_id=company_id, name=host.get("hostname") or host["ip"], ip_address=host["ip"],
+                            asset_type="Unknown", network_zone=network_zone, operating_system="Unknown")
+        db.add(asset)
+    if host.get("hostname"):
+        asset.name = host["hostname"]
+    if host.get("mac_address"):
+        asset.mac_address = host["mac_address"]
+    if host.get("os") and host["os"] != "Unknown":
+        asset.operating_system = host["os"]
+    if host.get("ports"):
+        asset.ports = host["ports"]
+    if host.get("services"):
+        asset.services = host["services"]
+    return asset
+
+
+def _run_nmap_discovery(scan_id: str, targets: List[ScanTarget], network_zone: str, company_id: str):
+    from src.scans.adapters.outbound.nmap_adapter import NmapAdapter
+    profile = _profile_for(targets)
+    try:
+        hosts = NmapAdapter.run_discovery_scan(",".join(t.host for t in targets), profile=profile)
+    except Exception as e:
+        logger.error(f"Nmap discovery failed: {e}")
+        _finish_discovery(scan_id, ScanStatus.FAILED, {"error": str(e)})
+        return False
+
+    db = SessionLocal()
+    try:
+        for host in hosts:
+            _upsert_discovered_asset(db, company_id, network_zone, host)
+        scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
+        if scan:
+            scan.progress = 50
+        db.commit()
+
+        failures = []
+        for index, host in enumerate(hosts, start=1):
+            logger.info(f"Discovery: detailed scan of host {index}/{len(hosts)} ({host['ip']})")
+            try:
+                detailed = NmapAdapter.run_detailed_discovery_scan(host["ip"], profile=profile)
+                if detailed:
+                    _upsert_discovered_asset(db, company_id, network_zone, detailed[0])
+            except Exception as e:
+                # One unreachable host must not lose the whole inventory
+                logger.error(f"Discovery: detailed scan failed for {host['ip']}: {e}")
+                failures.append(host["ip"])
             scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
             if scan:
-                scan.status = ScanStatus.FAILED
-                from src.audit.domain.models import AuditLog
-                db.add(AuditLog(user_id="system", username="celery_worker", action="SCAN_FAILED", resource_type="SCAN", resource_id=str(scan_id), details={"status": "FAILED"}))
-                db.commit()
-        finally:
-            db.close()
-        raise e
+                scan.progress = 50 + int(50 * (index / len(hosts)))
+            db.commit()
+    finally:
+        db.close()
+
+    status = ScanStatus.FAILED if hosts and len(failures) == len(hosts) else ScanStatus.COMPLETED
+    _finish_discovery(scan_id, status, {"hosts_found": len(hosts), "detailed_failures": failures})
+    logger.info(f"Nmap discovery scan {scan_id} finished: {len(hosts)} hosts, {len(failures)} detailed scan failures")
+    return status == ScanStatus.COMPLETED
+
 
 @celery_app.task(bind=True, max_retries=None)
 def poll_discovery_scan_status(self, scan_id: str, task_id: str, report_id: str, network_zone: str, company_id: str):
+    from src.scans.adapters.outbound.gvm_adapter import GVMAdapter
     adapter = GVMAdapter()
     if not adapter.connect():
-        self.retry(countdown=60)
-        return
-        
+        raise self.retry(countdown=60)
+
     try:
-        status, progress = adapter.get_task_status_and_progress(task_id)
-        
+        status, progress_value = adapter.get_task_status_and_progress(task_id)
         db = SessionLocal()
         try:
             scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
             if scan:
-                scan.progress = progress
+                scan.progress = max(progress_value, 0)
                 db.commit()
         finally:
             db.close()
 
         if status == "Done":
-            report_xml = adapter.get_report(report_id)
-            adapter.disconnect()
-            
-            # Send to discovery parser
-            parse_discovery_report.delay(report_xml, scan_id, network_zone, company_id)
+            parse_discovery_report.delay(adapter.get_report(report_id), scan_id, network_zone, company_id)
             return True
-            
-        elif status in ["Stopped", "Interrupted"]:
-            adapter.disconnect()
-            
-            db = SessionLocal()
-            try:
-                scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
-                if scan:
-                    scan.status = ScanStatus.FAILED
-                    from src.audit.domain.models import AuditLog
-                    db.add(AuditLog(user_id="system", username="celery_worker", action="SCAN_FAILED", resource_type="SCAN", resource_id=str(scan_id), details={"status": "FAILED"}))
-                    db.commit()
-            finally:
-                db.close()
+        if status in ["Stopped", "Interrupted"]:
+            _finish_discovery(scan_id, ScanStatus.FAILED, {"error": f"OpenVAS task {status}"})
             return False
-            
-        else:
-            adapter.disconnect()
-            self.retry(countdown=10)
-            
+        raise self.retry(countdown=10)
+    except Retry:
+        raise
     except Exception as e:
-        if isinstance(e, Retry):
-            raise
         logger.error(f"Discovery polling failed: {str(e)}")
+        raise self.retry(countdown=60)
+    finally:
         adapter.disconnect()
-        self.retry(countdown=60)
+
 
 @celery_app.task
 def parse_discovery_report(report_xml: str, scan_id: str, network_zone: str, company_id: str):
     logger.info(f"Parsing discovery report for Scan {scan_id}")
     db: Session = SessionLocal()
-    
     try:
-        root = etree.fromstring(report_xml.encode('utf-8'))
+        parser = etree.XMLParser(resolve_entities=False, no_network=True, huge_tree=True)
+        root = etree.fromstring(report_xml.encode('utf-8'), parser=parser)
         hosts_added = 0
-        
-        # Use XPath to find all <host> elements within the report
-        hosts = root.xpath("//report/report/host")
-        
-        for host in hosts:
+        for host in root.xpath("//report/report/host"):
             ip_elem = host.find('ip')
-            if ip_elem is not None and ip_elem.text:
-                ip_address = ip_elem.text.strip()
-                
-                # Attempt to get hostname from details
-                hostname = f"Discovered Host ({ip_address})"
-                
-                # Sometimes GVM provides hostname in a detail tag
-                hostname_details = host.xpath(".//detail[name='hostname']/value/text()")
-                if hostname_details:
-                    hostname = hostname_details[0].strip()
-                    
-                # Extract OS
-                os_val = "Unknown"
-                os_details = host.xpath(".//detail[name='Best OS']/value/text()")
-                if not os_details:
-                    os_details = host.xpath(".//detail[name='OS']/value/text()")
-                if os_details:
-                    os_val = os_details[0].strip()
-
-                # Extract Ports
-                host_ports = []
-                results_for_host = root.xpath(f"//result[host='{ip_address}']")
-                for r in results_for_host:
-                    port_elem = r.find('port')
-                    if port_elem is not None and port_elem.text:
-                        p_text = port_elem.text.strip()
-                        if p_text != "general/tcp" and p_text != "general/udp" and p_text not in host_ports:
-                            host_ports.append(p_text)
-                
-                ports_str = ", ".join(host_ports) if host_ports else None
-                    
-                new_asset = AssetEntity(
-                    company_id=company_id,
-                    name=hostname,
-                    ip_address=ip_address,
-                    asset_type="Unknown",
-                    network_zone=network_zone,
-                    operating_system=os_val,
-                    ports=ports_str
-                )
-                db.add(new_asset)
-                hosts_added += 1
-                    
-        scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
-        if scan:
-            scan.status = ScanStatus.COMPLETED
-            from src.audit.domain.models import AuditLog
-            db.add(AuditLog(user_id="system", username="celery_worker", action="SCAN_COMPLETED", resource_type="SCAN", resource_id=str(scan_id), details={"status": "COMPLETED"}))
-            scan.progress = 100
+            if ip_elem is None or not ip_elem.text:
+                continue
+            ip_address = ip_elem.text.strip()
+            hostname_details = host.xpath(".//detail[name='hostname']/value/text()")
+            os_details = host.xpath(".//detail[name='Best OS']/value/text()") or host.xpath(".//detail[name='OS']/value/text()")
+            _upsert_discovered_asset(db, company_id, network_zone, {
+                "ip": ip_address,
+                "hostname": hostname_details[0].strip() if hostname_details else None,
+                "os": os_details[0].strip() if os_details else None,
+            })
+            hosts_added += 1
         db.commit()
-        
-        logger.info(f"Discovery scan {scan_id} completed. Added {hosts_added} hosts.")
-        
+        _finish_discovery(scan_id, ScanStatus.COMPLETED, {"hosts_found": hosts_added})
+        logger.info(f"Discovery scan {scan_id} completed. {hosts_added} hosts.")
     except Exception as e:
         logger.error(f"Error parsing discovery report: {str(e)}")
         db.rollback()
-        scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
-        if scan:
-            scan.status = ScanStatus.FAILED
-            from src.audit.domain.models import AuditLog
-            db.add(AuditLog(user_id="system", username="celery_worker", action="SCAN_FAILED", resource_type="SCAN", resource_id=str(scan_id), details={"status": "FAILED"}))
-            db.commit()
-    finally:
-                    db.close()
-
-
-@celery_app.task(bind=True, max_retries=3, name="run_vulnerability_scan")
-def run_vulnerability_scan(self, scan_id: str, asset_ip: str, asset_name: str, config_id: str):
-    logger.info(f"Starting vulnerability scan for scan_id: {scan_id}, target: {asset_ip}")
-    db: Session = SessionLocal()
-    scan_engine = ScannerEngine.OPENVAS
-    policy = None
-    credential = None
-    vault_secret = {}
-    
-    try:
-        scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
-        if scan:
-            from sqlalchemy.orm.attributes import flag_modified
-            if scan.status == ScanStatus.PAUSED:
-                logger.info(f"Scan {scan_id} is PAUSED. Aborting task for {asset_ip}.")
-                current_states = dict(scan.target_states) if scan.target_states else {}
-                current_states[asset_ip] = "PENDING"
-                scan.target_states = current_states
-                flag_modified(scan, "target_states")
-                db.commit()
-                return True
-                
-            if not scan.target_states:
-                scan.target_states = {}
-                flag_modified(scan, "target_states")
-            
-            # Make a copy of target_states, update the current IP, and reassign so SQLAlchemy detects the change
-            current_states = dict(scan.target_states)
-            current_states[asset_ip] = "IN_PROGRESS"
-            scan.target_states = current_states
-            flag_modified(scan, "target_states")
-            
-            if scan.status != ScanStatus.IN_PROGRESS:
-                scan.status = ScanStatus.IN_PROGRESS
-            scan_engine = scan.scanner_engine
-            scan_company_id = scan.company_id
-            
-            from src.policies.domain.entities import PolicyEntity
-            from src.secrets.domain.entities import CredentialEntity
-            from src.assets.domain.entities import AssetEntity
-            from src.secrets.adapters.outbound.vault import VaultAdapter
-
-            # 1. Fetch policy (explicit policy_id OR automatic lookup for company_id)
-            if scan.policy_id:
-                policy = db.query(PolicyEntity).filter(PolicyEntity.id == scan.policy_id).first()
-            elif scan.company_id:
-                policy = db.query(PolicyEntity).filter(PolicyEntity.company_id == scan.company_id).first()
-                
-            # 2. Fetch credential (explicit credential_id OR automatic lookup for asset/company_id)
-            if scan.credential_id:
-                credential = db.query(CredentialEntity).filter(CredentialEntity.id == scan.credential_id).first()
-            elif scan.company_id:
-                asset = db.query(AssetEntity).filter(
-                    AssetEntity.ip_address == asset_ip,
-                    AssetEntity.company_id == scan.company_id,
-                    AssetEntity.is_deleted == False
-                ).first()
-                if asset:
-                    credential = db.query(CredentialEntity).filter(CredentialEntity.asset_id == asset.id).first()
-                    
-            if credential:
-                try:
-                    vault = VaultAdapter()
-                    vault_secret = vault.get_secret(credential.vault_path)
-                except Exception as ve:
-                    logger.warning(f"Could not fetch secret from Vault at {credential.vault_path}: {ve}")
-                    vault_secret = {}
-            
-            db.commit()
+        _finish_discovery(scan_id, ScanStatus.FAILED, {"error": str(e)})
     finally:
         db.close()
 
-    port_range = policy.port_scanning_range if policy and policy.port_scanning_range else None
 
-    if scan_engine == ScannerEngine.NMAP:
+# --------------------------------------------------------------------------- vulnerability scans
+
+@dataclass
+class ScanContext:
+    scan_id: str
+    company_id: str
+    network_zone: Optional[str]
+    engine: ScannerEngine
+    port_range: Optional[str]
+    credentials: Dict = field(default_factory=dict)
+    profile: str = "internet"
+    target_raw: str = ""
+
+    def alive(self):
+        """Records activity on the target (watched by watchdog.py)."""
+        progress.heartbeat(self.scan_id, self.target_raw)
+
+
+def _select_policy(db: Session, scan: ScanEntity):
+    from src.policies.domain.entities import PolicyEntity
+    if scan.policy_id:
+        return db.query(PolicyEntity).filter(PolicyEntity.id == scan.policy_id).first()
+    # A company policy is applied implicitly only when it is unambiguous
+    policies = db.query(PolicyEntity).filter(PolicyEntity.company_id == scan.company_id).limit(2).all()
+    if len(policies) == 1:
+        logger.info(f"Scan {scan.id}: applying the company's only policy '{policies[0].name}'")
+        return policies[0]
+    if len(policies) > 1:
+        logger.warning(f"Scan {scan.id}: several company policies and none selected; using engine defaults")
+    return None
+
+
+def _load_credentials(db: Session, scan: ScanEntity, target: ScanTarget) -> Dict:
+    from src.secrets.domain.entities import CredentialEntity
+    credential = None
+    if scan.credential_id:
+        credential = db.query(CredentialEntity).filter(CredentialEntity.id == scan.credential_id).first()
+    else:
+        asset = db.query(AssetEntity).filter(
+            AssetEntity.company_id == scan.company_id,
+            AssetEntity.is_deleted == False,  # noqa: E712
+            (AssetEntity.ip_address == target.host) | (AssetEntity.name == target.host),
+        ).first()
+        if asset:
+            credential = db.query(CredentialEntity).filter(CredentialEntity.asset_id == asset.id).first()
+    if not credential:
+        return {}
+
+    try:
+        from src.secrets.adapters.outbound.vault import VaultAdapter
+        secret = VaultAdapter().get_secret(credential.vault_path)
+    except Exception as e:
+        logger.error(f"Scan {scan.id}: cannot read credential '{credential.name}' from Vault: {e}")
+        return {}
+    if not secret:
+        logger.error(f"Scan {scan.id}: credential '{credential.name}' is empty in Vault "
+                     f"(Vault in dev mode loses its secrets on restart): scan runs unauthenticated")
+        return {}
+    # The type is stored in PostgreSQL only; the engines need it to pick the authentication method.
+    return {**secret, "credential_type": credential.credential_type}
+
+
+def _load_context(scan_id: str, target_raw: str, target: ScanTarget) -> Optional[ScanContext]:
+    db: Session = SessionLocal()
+    try:
+        scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).with_for_update().first()
+        if not scan or scan.is_deleted:
+            logger.info(f"Scan {scan_id} not found or deleted, skipping {target_raw}")
+            return None
+
+        if scan.status == ScanStatus.PAUSED:
+            logger.info(f"Scan {scan_id} is PAUSED. Aborting task for {target_raw}.")
+            progress.apply_target_state(db, scan, target_raw, progress.PENDING)
+            db.commit()
+            return None
+
+        progress.apply_target_state(db, scan, target_raw, progress.IN_PROGRESS)
+        scan.status = ScanStatus.IN_PROGRESS
+
+        policy = _select_policy(db, scan)
+        ctx = ScanContext(
+            scan_id=scan_id,
+            company_id=scan.company_id,
+            network_zone=scan.network_zone,
+            engine=scan.scanner_engine,
+            port_range=policy.port_scanning_range if policy and policy.port_scanning_range else None,
+            credentials=_load_credentials(db, scan, target),
+            profile=_profile_for([target]),
+            target_raw=target_raw,
+        )
+        db.commit()
+        logger.info(f"Scan {scan_id} on {target_raw}: engine={ctx.engine.name} profile={ctx.profile} "
+                    f"ports={ctx.port_range or 'all'} authenticated={'yes (' + str(ctx.credentials.get('credential_type')) + ')' if ctx.credentials else 'no'}")
+        return ctx
+    finally:
+        db.close()
+
+
+def _resolve_dns(host: str) -> Optional[str]:
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except socket.gaierror:
+        return None
+    return infos[0][4][0] if infos else None
+
+
+def _probe_web(host: str, path: str = "") -> List[str]:
+    """Fallback when the port scan sees nothing (WAF/CDN dropping SYN probes): try HTTPS then HTTP."""
+    import requests
+    import urllib3
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    for scheme in ("https", "http"):
+        url = build_url(scheme, host, None, path)
         try:
-            from src.scans.adapters.outbound.nmap_adapter import NmapAdapter
-            import json
-            
-            # --- PHASE 1: Ports, Services, OS ---
-            logger.info(f"Phase 1: Running detailed discovery on {asset_ip}")
-            discovery_hosts = NmapAdapter.run_detailed_discovery_scan(asset_ip, ports=port_range, credentials=vault_secret)
-            
-            open_ports_list = []
-            
-            # Save Phase 1 results directly to DB without triggering COMPLETED status
-            db = SessionLocal()
-            try:
-                if discovery_hosts:
-                    for host_data in discovery_hosts:
-                        host_ip = host_data.get("ip", asset_ip)
-                        
-                        if host_data.get("ports"):
-                            port_list = host_data["ports"]
-                            if isinstance(port_list, str):
-                                port_list = [p.strip() for p in port_list.split(",") if p.strip()]
-                                for p in port_list:
-                                    port_num = p.split('/')[0]
-                                    open_ports_list.append(port_num)
-                            elif isinstance(port_list, list):
-                                for p in port_list:
-                                    if isinstance(p, dict) and p.get("state") == "open":
-                                        open_ports_list.append(str(p.get("port")))
-                                
-                        asset = db.query(AssetEntity).filter(AssetEntity.ip_address == asset_ip).first()
-                        if not asset:
-                            asset = db.query(AssetEntity).filter(AssetEntity.name == asset_ip).first()
-                        if not asset:
-                            asset = db.query(AssetEntity).filter(AssetEntity.ip_address == host_ip).first()
-                            
-                        if not asset:
-                            asset = AssetEntity(name=asset_ip, ip_address=host_ip, company_id=scan_company_id)
-                            db.add(asset)
-                            db.commit()
-                            db.refresh(asset)
-                            
-                        if asset:
-                            from sqlalchemy.orm.attributes import flag_modified
-                            import copy
-                            
-                            if host_data.get("os") and host_data["os"] != "Unknown":
-                                asset.operating_system = host_data["os"]
-                            if host_data.get("ports"):
-                                asset.ports = copy.deepcopy(host_data["ports"])
-                                flag_modified(asset, "ports")
-                            if host_data.get("services"):
-                                asset.services = copy.deepcopy(host_data["services"])
-                                flag_modified(asset, "services")
-                            if host_data.get("mac_address"):
-                                asset.mac_address = host_data["mac_address"]
-                                
-                            logger.info(f"Phase 1 saved details for {asset_ip}: OS={asset.operating_system}, Ports={len(asset.ports) if asset.ports else 0}")
-                            
-                            # Update IP address if the original asset was a domain name and we resolved an IP
-                            if host_ip != asset_ip and host_data.get("ip"):
-                                # Ensure we don't overwrite the original name if it's the domain
-                                if asset.name == asset.ip_address:
-                                    asset.name = asset_ip
-                                asset.ip_address = host_ip
-
-                            asset.last_scan_raw_output = json.dumps(host_data, indent=2)
-                            db.commit()
-                    db.commit()
-            finally:
-                db.close()
-                
-            # Update overall scan progress to 50% since Phase 1 is complete
-            db = SessionLocal()
-            try:
-                scan_update = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
-                if scan_update and scan_update.progress < 50:
-                    scan_update.progress = 50
-                db.commit()
-            finally:
-                db.close()
-                
-            # If no open ports were found, there's no need to run vulnerability scripts
-            if not open_ports_list:
-                logger.info(f"No open ports found on {asset_ip}. Skipping Phase 2 vulnerability scripts.")
-                from src.vulnerabilities.application.services.tasks import update_scan_progress
-                update_scan_progress(scan_id, asset_ip, "COMPLETED")
-                return True
-                
-            open_ports_str = ",".join(set(open_ports_list))
-            
-            # --- PHASE 2: Vulnerability Scripts ---
-            logger.info(f"Phase 2: Running vulnerability scripts on open ports {open_ports_str} for {asset_ip}")
-            vuln_hosts = NmapAdapter.run_vulnerability_scan(asset_ip, ports=open_ports_str, credentials=vault_secret)
-            logger.info(f"Nmap vulnerability scan completed. Hosts found: {len(vuln_hosts)}")
-            
-            # Save Phase 2 results and mark COMPLETED
-            if vuln_hosts:
-                from src.vulnerabilities.application.services.tasks import parse_nmap_report
-                for host_data in vuln_hosts:
-                    parse_nmap_report.delay(host_data, asset_ip, scan_id)
-            else:
-                from src.vulnerabilities.application.services.tasks import update_scan_progress
-                update_scan_progress(scan_id, asset_ip, "COMPLETED")
-                
-            return True
+            requests.get(url, timeout=WEB_PROBE_TIMEOUT_S, verify=False, allow_redirects=False)
+            logger.info(f"Web probe: {url} answers")
+            return [url]
         except Exception as e:
-            logger.error(f"Nmap scan failed for {asset_ip}: {str(e)}")
-            try:
-                self.retry(exc=e, countdown=60)
-            except Retry:
-                raise
-            except Exception:
-                logger.error(f"Max retries exceeded for {asset_ip}. Abandoning.")
-                from src.vulnerabilities.application.services.tasks import update_scan_progress
-                update_scan_progress(scan_id, asset_ip, "ABANDONED")
+            logger.info(f"Web probe: {url} unreachable ({type(e).__name__})")
+    return []
 
-    if scan_engine == ScannerEngine.NUCLEI:
+
+def _identity(target: ScanTarget, host: Optional[Dict]) -> str:
+    """What the asset is keyed on and what web engines must call: the domain for a domain scan."""
+    if target.kind == "cidr" and host:
+        return host["ip"]
+    return target.host
+
+
+def _save_host(ctx: ScanContext, target: ScanTarget, host: Optional[Dict], resolved_ip: Optional[str] = None) -> str:
+    from src.vulnerabilities.application.services.ingest import resolve_asset, update_asset_from_host
+    db = SessionLocal()
+    try:
+        asset = resolve_asset(db, ctx.company_id, _identity(target, host),
+                              resolved_ip=(host or {}).get("ip") or resolved_ip,
+                              hostname=(host or {}).get("hostname"), network_zone=ctx.network_zone)
+        if host:
+            update_asset_from_host(asset, host)
+        db.commit()
+        return asset.id
+    finally:
+        db.close()
+
+
+def _store(ctx: ScanContext, asset_id: str, engine: str, findings: List[Dict]) -> int:
+    from src.vulnerabilities.application.services.ingest import ingest_findings
+    db = SessionLocal()
+    try:
+        asset = db.query(AssetEntity).filter(AssetEntity.id == asset_id).first()
+        result = ingest_findings(db, asset, engine, findings)
+        db.flush()
+        scan = db.query(ScanEntity).filter(ScanEntity.id == ctx.scan_id).first()
+        if scan:
+            from src.scans.application.services.scan_assets import count_scan_findings
+            scan.vulnerabilities_found = count_scan_findings(db, scan)
+        db.commit()
         try:
-            from src.scans.adapters.outbound.nmap_adapter import NmapAdapter
-            import json
-            
-            # --- PHASE 1: Ports, Services, OS ---
-            logger.info(f"Phase 1: Running Nmap detailed discovery on {asset_ip} for Nuclei")
-            discovery_hosts = NmapAdapter.run_detailed_discovery_scan(asset_ip, ports=port_range, credentials=vault_secret)
-            
-            nuclei_targets = [asset_ip]
-            
-            # Save Phase 1 results directly to DB
-            db = SessionLocal()
-            try:
-                if discovery_hosts:
-                    for host_data in discovery_hosts:
-                        host_ip = host_data.get("ip", asset_ip)
-                        
-                        if host_data.get("ports"):
-                            port_list = host_data["ports"]
-                            if isinstance(port_list, str):
-                                port_list = [p.strip() for p in port_list.split(",") if p.strip()]
-                                # Map ports to Nuclei URIs
-                                for p in port_list:
-                                    port_id = p.split('/')[0]
-                                    service_name = "unknown"
-                                    if "(" in p and ")" in p:
-                                        service_name = p.split('(')[1].split(')')[0].lower()
-                                    
-                                    if "http" in service_name and "ssl" not in service_name and "https" not in service_name:
-                                        nuclei_targets.append(f"http://{host_ip}:{port_id}")
-                                    elif "https" in service_name or "ssl" in service_name:
-                                        nuclei_targets.append(f"https://{host_ip}:{port_id}")
-                                    else:
-                                        nuclei_targets.append(f"{host_ip}:{port_id}")
-                            elif isinstance(port_list, list):
-                                for p in port_list:
-                                    if isinstance(p, dict) and p.get("state") == "open":
-                                        port_id = str(p.get("port"))
-                                        service_name = p.get("service", "unknown").lower()
-                                        tunnel = p.get("tunnel")
-                                        
-                                        if "http" in service_name and tunnel != "ssl" and "https" not in service_name:
-                                            nuclei_targets.append(f"http://{host_ip}:{port_id}")
-                                        elif "https" in service_name or tunnel == "ssl":
-                                            nuclei_targets.append(f"https://{host_ip}:{port_id}")
-                                        else:
-                                            nuclei_targets.append(f"{host_ip}:{port_id}")
-                                    
-                        asset = db.query(AssetEntity).filter(AssetEntity.ip_address == asset_ip).first()
-                        if not asset:
-                            asset = db.query(AssetEntity).filter(AssetEntity.name == asset_ip).first()
-                        if not asset:
-                            asset = db.query(AssetEntity).filter(AssetEntity.ip_address == host_ip).first()
-                            
-                        if not asset:
-                            asset = AssetEntity(name=asset_ip, ip_address=host_ip, company_id=scan_company_id)
-                            db.add(asset)
-                            db.commit()
-                            db.refresh(asset)
-                            
-                        if asset:
-                            from sqlalchemy.orm.attributes import flag_modified
-                            import copy
-                            
-                            if host_data.get("os") and host_data["os"] != "Unknown":
-                                asset.operating_system = host_data["os"]
-                            if host_data.get("ports"):
-                                asset.ports = copy.deepcopy(host_data["ports"])
-                                flag_modified(asset, "ports")
-                            if host_data.get("services"):
-                                asset.services = copy.deepcopy(host_data["services"])
-                                flag_modified(asset, "services")
-                            if host_data.get("mac_address"):
-                                asset.mac_address = host_data["mac_address"]
-                                
-                            logger.info(f"Phase 1 saved details for {asset_ip}: OS={asset.operating_system}, Ports={len(asset.ports) if asset.ports else 0}")
-                                
-                            # Update IP address if the original asset was a domain name and we resolved an IP
-                            if host_ip != asset_ip and host_data.get("ip"):
-                                # Ensure we don't overwrite the original name if it's the domain
-                                if asset.name == asset.ip_address:
-                                    asset.name = asset_ip
-                                asset.ip_address = host_ip
-                                
-                            asset.last_scan_raw_output = json.dumps(host_data, indent=2)
-                            db.commit()
-                    db.commit()
-            finally:
-                db.close()
-                
-            if not nuclei_targets:
-                logger.info(f"No open ports found on {asset_ip}. Skipping Phase 2 Nuclei scripts.")
-                from src.vulnerabilities.application.services.tasks import update_scan_progress
-                update_scan_progress(scan_id, asset_ip, "COMPLETED")
-                return True
-                
-            # --- PHASE 2: Nuclei Vulnerability Scan ---
-            logger.info(f"Phase 2: Running Nuclei on mapped targets: {nuclei_targets}")
-            from src.scans.adapters.outbound.nuclei_adapter import NucleiAdapter
-            vulns = NucleiAdapter.run_scan(target=nuclei_targets, ports=None, credentials=vault_secret)
-            
-            # Nuclei runs synchronously, pass to parser.
-            from src.vulnerabilities.application.services.tasks import parse_nuclei_report
-            parse_nuclei_report.delay(vulns, asset_ip, scan_id)
-            return True
+            from src.vulnerabilities.application.services.tasks import send_scan_summary_email
+            send_scan_summary_email(scan, asset, asset.ip_address, result.new, engine)
         except Exception as e:
-            logger.error(f"Nuclei scan failed for {asset_ip}: {str(e)}")
-            try:
-                self.retry(exc=e, countdown=60)
-            except Retry:
-                raise
-            except Exception:
-                logger.error(f"Max retries exceeded for {asset_ip}. Abandoning.")
-                from src.vulnerabilities.application.services.tasks import update_scan_progress
-                update_scan_progress(scan_id, asset_ip, "ABANDONED")
+            logger.warning(f"Scan summary email failed: {e}")
+        ctx.alive()
+        return result.total
+    finally:
+        db.close()
 
-    if scan_engine == ScannerEngine.NESSUS:
-        try:
-            from src.scans.adapters.outbound.nessus_adapter import NessusAdapter
-            adapter = NessusAdapter()
-            vulns = adapter.run_scan(asset_ip)
-            
-            db = SessionLocal()
-            try:
-                scan_update = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
-                if scan_update:
-                    scan_update.status = ScanStatus.COMPLETED
-                    from src.audit.domain.models import AuditLog
-                    db.add(AuditLog(user_id="system", username="celery_worker", action="SCAN_COMPLETED", resource_type="SCAN", resource_id=str(scan_id), details={"status": "COMPLETED"}))
-                    scan_update.progress = 100
-                db.commit()
-            finally:
-                db.close()
-            
-            logger.info("Nessus integration is currently in stub mode. Scan completed.")
-            return True
-        except Exception as e:
-            logger.error(f"Nessus scan failed for {asset_ip}: {str(e)}")
-            try:
-                self.retry(exc=e, countdown=60)
-            except Retry:
-                raise
-            except Exception:
-                logger.error(f"Max retries exceeded for {asset_ip}. Abandoning.")
-                from src.vulnerabilities.application.services.tasks import update_scan_progress
-                update_scan_progress(scan_id, asset_ip, "ABANDONED")
 
-    if scan_engine == ScannerEngine.OWASP_ZAP:
-        try:
-            from src.scans.adapters.outbound.zap_adapter import ZAPAdapter
-            from src.scans.adapters.outbound.nmap_adapter import NmapAdapter
-            import json
-            
-            # --- PHASE 1: Ports, Services, OS, MAC ---
-            logger.info(f"Phase 1: Running Nmap detailed discovery on {asset_ip} for ZAP")
-            discovery_hosts = NmapAdapter.run_detailed_discovery_scan(asset_ip, ports=port_range, credentials=vault_secret)
-            
-            open_ports_list = []
-            
-            # Save Phase 1 results directly to DB
-            db = SessionLocal()
-            try:
-                if discovery_hosts:
-                    for host_data in discovery_hosts:
-                        host_ip = host_data.get("ip", asset_ip)
-                        
-                        if host_data.get("ports"):
-                            port_list = host_data["ports"]
-                            if isinstance(port_list, str):
-                                port_list = [p.strip() for p in port_list.split(",") if p.strip()]
-                                for p in port_list:
-                                    port_id = p.split('/')[0]
-                                    service_name = "unknown"
-                                    if "(" in p and ")" in p:
-                                        service_name = p.split('(')[1].split(')')[0].lower()
-                                    
-                                    if "http" in service_name and "ssl" not in service_name and "https" not in service_name:
-                                        open_ports_list.append(f"http://{host_ip}:{port_id}")
-                                    elif "https" in service_name or "ssl" in service_name:
-                                        open_ports_list.append(f"https://{host_ip}:{port_id}")
-                                    else:
-                                        open_ports_list.append(f"http://{host_ip}:{port_id}")  # fallback for zap
-                            elif isinstance(port_list, list):
-                                for p in port_list:
-                                    if isinstance(p, dict) and p.get("state") == "open":
-                                        port_id = str(p.get("port"))
-                                        service_name = p.get("service", "unknown").lower()
-                                        tunnel = p.get("tunnel")
-                                        
-                                        if "http" in service_name and tunnel != "ssl" and "https" not in service_name:
-                                            open_ports_list.append(f"http://{host_ip}:{port_id}")
-                                        elif "https" in service_name or tunnel == "ssl":
-                                            open_ports_list.append(f"https://{host_ip}:{port_id}")
-                                        else:
-                                            open_ports_list.append(f"http://{host_ip}:{port_id}")  # fallback for zap
-                                
-                        asset = db.query(AssetEntity).filter(AssetEntity.ip_address == asset_ip).first()
-                        if not asset:
-                            asset = db.query(AssetEntity).filter(AssetEntity.name == asset_ip).first()
-                        if not asset:
-                            asset = db.query(AssetEntity).filter(AssetEntity.ip_address == host_ip).first()
-                            
-                        if not asset:
-                            asset = AssetEntity(name=asset_ip, ip_address=host_ip, company_id=scan_company_id)
-                            db.add(asset)
-                            db.commit()
-                            db.refresh(asset)
-                            
-                        if asset:
-                            from sqlalchemy.orm.attributes import flag_modified
-                            import copy
-                            
-                            if host_data.get("os") and host_data["os"] != "Unknown":
-                                asset.operating_system = host_data["os"]
-                            if host_data.get("ports"):
-                                asset.ports = copy.deepcopy(host_data["ports"])
-                                flag_modified(asset, "ports")
-                            if host_data.get("services"):
-                                asset.services = copy.deepcopy(host_data["services"])
-                                flag_modified(asset, "services")
-                            if host_data.get("mac_address"):
-                                asset.mac_address = host_data["mac_address"]
-                            
-                            logger.info(f"Phase 1 saved details for {asset_ip}: OS={asset.operating_system}, Ports={len(asset.ports) if asset.ports else 0}")
-                                
-                            # Update IP address if the original asset was a domain name and we resolved an IP
-                            if host_ip != asset_ip and host_data.get("ip"):
-                                # Ensure we don't overwrite the original name if it's the domain
-                                if asset.name == asset.ip_address:
-                                    asset.name = asset_ip
-                                asset.ip_address = host_ip
-                                
-                            asset.last_scan_raw_output = json.dumps(host_data, indent=2)
-                            db.commit()
-                    db.commit()
-            finally:
-                db.close()
-                
-            # --- PHASE 2: OWASP ZAP Vulnerability Scan ---
-            zap_targets = [asset_ip]
-            for p in open_ports_list:
-                if p not in zap_targets:
-                    zap_targets.append(p)
-            zap_targets_str = ",".join(zap_targets)
-            
-            logger.info(f"Phase 2: Running OWASP ZAP on targets: {zap_targets_str}")
-            vulns = ZAPAdapter.run_scan(zap_targets_str, credentials=vault_secret)
-            from src.vulnerabilities.application.services.tasks import parse_zap_report
-            parse_zap_report.delay(vulns, asset_ip, scan_id)
-            return True
-        except Exception as e:
-            logger.error(f"OWASP ZAP scan failed for {asset_ip}: {str(e)}")
-            try:
-                self.retry(exc=e, countdown=60)
-            except Retry:
-                raise
-            except Exception:
-                logger.error(f"Max retries exceeded for {asset_ip}. Abandoning.")
-                from src.vulnerabilities.application.services.tasks import update_scan_progress
-                update_scan_progress(scan_id, asset_ip, "ABANDONED")
+def _aggregate(states: List[str]) -> str:
+    for state in (progress.COMPLETED, progress.NO_WEB_SERVICE, progress.NO_OPEN_PORTS, progress.TIMEOUT):
+        if state in states:
+            return state
+    return progress.HOST_UNREACHABLE
 
+
+def _no_input_state(host: Optional[Dict], had_open_ports: bool) -> str:
+    if host is None:
+        return progress.HOST_UNREACHABLE
+    if had_open_ports:
+        return progress.NO_WEB_SERVICE
+    return progress.TIMEOUT if host.get("timed_out") else progress.NO_OPEN_PORTS
+
+
+def _phase1(ctx: ScanContext, target: ScanTarget, tolerate_failure: bool) -> List[Dict]:
+    """Ports, services and OS discovery shared by every engine except OpenVAS."""
+    from src.scans.adapters.outbound.nmap_adapter import NmapAdapter
+    try:
+        hosts = NmapAdapter.run_detailed_discovery_scan(target.host, ports=ctx.port_range,
+                                                        credentials=ctx.credentials, profile=ctx.profile)
+    except ScanError as e:
+        if not tolerate_failure:
+            raise
+        logger.error(f"Phase 1 (Nmap) FAILED on {target.host} — check Nmap in the worker; continuing with web probing: {e}")
+        return []
+    ctx.alive()
+    for host in hosts:
+        n_open = len(open_ports(host.get("ports")))
+        logger.info(f"Phase 1 on {target.host}: host {host['ip']} has {n_open} open port(s)"
+                    + (" — Nmap host timeout reached, results incomplete" if host.get("timed_out") else ""))
+    return hosts
+
+
+def _run_nmap(ctx: ScanContext, target: ScanTarget) -> str:
+    from src.scans.adapters.outbound.nmap_adapter import NmapAdapter
+    hosts = _phase1(ctx, target, tolerate_failure=False)
+    if not hosts:
+        return progress.HOST_UNREACHABLE
+    states = []
+    for host in hosts:
+        asset_id = _save_host(ctx, target, host)
+        tcp_ports = [str(p["port"]) for p in open_ports(host["ports"]) if (p.get("protocol") or "tcp") == "tcp"]
+        if not tcp_ports:
+            states.append(_no_input_state(host, False))
+            continue
+        scan_host = _identity(target, host)
+        logger.info(f"Phase 2: Nmap vulnerability scripts on {scan_host} ports {','.join(tcp_ports)}")
+        vuln_hosts = NmapAdapter.run_vulnerability_scan(scan_host, ports=",".join(tcp_ports),
+                                                        credentials=ctx.credentials, profile=ctx.profile)
+        findings = [f for vh in vuln_hosts for f in vh.get("vulns", [])]
+        _store(ctx, asset_id, "NMAP", findings)
+        states.append(progress.COMPLETED)
+    return _aggregate(states)
+
+
+def _web_work(ctx: ScanContext, target: ScanTarget, include_network: bool) -> List[Tuple[str, List[str], Optional[Dict], bool]]:
+    """Builds, per host, the inputs of the web engines: (asset_id, inputs, host, had_open_ports)."""
+    if target.is_url:
+        # The user pointed at a precise application: scan exactly that URL (no 65 535-port sweep).
+        asset_id = _save_host(ctx, target, None, resolved_ip=_resolve_dns(target.host) if target.is_hostname else None)
+        return [(asset_id, [target.url], None, True)]
+
+    hosts = _phase1(ctx, target, tolerate_failure=target.kind != "cidr")
+    work = []
+    if not hosts and target.kind != "cidr":
+        hosts = [None]
+    for host in hosts:
+        label = _identity(target, host)
+        ports = open_ports(host.get("ports")) if host else []
+        web_urls = web_urls_from_ports(label, ports)
+        if not web_urls and target.kind != "cidr":
+            # Port scan saw no web service (WAF/CDN dropping probes, timeout, unidentified service)
+            web_urls = _probe_web(label)
+        inputs = list(web_urls)
+        if include_network:
+            netloc = f"[{label}]" if ":" in label else label
+            inputs += [f"{netloc}:{p['port']}" for p in ports
+                       if not is_web_service(p.get("service"), p.get("tunnel"), p.get("port"))]
+        asset_id = _save_host(ctx, target, host, resolved_ip=None if host else _resolve_dns(target.host))
+        work.append((asset_id, list(dict.fromkeys(inputs)), host, bool(ports)))
+    return work
+
+
+def _run_nuclei(ctx: ScanContext, target: ScanTarget) -> str:
+    from src.scans.adapters.outbound.nuclei_adapter import NucleiAdapter, normalize_nuclei
+    states = []
+    for asset_id, inputs, host, had_ports in _web_work(ctx, target, include_network=True):
+        if inputs and target.kind != "cidr" and not target.is_url:
+            # The bare target is also given to Nuclei, which runs its own HTTP probing on it (5bae702)
+            inputs = inputs + [t for t in [_identity(target, host)] if t not in inputs]
+        if not inputs:
+            states.append(_no_input_state(host, had_ports))
+            continue
+        logger.info(f"Phase 2: Nuclei on {inputs}")
+        raw = NucleiAdapter.run_scan(inputs, credentials=ctx.credentials, profile=ctx.profile)
+        _store(ctx, asset_id, "NUCLEI", normalize_nuclei(raw))
+        states.append(progress.COMPLETED)
+    return _aggregate(states)
+
+
+def _run_zap(ctx: ScanContext, target: ScanTarget) -> str:
+    from src.scans.adapters.outbound.zap_adapter import ZAPAdapter, normalize_zap
+    states = []
+    for asset_id, inputs, host, had_ports in _web_work(ctx, target, include_network=False):
+        if not inputs:
+            states.append(_no_input_state(host, had_ports))
+            continue
+        logger.info(f"Phase 2: OWASP ZAP on {inputs}")
+        alerts = ZAPAdapter.run_scan(inputs, credentials=ctx.credentials)
+        _store(ctx, asset_id, "OWASP_ZAP", normalize_zap(alerts))
+        states.append(progress.COMPLETED)
+    return _aggregate(states)
+
+
+ENGINE_RUNNERS = {
+    ScannerEngine.NMAP: _run_nmap,
+    ScannerEngine.NUCLEI: _run_nuclei,
+    ScannerEngine.OWASP_ZAP: _run_zap,
+}
+
+
+def _reason(e: BaseException) -> str:
+    text = " ".join(str(e).split())
+    return f"{type(e).__name__}: {text}"[:300] if text else type(e).__name__
+
+
+@celery_app.task(bind=True, max_retries=1, name="run_vulnerability_scan", soft_time_limit=SCAN_SOFT_TIME_LIMIT_S)
+def run_vulnerability_scan(self, scan_id: str, asset_ip: str, asset_name: str, config_id: str):
+    """Scans one target of a scan. `asset_ip` is the target as typed by the user (IP, CIDR, domain or URL)."""
+    target_raw = asset_ip
+    # A scan task must run on the dedicated 'scans' worker. If Redis redelivered it to the default
+    # worker (short tasks), re-dispatch it instead of blocking that worker for hours.
+    hostname = getattr(self.request, "hostname", "") or ""
+    if hostname.startswith("default@"):
+        logger.warning(f"Scan task for {target_raw} received by {hostname}; re-dispatching to the scans queue")
+        run_vulnerability_scan.apply_async(args=[scan_id, asset_ip, asset_name, config_id], queue="scans")
+        return True
+    logger.info(f"Starting vulnerability scan {scan_id} on {target_raw}")
+    try:
+        target = parse_target(target_raw)
+    except InvalidTargetError as e:
+        logger.error(f"Scan {scan_id}: {e}")
+        update_scan_progress(scan_id, target_raw, progress.INVALID_TARGET, detail=str(e))
+        return False
+
+    ctx = _load_context(scan_id, target_raw, target)
+    if ctx is None:
+        return True
+
+    # Record the Celery task id so "Stop scan" can revoke this running task
+    progress.heartbeat(scan_id, target_raw, celery_task=self.request.id)
+
+    if target.is_hostname and not _resolve_dns(target.host):
+        logger.error(f"Scan {scan_id}: DNS resolution failed for {target.host}")
+        update_scan_progress(scan_id, target_raw, progress.HOST_UNREACHABLE,
+                             detail=f"Résolution DNS impossible pour {target.host}")
+        return False
+
+    if ctx.engine == ScannerEngine.OPENVAS:
+        return _start_openvas(self, ctx, target, target_raw, asset_name, config_id)
+
+    runner = ENGINE_RUNNERS.get(ctx.engine)
+    if runner is None:
+        logger.error(f"Scan {scan_id}: unsupported engine {ctx.engine}")
+        update_scan_progress(scan_id, target_raw, progress.FAILED, detail=f"Moteur non supporté : {ctx.engine}")
+        return False
+
+    try:
+        state = runner(ctx, target)
+    except Retry:
+        raise
+    except SoftTimeLimitExceeded:
+        # Raised by Celery before the hard limit kills the worker: the target is closed properly
+        logger.error(f"{ctx.engine.name} scan of {target_raw} exceeded {SCAN_SOFT_TIME_LIMIT_S // 3600} h")
+        update_scan_progress(scan_id, target_raw, progress.TIMEOUT,
+                             detail=f"Durée maximale du scan dépassée ({SCAN_SOFT_TIME_LIMIT_S // 3600} h)")
+        return False
+    except ScanTimeout as e:
+        logger.error(f"{ctx.engine.name} scan timed out for {target_raw}: {e}")
+        update_scan_progress(scan_id, target_raw, progress.TIMEOUT, detail=_reason(e))
+        return False
+    except Exception as e:
+        logger.exception(f"{ctx.engine.name} scan failed for {target_raw}: {e}")
+        if self.request.retries < self.max_retries:
+            progress.heartbeat(scan_id, target_raw)
+            raise self.retry(exc=e, countdown=120)
+        update_scan_progress(scan_id, target_raw, progress.FAILED, detail=f"{ctx.engine.name} : {_reason(e)}")
+        return False
+
+    logger.info(f"{ctx.engine.name} scan of {target_raw} finished: {state}")
+    update_scan_progress(scan_id, target_raw, state)
+    return state in progress.SUCCESS_STATES
+
+
+def _gvm_port_range(port_range: Optional[str]) -> str:
+    if not port_range:
+        return DEFAULT_GVM_PORT_RANGE
+    included = [p.strip() for p in port_range.split(",") if p.strip() and not p.strip().startswith("!")]
+    return f"T:{','.join(included)}" if included else DEFAULT_GVM_PORT_RANGE
+
+
+def _start_openvas(task, ctx: ScanContext, target: ScanTarget, target_raw: str, asset_name: str, config_id: str):
+    from src.scans.adapters.outbound.gvm_adapter import GVMAdapter
     adapter = GVMAdapter()
     if not adapter.connect():
         logger.error("Failed to connect to GVM")
-        self.retry(countdown=60, max_retries=60)
-        return
-        
+        if task.request.retries < 10:
+            raise task.retry(countdown=60, max_retries=10)
+        update_scan_progress(ctx.scan_id, target_raw, progress.FAILED, detail="OpenVAS injoignable (connexion GVM impossible)")
+        return False
     try:
-        gvm_port_range = "T:1-65535,U:1-65535"
-        if port_range:
-            # Clean port range for GVM format, e.g. "1-65535,!7000" or "80,443"
-            clean_ports = port_range.split("!")[0].rstrip(",")
-            if clean_ports:
-                gvm_port_range = f"T:{clean_ports}"
-                
-        target_id = adapter.create_target(f"Target_{asset_name}_{scan_id}", [asset_ip], port_range=gvm_port_range)
-        task_id = adapter.create_task(f"Task_{asset_name}_{scan_id}", target_id, DEFAULT_SCANNER_ID, config_id)
+        feed_ok, feed_detail = adapter.check_feeds()
+        if not feed_ok:
+            logger.error(f"OpenVAS feed not ready for {target_raw}: {feed_detail}")
+            update_scan_progress(ctx.scan_id, target_raw, progress.FAILED, detail=f"OpenVAS : {feed_detail}")
+            return False
+        logger.info(f"OpenVAS feed ready ({feed_detail}) for {target_raw}")
+        if ctx.credentials:
+            logger.warning(f"OpenVAS: credentials are not passed to GVM yet, {target_raw} is scanned unauthenticated")
+        target_id = adapter.create_target(f"Target_{asset_name}_{ctx.scan_id}", [target.host],
+                                          port_range=_gvm_port_range(ctx.port_range))
+        task_id = adapter.create_task(f"Task_{asset_name}_{ctx.scan_id}", target_id, DEFAULT_SCANNER_ID, config_id)
         report_id = adapter.start_task(task_id)
-        
-        adapter.disconnect()
-        
-        poll_scan_status.apply_async(args=[scan_id, task_id, report_id, asset_ip], countdown=60)
+        # The OpenVAS task id is kept so that the task can be stopped (pause, deletion, watchdog)
+        progress.heartbeat(ctx.scan_id, target_raw, progress.QUEUED, engine_task=task_id)
+        poll_scan_status.apply_async(args=[ctx.scan_id, task_id, report_id, target_raw],
+                                     kwargs={"started_at": time.time()}, countdown=60)
         return True
     except Exception as e:
-        logger.error(f"Scan initialization failed: {str(e)}")
+        logger.error(f"OpenVAS scan initialization failed for {target_raw}: {e}")
+        update_scan_progress(ctx.scan_id, target_raw, progress.FAILED, detail=f"OpenVAS : {_reason(e)}")
+        return False
+    finally:
         adapter.disconnect()
-        
-        db = SessionLocal()
-        try:
-            scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
-            if scan:
-                scan.status = ScanStatus.FAILED
-                from src.audit.domain.models import AuditLog
-                db.add(AuditLog(user_id="system", username="celery_worker", action="SCAN_FAILED", resource_type="SCAN", resource_id=str(scan_id), details={"status": "FAILED"}))
-                db.commit()
-        finally:
-            db.close()
-        raise e
+
+
+def _scan_follow_up_state(scan_id: str) -> str:
+    """'run', 'paused' or 'gone' (scan deleted): an OpenVAS task must not outlive its scan."""
+    db = SessionLocal()
+    try:
+        scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
+        if not scan or scan.is_deleted:
+            return "gone"
+        return "paused" if scan.status == ScanStatus.PAUSED else "run"
+    finally:
+        db.close()
+
 
 @celery_app.task(bind=True, max_retries=None)
-def poll_scan_status(self, scan_id: str, task_id: str, report_id: str, asset_ip: str):
+def poll_scan_status(self, scan_id: str, task_id: str, report_id: str, asset_ip: str, started_at: float = None,
+                     connect_failures: int = 0):
+    from src.scans.adapters.outbound.gvm_adapter import GVMAdapter
+    base_kwargs = {"started_at": started_at}
     adapter = GVMAdapter()
     if not adapter.connect():
-        self.retry(countdown=60)
-        return
-        
+        if connect_failures + 1 >= POLL_MAX_CONNECT_RETRIES:
+            update_scan_progress(scan_id, asset_ip, progress.FAILED,
+                                 detail=f"OpenVAS injoignable après {POLL_MAX_CONNECT_RETRIES} tentatives de suivi")
+            return False
+        raise self.retry(countdown=60, kwargs={**base_kwargs, "connect_failures": connect_failures + 1})
+
     try:
-        status, progress = adapter.get_task_status_and_progress(task_id)
-        
-        db = SessionLocal()
-        try:
-            scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
-            if scan:
-                scan.progress = progress
-                db.commit()
-        finally:
-            db.close()
+        follow_up = _scan_follow_up_state(scan_id)
+        if follow_up != "run":
+            adapter.stop_task(task_id)
+            if follow_up == "paused":
+                update_scan_progress(scan_id, asset_ip, progress.PENDING)
+                logger.info(f"Scan {scan_id} paused: OpenVAS task {task_id} for {asset_ip} stopped")
+            else:
+                logger.info(f"Scan {scan_id} deleted: OpenVAS task {task_id} for {asset_ip} stopped")
+            return False
 
-        if status in ["Done", "Stopped", "Interrupted"]:
-            report_xml = adapter.get_report(report_id)
-            adapter.disconnect()
-            
-            # Mark scan complete
-            db = SessionLocal()
-            try:
-                scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
-                if scan:
-                    # If it was stopped/interrupted, we might want to mark it as PARTIAL or just COMPLETED. We'll use COMPLETED to see results.
-                    # For OpenVAS, we will let the parser handle it per IP since OpenVAS scans all IPs at once.
-                    scan.status = ScanStatus.IN_PROGRESS
-                    db.commit()
-            finally:
-                db.close()
-            
-            # Send to vulnerability parser to extract whatever it found
-            from src.vulnerabilities.application.services.tasks import parse_scan_report
-            parse_scan_report.delay(report_xml, asset_ip, scan_id)
+        status, progress_value = adapter.get_task_status_and_progress(task_id)
+        logger.info(f"Scan {scan_id} OpenVAS task {task_id} ({asset_ip}): {status} {progress_value}%")
+
+        if status == "Done":
+            parse_report(adapter, report_id, asset_ip, scan_id, progress.COMPLETED)
             return True
+        if status in ("Stopped", "Interrupted"):
+            parse_report(adapter, report_id, asset_ip, scan_id, progress.INTERRUPTED,
+                         detail=f"Tâche OpenVAS {status} : résultats partiels")
+            return False
 
-        else:
-            adapter.disconnect()
-            self.retry(countdown=10)
-            
+        # Total duration cap. started_at is absent from messages queued by the previous version:
+        # fall back to the GVM task creation time so the cap still applies.
+        if started_at is None:
+            created = _parse_iso_ts(adapter.get_task_creation_time(task_id))
+            started_at = created if created is not None else time.time()
+        elapsed = time.time() - started_at
+        if elapsed > OPENVAS_MAX_DURATION_S:
+            logger.error(f"OpenVAS task {task_id} exceeded {OPENVAS_MAX_DURATION_S // 3600} h, stopping it")
+            adapter.stop_task(task_id)
+            parse_report(adapter, report_id, asset_ip, scan_id, progress.TIMEOUT,
+                         detail=f"OpenVAS : durée maximale de {OPENVAS_MAX_DURATION_S // 3600} h dépassée (résultats partiels)")
+            return False
+
+        # Stall detection: a task stuck at the same progress for too long is stopped
+        is_waiting = status in OPENVAS_WAITING_STATUSES
+        if not is_waiting:
+            stalled = progress.record_openvas_progress(scan_id, asset_ip, progress_value)
+            if stalled > OPENVAS_STALL_S:
+                logger.error(f"OpenVAS task {task_id} stuck at {progress_value}% for {int(stalled // 60)} min, stopping it")
+                adapter.stop_task(task_id)
+                parse_report(adapter, report_id, asset_ip, scan_id, progress.TIMEOUT,
+                             detail=f"OpenVAS : tâche figée à {progress_value}% pendant plus de {OPENVAS_STALL_S // 3600} h")
+                return False
+
+        # Queued tasks are shown as such: a target waiting for a free OpenVAS slot is not "running"
+        progress.heartbeat(scan_id, asset_ip, progress.QUEUED if is_waiting else progress.IN_PROGRESS)
+        # started_at now resolved; connect_failures reset to 0 since the connection worked
+        raise self.retry(countdown=30, kwargs={"started_at": started_at, "connect_failures": 0})
+    except Retry:
+        raise
     except Exception as e:
-        if isinstance(e, Retry):
-            raise
-        logger.error(f"Polling failed: {str(e)}")
+        logger.error(f"Scan {scan_id} OpenVAS polling failed for {asset_ip}: {e}")
+        if connect_failures + 1 >= POLL_MAX_CONNECT_RETRIES:
+            update_scan_progress(scan_id, asset_ip, progress.FAILED,
+                                 detail=f"Suivi OpenVAS impossible après {POLL_MAX_CONNECT_RETRIES} tentatives : {e}"[:300])
+            return False
+        raise self.retry(countdown=60, kwargs={**base_kwargs, "connect_failures": connect_failures + 1})
+    finally:
         adapter.disconnect()
-        self.retry(countdown=60)
+
+
+def _parse_iso_ts(iso: Optional[str]) -> Optional[float]:
+    if not iso:
+        return None
+    try:
+        from datetime import datetime
+        return datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def parse_report(adapter, report_id: str, asset_ip: str, scan_id: str, final_state: str, detail: str = None):
+    report_xml = adapter.get_report(report_id)
+    from src.vulnerabilities.application.services.tasks import parse_scan_report
+    parse_scan_report.delay(report_xml, asset_ip, scan_id, final_state, detail)
+
+
+# --------------------------------------------------------------------------- AI
+
+@celery_app.task(name="stop_scan_task")
+def stop_scan_task(scan_id: str):
+    """Stops every non-finished target of a scan: revoke the Celery task, stop the OpenVAS task,
+    then mark the target INTERRUPTED (partial results, if any, are kept)."""
+    db = SessionLocal()
+    adapter = None
+    try:
+        scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
+        if not scan:
+            return 0
+        meta = scan.target_meta or {}
+        pending = [t for t, s in (scan.target_states or {}).items() if s not in progress.TERMINAL_STATES]
+    finally:
+        db.close()
+
+    for target in pending:
+        entry = meta.get(target) or {}
+        if entry.get("celery_task"):
+            # terminate=True kills the worker child running the scan; base_adapter then kills the scanner
+            celery_app.control.revoke(entry["celery_task"], terminate=True, signal="SIGTERM")
+        if entry.get("engine_task"):
+            if adapter is None:
+                from src.scans.adapters.outbound.gvm_adapter import GVMAdapter
+                adapter = GVMAdapter()
+                if not adapter.connect():
+                    adapter = None
+            if adapter is not None:
+                adapter.stop_task(entry["engine_task"])
+        update_scan_progress(scan_id, target, progress.INTERRUPTED, detail="Scan arrêté par un utilisateur")
+    if adapter is not None:
+        adapter.disconnect()
+    logger.info(f"Scan {scan_id} stopped: {len(pending)} target(s) interrupted")
+    return len(pending)
+
 
 @celery_app.task(name="generate_ai_summary_task", bind=True, max_retries=3, ignore_result=False)
 def generate_ai_summary_task(self, vuln_data: list, language: str = "French", extra_instructions: str = "", provider: str = None):
     import asyncio
     from src.ai.application.services.nlp import generate_executive_summary
-    
+
     logger.info(f"Task {self.request.id}: Starting AI summary generation...")
     try:
-        # Run the async summary generation synchronously
         summary = asyncio.run(generate_executive_summary(vuln_data, language=language, extra_instructions=extra_instructions, provider=provider))
         logger.info(f"Task {self.request.id}: AI summary generation completed successfully.")
         return summary
@@ -948,11 +865,12 @@ def generate_ai_summary_task(self, vuln_data: list, language: str = "French", ex
         logger.error(f"Task {self.request.id}: AI summary generation failed: {str(e)}")
         raise self.retry(exc=e, countdown=30)
 
+
 @celery_app.task(name="generate_ai_remediation_task", bind=True, max_retries=3, ignore_result=False)
 def generate_ai_remediation_task(self, vuln_name: str, vuln_desc: str, language: str = "French", provider: str = None):
     import asyncio
     from src.ai.application.services.nlp import generate_vulnerability_remediation
-    
+
     logger.info(f"Task {self.request.id}: Starting AI remediation generation for '{vuln_name}'...")
     try:
         remediation = asyncio.run(generate_vulnerability_remediation(vuln_name, vuln_desc, language=language, provider=provider))
@@ -961,4 +879,3 @@ def generate_ai_remediation_task(self, vuln_name: str, vuln_desc: str, language:
     except Exception as e:
         logger.error(f"Task {self.request.id}: AI remediation generation failed: {str(e)}")
         raise self.retry(exc=e, countdown=30)
-

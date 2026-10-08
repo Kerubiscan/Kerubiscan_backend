@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<nmaprun scanner="nmap" args="nmap -sS -sV -Pn -T3 --script vuln and safe,vulners" version="7.94">
+<host starttime="1" endtime="2">
+  <status state="up" reason="user-set" reason_ttl="0"/>
+  <address addr="203.0.113.10" addrtype="ipv4"/>
+  <hostnames><hostname name="app.exemple.com" type="user"/></hostnames>
+  <ports>
+    <port protocol="tcp" portid="443">
+      <state state="open" reason="syn-ack" reason_ttl="54"/>
+      <service name="http" product="Apache httpd" version="2.4.49" tunnel="ssl" method="probed" conf="10"><cpe>cpe:/a:apache:http_server:2.4.49</cpe></service>
+      <script id="vulners" output="&#xa;  cpe:/a:apache:http_server:2.4.49: &#xa;    &#x9;CVE-2021-42013&#x9;9.8&#x9;https://vulners.com/cve/CVE-2021-42013&#x9;*EXPLOIT*&#xa;    &#x9;CVE-2021-41773&#x9;7.5&#x9;https://vulners.com/cve/CVE-2021-41773&#xa;    &#x9;CVE-2022-22719&#x9;5.0&#x9;https://vulners.com/cve/CVE-2022-22719"/>
+      <script id="ssl-heartbleed" output="&#xa;  VULNERABLE:&#xa;  The Heartbleed Bug is a serious vulnerability in the popular OpenSSL cryptographic software library.&#xa;    State: VULNERABLE&#xa;    Risk factor: High&#xa;      IDs:  CVE:CVE-2014-0160&#xa;    References:&#xa;      https://cve.mitre.org/cgi-bin/cvename.cgi?name=CVE-2014-0160"/>
+      <script id="ssl-ccs-injection" output="NOT VULNERABLE"/>
+    </port>
+    <port protocol="tcp" portid="22">
+      <state state="open" reason="syn-ack" reason_ttl="54"/>
+      <service name="ssh" product="OpenSSH" version="7.4" method="probed" conf="10"/>
+      <script id="vulners" output="&#xa;  cpe:/a:openbsd:openssh:7.4: &#xa;    &#x9;CVE-2023-38408&#x9;9.8&#x9;https://vulners.com/cve/CVE-2023-38408"/>
+    </port>
+  </ports>
+</host>
+<host starttime="1" endtime="2" timedout="true">
+  <status state="up" reason="user-set" reason_ttl="0"/>
+  <address addr="203.0.113.20" addrtype="ipv4"/>
+</host>
+<runstats><finished time="3" exit="success"/></runstats>
+</nmaprun>

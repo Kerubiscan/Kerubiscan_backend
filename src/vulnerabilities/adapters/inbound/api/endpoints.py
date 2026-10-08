@@ -53,7 +53,7 @@ async def update_vulnerability_status(
     status_update: VulnStatusUpdate,
     repo: VulnerabilityRepository = Depends(get_vuln_repository),
     audit: AuditService = Depends(get_audit_service),
-    current_user: dict = Depends(require_permissions([Permission.ASSET_READ]))
+    current_user: dict = Depends(require_permissions([Permission.ASSET_WRITE]))
 ):
     try:
         username = current_user.get("preferred_username") or current_user.get("sub") or "System"

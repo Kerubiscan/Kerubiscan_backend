@@ -5,18 +5,25 @@ from src.auth.domain.entities import Role, Permission
 ROLE_PERMISSIONS = {
     Role.READER: [
         Permission.ASSET_READ,
+        Permission.SCAN_READ,
         Permission.AUDIT_READ,
     ],
     Role.SECURITY_ANALYST: [
         Permission.ASSET_READ,
         Permission.ASSET_WRITE,
         Permission.ASSET_DELETE,
+        Permission.SCAN_READ,
+        Permission.SCAN_EXECUTE,
+        Permission.SCAN_DELETE,
         Permission.AUDIT_READ,
     ],
     Role.SYSTEMS_ADMINISTRATOR: [
         Permission.ASSET_READ,
         Permission.ASSET_WRITE,
         Permission.ASSET_DELETE,
+        Permission.SCAN_READ,
+        Permission.SCAN_EXECUTE,
+        Permission.SCAN_DELETE,
         Permission.SECRET_READ,
         Permission.SECRET_WRITE,
         Permission.SECRET_DELETE,
@@ -26,6 +33,9 @@ ROLE_PERMISSIONS = {
         Permission.ASSET_READ,
         Permission.ASSET_WRITE,
         Permission.ASSET_DELETE,
+        Permission.SCAN_READ,
+        Permission.SCAN_EXECUTE,
+        Permission.SCAN_DELETE,
         Permission.SECRET_READ,
         Permission.SECRET_WRITE,
         Permission.SECRET_DELETE,
@@ -33,6 +43,12 @@ ROLE_PERMISSIONS = {
         Permission.USER_READ,
         Permission.USER_WRITE,
     ]
+}
+
+# Role names as they exist in Keycloak (realm-export.json) when they differ from the Role enum.
+# "System Administrator" never matched "Systems Administrator": those users had no permission at all.
+ROLE_ALIASES = {
+    "System Administrator": Role.SYSTEMS_ADMINISTRATOR,
 }
 
 class RBACService:
@@ -45,7 +61,7 @@ class RBACService:
         user_permissions = set()
         for role_str in roles:
             try:
-                role_enum = Role(role_str)
+                role_enum = ROLE_ALIASES.get(role_str) or Role(role_str)
                 if role_enum in ROLE_PERMISSIONS:
                     user_permissions.update(ROLE_PERMISSIONS[role_enum])
             except ValueError:

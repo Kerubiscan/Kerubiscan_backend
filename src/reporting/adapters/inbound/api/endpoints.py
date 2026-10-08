@@ -58,21 +58,17 @@ async def enrich_vulnerabilities_with_ai(db: Session, vulnerabilities: list, lan
     await asyncio.gather(*(enrich(v) for v in sorted_vulns[:10]))
     db.commit()
 
-@router.post("/{asset_id}/html", response_class=Response)
-async def generate_executive_report_html(
-    asset_id: str, 
-    request_data: ReportGenerationRequest,
-    db: Session = Depends(get_db)
-):
+async def _asset_report_html(db: Session, asset_id: str, request_data: ReportGenerationRequest):
+    """Builds the HTML report of an asset. The PDF report is the print rendering of this same HTML."""
     asset = db.query(AssetEntity).filter(AssetEntity.id == asset_id).first()
     if not asset:
         raise HTTPException(status_code=404, detail="Asset not found")
-        
+
     vulnerabilities = db.query(VulnerabilityEntity).filter(VulnerabilityEntity.asset_id == asset_id).all()
-    
+
     # Generate missing AI remediations before creating the report
     await enrich_vulnerabilities_with_ai(db, vulnerabilities, request_data.language or "French")
-    
+
     exec_summary = request_data.executive_summary
     if not exec_summary:
         from src.ai.application.services.nlp import generate_executive_summary
@@ -87,15 +83,16 @@ async def generate_executive_report_html(
         exec_summary = await generate_executive_summary(vuln_dicts, language=request_data.language or "French")
 
     from src.reporting.application.services.html_generator import generate_vulnerability_html
-    
-    # Use the creation date of the vulnerabilities to represent when the scan actually ran,
-    # because asset.updated_at gets changed when the AI enricher runs just before this.
-    scan_launch_date = max((v.created_at for v in vulnerabilities if v.created_at), default=asset.created_at)
-    
+
+    # Latest detection date represents when the scan actually ran (asset.updated_at changes when the
+    # AI enricher runs). VulnerabilityEntity has no created_at: using it made these reports crash.
+    scan_launch_date = max((v.last_seen_at or v.first_detected_at for v in vulnerabilities
+                            if v.last_seen_at or v.first_detected_at), default=asset.created_at)
+
     name_str = (asset.name.strip() if asset.name and asset.name.strip() else asset.ip_address)
     if "Auto-added" in name_str:
         name_str = name_str.replace("Auto-added Host", "").replace("Auto-added Web Host", "").replace("(", "").replace(")", "").strip()
-        
+
     html_bytes = generate_vulnerability_html(
         assets=[asset],
         all_vulnerabilities={str(asset.id): vulnerabilities},
@@ -107,52 +104,46 @@ async def generate_executive_report_html(
         scan_profile=request_data.scan_profile or "Audit de Sécurité Multi-Moteurs (Full Audit)",
         classification=request_data.classification or "CONFIDENTIEL - USAGE INTERNE"
     )
-    
+    return asset, vulnerabilities, exec_summary, scan_launch_date, html_bytes
+
+
+@router.post("/{asset_id}/html", response_class=Response)
+async def generate_executive_report_html(
+    asset_id: str,
+    request_data: ReportGenerationRequest,
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(require_permissions([Permission.ASSET_READ]))
+):
+    asset, _, _, _, html_bytes = await _asset_report_html(db, asset_id, request_data)
     return Response(content=html_bytes, media_type="text/html", headers={
         "Content-Disposition": f"attachment; filename=report_{asset.name.replace(' ', '_')}.html"
     })
 
 @router.post("/{asset_id}/pdf", response_class=Response)
 async def generate_executive_report_pdf(
-    asset_id: str, 
+    asset_id: str,
     request_data: ReportGenerationRequest,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(require_permissions([Permission.ASSET_READ]))
 ):
-    asset = db.query(AssetEntity).filter(AssetEntity.id == asset_id).first()
-    if not asset:
-        raise HTTPException(status_code=404, detail="Asset not found")
-        
-    vulnerabilities = db.query(VulnerabilityEntity).filter(VulnerabilityEntity.asset_id == asset_id).all()
-    
-    # Generate missing AI remediations before creating the report
-    await enrich_vulnerabilities_with_ai(db, vulnerabilities, request_data.language or "French")
-    
-    exec_summary = request_data.executive_summary
-    if not exec_summary:
-        from src.ai.application.services.nlp import generate_executive_summary
-        vuln_dicts = [
-            {
-                "title": v.title,
-                "severity": getattr(v.severity, "value", str(v.severity)),
-                "cvss": v.cvss_base_score,
-                "cve": v.cve_id
-            } for v in vulnerabilities[:10]
-        ]
-        exec_summary = await generate_executive_summary(vuln_dicts, language=request_data.language or "French")
+    asset, vulnerabilities, exec_summary, scan_launch_date, html_bytes = await _asset_report_html(db, asset_id, request_data)
 
+    from starlette.concurrency import run_in_threadpool
+    from src.reporting.application.services.pdf_renderer import render_pdf
     from src.reporting.application.services.pdf_generator import generate_vulnerability_pdf
-    
-    scan_launch_date = max((v.created_at for v in vulnerabilities if v.created_at), default=asset.created_at)
-    
-    pdf_bytes = generate_vulnerability_pdf(
-        asset=asset,
-        vulnerabilities=vulnerabilities,
-        executive_summary=exec_summary,
-        scanner_company_name=request_data.scanner_company_name or "KERIBU SOC Security",
-        target_company_name=request_data.target_company_name or "Client Company",
-        scan_date=scan_launch_date
-    )
-    
+
+    def legacy_pdf() -> bytes:
+        return generate_vulnerability_pdf(
+            asset=asset,
+            vulnerabilities=vulnerabilities,
+            executive_summary=exec_summary,
+            scanner_company_name=request_data.scanner_company_name or "KERIBU SOC Security",
+            target_company_name=request_data.target_company_name or "Client Company",
+            scan_date=scan_launch_date
+        )
+
+    # Same document as the HTML report, printed by Chromium (sync API -> worker thread)
+    pdf_bytes = await run_in_threadpool(render_pdf, html_bytes, legacy_pdf)
     return Response(content=pdf_bytes, media_type="application/pdf", headers={
         "Content-Disposition": f"attachment; filename=report_{asset.name.replace(' ', '_')}.pdf"
     })

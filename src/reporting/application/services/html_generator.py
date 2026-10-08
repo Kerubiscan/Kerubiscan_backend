@@ -1,5 +1,5 @@
 import os
-from jinja2 import Environment, FileSystemLoader
+from jinja2 import Environment, FileSystemLoader, select_autoescape
 from datetime import datetime
 from typing import List, Dict
 
@@ -179,7 +179,9 @@ def generate_vulnerability_html(
 
     template_data["logo_base64"] = logo_base64
 
-    env = Environment(loader=FileSystemLoader(templates_dir))
+    # Autoescape: findings contain text taken from the scanned targets (page titles, evidences) —
+    # without it, a malicious target could inject HTML/JavaScript into the report (stored XSS).
+    env = Environment(loader=FileSystemLoader(templates_dir), autoescape=select_autoescape(["html"]))
     template = env.get_template("keribusoc_report.html")
     
     rendered_html = template.render(**template_data)
@@ -256,7 +258,9 @@ def generate_discovery_html(
 
     template_data["logo_base64"] = logo_base64
 
-    env = Environment(loader=FileSystemLoader(templates_dir))
+    # Autoescape: findings contain text taken from the scanned targets (page titles, evidences) —
+    # without it, a malicious target could inject HTML/JavaScript into the report (stored XSS).
+    env = Environment(loader=FileSystemLoader(templates_dir), autoescape=select_autoescape(["html"]))
     template = env.get_template("keribusoc_discovery_report.html")
     
     rendered_html = template.render(**template_data)

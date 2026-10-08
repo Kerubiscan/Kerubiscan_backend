@@ -1,0 +1,29 @@
+<get_reports_response status="200" status_text="OK">
+<report id="r1">
+<report id="r1">
+  <host><ip>10.0.0.5</ip><detail><name>best_os_txt</name><value>Ubuntu 18.04</value></detail></host>
+  <host><ip>10.0.0.6</ip></host>
+  <results>
+    <result>
+      <name>OpenSSL Heartbleed</name><host>10.0.0.5</host><port>443/tcp</port><threat>High</threat><severity>7.5</severity>
+      <nvt oid="1.3.6.1.4.1.25623.1.0.103936"><name>OpenSSL Heartbleed</name><cvss_base>7.5</cvss_base><solution>Update OpenSSL.</solution>
+        <refs><ref type="cve" id="CVE-2014-0160"/></refs></nvt>
+      <description>The remote host is vulnerable.</description>
+    </result>
+    <result>
+      <name>OpenSSL Heartbleed</name><host>10.0.0.5</host><port>8443/tcp</port><threat>High</threat><severity>7.5</severity>
+      <nvt oid="1.3.6.1.4.1.25623.1.0.103936"><name>OpenSSL Heartbleed</name><cvss_base>7.5</cvss_base>
+        <refs><ref type="cve" id="CVE-2014-0160"/></refs></nvt>
+    </result>
+    <result>
+      <name>OS Detection Consolidation</name><host>10.0.0.5</host><port>general/tcp</port><threat>Log</threat><severity>0.0</severity>
+      <nvt oid="1.3.6.1.4.1.25623.1.0.105937"><name>OS Detection Consolidation</name></nvt>
+    </result>
+    <result>
+      <name>SSH Weak Encryption Algorithms</name><host>10.0.0.6</host><port>22/tcp</port><threat>Medium</threat><severity>4.3</severity>
+      <nvt oid="1.3.6.1.4.1.25623.1.0.105611"><name>SSH Weak Encryption Algorithms</name><cvss_base>4.3</cvss_base></nvt>
+    </result>
+  </results>
+</report>
+</report>
+</get_reports_response>

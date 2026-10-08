@@ -48,6 +48,7 @@ class AssetResponse(AssetBase):
     created_at: datetime
     updated_at: datetime
     last_scan_raw_output: Optional[str] = None
+    resolved_ip: Optional[str] = None
 
     class Config:
         from_attributes = True

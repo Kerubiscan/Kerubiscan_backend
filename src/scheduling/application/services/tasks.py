@@ -6,6 +6,7 @@ from src.core.database import SessionLocal
 from src.scheduling.domain.entities import ScheduleEntity
 from src.scans.domain.entities import ScanEntity, ScanType, ScanStatus, ScannerEngine
 from src.scans.application.services.tasks import run_discovery_scan, run_vulnerability_scan
+from src.scans.domain.targets import split_targets, validate_targets, InvalidTargetError
 from src.notifications.application.services.smtp import send_alert_email
 
 logger = logging.getLogger(__name__)
@@ -47,16 +48,29 @@ def check_scheduled_scans():
                     s_type = ScanType.DISCOVERY if sched.scan_type.upper() == "DISCOVERY" else ScanType.VULNERABILITY
                     
                     engine_str = sched.scanner_engine.upper() if sched.scanner_engine else "OPENVAS"
-                    s_engine = ScannerEngine[engine_str] if engine_str in ScannerEngine.__members__ else ScannerEngine.OPENVAS
+                    if engine_str == "ZAP":
+                        engine_str = "OWASP_ZAP"
+                    if engine_str not in ScannerEngine.__members__:
+                        logger.error(f"Schedule {sched.id}: unknown engine {sched.scanner_engine}, skipped")
+                        continue
+                    s_engine = ScannerEngine[engine_str]
+                    try:
+                        validate_targets(sched.target)  # enforces SCAN_ALLOWED_TARGETS too
+                    except InvalidTargetError as e:
+                        logger.error(f"Schedule {sched.id} skipped: {e}")
+                        continue
+                    targets = split_targets(sched.target)
 
                     scan = ScanEntity(
                         company_id=sched.company_id,
                         name=f"Scheduled: {sched.name}",
-                        target=sched.target,
+                        target=",".join(targets),
                         network_zone=sched.network_zone,
                         scan_type=s_type,
                         scanner_engine=s_engine,
                         status=ScanStatus.IN_PROGRESS,
+                        # Without the full list of targets the scan was marked complete after the first one
+                        target_states={t: "PENDING" for t in targets},
                         recurrence_rule=sched.frequency
                     )
                     db.add(scan)
@@ -77,7 +91,6 @@ def check_scheduled_scans():
                         run_discovery_scan.delay(scan.id, sched.target, sched.network_zone or "Internal", sched.company_id)
                     else:
                         config_id = "daba56c8-73ec-11df-a475-002264764cea"
-                        targets = [t.strip() for t in sched.target.split(",") if t.strip()]
                         for ip in targets:
                             run_vulnerability_scan.delay(scan.id, ip, ip, config_id)
 
@@ -108,7 +121,7 @@ def check_scheduled_scans():
                 scan.next_run_at = None
                 db.commit()
 
-                targets = [t.strip() for t in scan.target.split(",") if t.strip()]
+                targets = split_targets(scan.target)
                 target_states = {t: "PENDING" for t in targets}
                 scan.target_states = target_states
                 from sqlalchemy.orm.attributes import flag_modified

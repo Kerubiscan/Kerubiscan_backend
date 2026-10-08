@@ -9,11 +9,12 @@ class NotificationCount(BaseModel):
 from src.core.database import get_db
 from sqlalchemy.orm import Session
 from fastapi import Depends
+from src.auth.adapters.inbound.api.dependencies import get_current_user
 from src.audit.domain.models import AuditLog
 from datetime import datetime, timedelta, timezone
 
 @router.get("/unread-count", response_model=NotificationCount)
-async def get_unread_count(db: Session = Depends(get_db)):
+async def get_unread_count(db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)):
     # Calculate how many audits happened in the last 24 hours as a proxy for "notifications"
     yesterday = datetime.now(timezone.utc) - timedelta(days=1)
     # Removing timezone info for SQLAlchemy SQLite/PostgreSQL compatibility if needed, but utcnow is deprecated so we use timezone.utc, though models use datetime.utcnow? Wait, models.py uses `datetime.now(timezone.utc)`.
