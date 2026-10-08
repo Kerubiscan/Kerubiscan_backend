@@ -32,10 +32,17 @@ ENV NUCLEI_VERSION=3.11.1
 RUN wget -q "https://github.com/projectdiscovery/nuclei/releases/download/v${NUCLEI_VERSION}/nuclei_${NUCLEI_VERSION}_linux_amd64.zip" -O /tmp/nuclei.zip \
     && unzip -o /tmp/nuclei.zip nuclei -d /usr/local/bin/ \
     && rm /tmp/nuclei.zip && chmod +x /usr/local/bin/nuclei
-# Download templates into a fixed directory; fail the build if too few are present.
-# Never combine -duc with -ut: nuclei 3.11 then skips the download silently (exit 0, no template).
-ENV NUCLEI_TEMPLATES_DIR=/opt/nuclei-templates
-RUN nuclei -ut -ud "$NUCLEI_TEMPLATES_DIR" \
+# Templates, pinned like the binary and fetched with wget. nuclei's own updater (-ut) goes through
+# the GitHub API: it failed on the test server, and does nothing at all when combined with -duc.
+# /root/nuclei-templates is nuclei's default directory (the image runs as root).
+# .nuclei-ignore (excludes dos/fuzz/bruteforce templates) is normally installed by -ut: copy it.
+ENV NUCLEI_TEMPLATES_VERSION=10.5.0 \
+    NUCLEI_TEMPLATES_DIR=/root/nuclei-templates
+RUN mkdir -p "$NUCLEI_TEMPLATES_DIR" /root/.config/nuclei \
+    && wget -q "https://github.com/projectdiscovery/nuclei-templates/archive/refs/tags/v${NUCLEI_TEMPLATES_VERSION}.tar.gz" -O /tmp/nuclei-templates.tgz \
+    && tar -xzf /tmp/nuclei-templates.tgz -C "$NUCLEI_TEMPLATES_DIR" --strip-components=1 \
+    && rm /tmp/nuclei-templates.tgz \
+    && cp "$NUCLEI_TEMPLATES_DIR/.nuclei-ignore" /root/.config/nuclei/.nuclei-ignore \
     && test "$(find "$NUCLEI_TEMPLATES_DIR" -name '*.yaml' | wc -l)" -ge 100
 
 # Nmap vulners script. Pinned to a tag rather than the moving master branch.
