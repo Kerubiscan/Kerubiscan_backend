@@ -431,3 +431,16 @@ def test_feed_check_is_fail_open_on_read_error():
     a.gmp = Gmp()
     ok, detail = a.check_feeds()
     assert ok is True and "indéterminé" in detail
+
+
+def test_nuclei_template_download_targets_the_templates_dir_without_duc(monkeypatch, tmp_path):
+    # nuclei 3.11: `-duc -ut` exits 0 without downloading anything (broke the image build)
+    from src.scans.adapters.outbound import nuclei_adapter
+    from src.scans.adapters.outbound.base_adapter import ScanError
+    monkeypatch.setenv("NUCLEI_TEMPLATES_DIR", str(tmp_path))
+    calls = []
+    monkeypatch.setattr(nuclei_adapter.subprocess, "run", lambda cmd, **kw: calls.append(cmd))
+    with pytest.raises(ScanError):  # nothing downloaded by the fake: the scan is refused, not run blind
+        nuclei_adapter.ensure_templates()
+    assert calls and "-duc" not in calls[0]
+    assert calls[0][-3:] == ["-ut", "-ud", str(tmp_path)]

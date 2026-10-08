@@ -54,7 +54,8 @@ def ensure_templates() -> int:
         return count
     logger.warning(f"Nuclei templates missing or incomplete in {path} ({count}); downloading them now")
     try:
-        subprocess.run([NUCLEI_BIN, "-ut"], capture_output=True, text=True, timeout=900)
+        # No -duc here: combined with -ut it silently skips the download
+        subprocess.run([NUCLEI_BIN, "-ut", "-ud", path], capture_output=True, text=True, timeout=900)
     except Exception as e:
         logger.error(f"Nuclei template download failed: {e}")
     count = _count_templates(path)
