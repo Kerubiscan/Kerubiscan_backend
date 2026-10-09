@@ -155,3 +155,28 @@ def test_pdf_falls_back_to_legacy_layout_when_chromium_is_missing(monkeypatch):
         raise pdf_renderer.PdfRenderingError("no browser")
     monkeypatch.setattr(pdf_renderer, "html_to_pdf", no_chromium)
     assert pdf_renderer.render_pdf("<html></html>", fallback=lambda: b"%PDF-legacy") == b"%PDF-legacy"
+
+
+def test_report_shows_only_data_provided_by_the_scanner(db, company):
+    """Seen on the test server: every Info finding showed an invented (and invalid, C:M) CVSS vector,
+    an impact derived from the score and a fixed "Match confirmé" proof."""
+    from src.assets.domain.entities import AssetEntity
+    from src.vulnerabilities.domain.entities import VulnerabilityEntity
+    from src.vulnerabilities.domain.models import VulnSeverity
+    from src.reporting.application.services.html_generator import generate_vulnerability_html, NO_REMEDIATION
+    asset = AssetEntity(company_id=company.id, name="app.lab.internal", ip_address="app.lab.internal")
+    db.add(asset)
+    db.commit()
+    info = VulnerabilityEntity(asset_id=asset.id, title="HTTP Missing Security Headers", severity=VulnSeverity.INFO,
+                               source_engine="NUCLEI")
+    crit = VulnerabilityEntity(asset_id=asset.id, title="CVE-2021-41773", severity=VulnSeverity.CRITICAL,
+                               cvss_base_score=9.8, cvss_vector="CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:N",
+                               remediation="Mettre à jour Apache httpd en 2.4.51 ou plus.", source_engine="NMAP")
+    db.add_all([info, crit])
+    db.commit()
+    html = generate_vulnerability_html(assets=[asset], all_vulnerabilities={asset.id: [info, crit]},
+                                       executive_summary=None).decode("utf-8")
+    assert "C:M" not in html and "Match confirmé" not in html
+    assert html.count("CVSS:3.1/") == 1                      # only the real vector
+    assert "Confidentialité : ÉLEVÉ | Intégrité : ÉLEVÉ | Disponibilité : AUCUN" in html
+    assert NO_REMEDIATION in html and "Mettre à jour Apache httpd en 2.4.51 ou plus." in html

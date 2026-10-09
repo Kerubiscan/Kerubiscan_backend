@@ -1,10 +1,39 @@
 import os
 from jinja2 import Environment, FileSystemLoader, select_autoescape
-from datetime import datetime
-from typing import List, Dict
+from datetime import datetime, timezone
+from typing import List, Dict, Optional
 
 from src.assets.domain.entities import AssetEntity
 from src.vulnerabilities.domain.entities import VulnerabilityEntity
+
+NO_REMEDIATION = "Aucune recommandation fournie par le scanner pour ce point."
+
+_CIA_LEVELS = {"H": "ÉLEVÉ", "L": "FAIBLE", "N": "AUCUN"}
+
+
+def _cia_from_vector(vector: Optional[str]) -> Optional[str]:
+    """C/I/A impact read from a real CVSS v3 vector; None when there is no vector.
+
+    The report used to derive both the vector and this impact from the score alone, which printed
+    invented (and invalid: C:M does not exist in CVSS 3) data as if the scanner had provided it.
+    """
+    if not vector:
+        return None
+    metrics = dict(part.split(":", 1) for part in vector.split("/") if ":" in part)
+    if not all(k in metrics for k in ("C", "I", "A")):
+        return None
+    return (f"Confidentialité : {_CIA_LEVELS.get(metrics['C'], metrics['C'])} | "
+            f"Intégrité : {_CIA_LEVELS.get(metrics['I'], metrics['I'])} | "
+            f"Disponibilité : {_CIA_LEVELS.get(metrics['A'], metrics['A'])}")
+
+
+def _local(dt: Optional[datetime]) -> datetime:
+    """Dates are stored in UTC: show them in the server's time zone (TZ), like the logs."""
+    if dt is None:
+        return datetime.now()
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone()
 
 def generate_vulnerability_html(
     assets: List[AssetEntity], 
@@ -81,22 +110,10 @@ def generate_vulnerability_html(
                 asset_data["info_count"] += 1
                 total_info += 1
             
-            # CVSS Vector construction or fallback
-            vector = v.cvss_vector or f"CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:{'H' if score>=7 else 'M'}/I:{'H' if score>=7 else 'L'}/A:{'H' if score>=8 else 'L'}"
-            
-            # Quality of Detection (QoD)
-            qod = "100%" if v.source_engine and "NUCLEI" in v.source_engine.upper() else "80% (NVT Verified)"
-            
-            # CIA Triad Impact
-            if score >= 8.5:
-                cia_impact = "Confidentialité: ÉLEVÉE | Intégrité: ÉLEVÉE | Disponibilité: ÉLEVÉE"
-            elif score >= 7.0:
-                cia_impact = "Confidentialité: ÉLEVÉE | Intégrité: MOYENNE | Disponibilité: MOYENNE"
-            elif score >= 4.0:
-                cia_impact = "Confidentialité: MOYENNE | Intégrité: FAIBLE | Disponibilité: FAIBLE"
-            else:
-                cia_impact = "Confidentialité: FAIBLE / INFO | Intégrité: AUCUNE | Disponibilité: AUCUNE"
-                
+            # Only what the scanner provided: no vector, impact or proof is made up from the score
+            vector = v.cvss_vector or None
+            cia_impact = _cia_from_vector(vector)
+
             cve = v.cve_id or "N/A"
             ref_url = f"https://nvd.nist.gov/vuln/detail/{cve}" if cve != "N/A" and "CVE" in cve.upper() else "https://cve.mitre.org"
 
@@ -114,10 +131,10 @@ def generate_vulnerability_html(
                 "engine": v.source_engine or "OPENVAS / MULTI-ENGINE",
                 "title": v.title,
                 "description": v.description or "Aucune description fournie par le scanner.",
-                "remediation": getattr(v, "remediation", "Appliquer les derniers patchs de sécurité éditeur et restreindre l'accès réseau.") or "Appliquer les patchs de sécurité.",
-                "qod": qod,
+                "remediation": getattr(v, "remediation", None) or NO_REMEDIATION,
                 "impact_cia": cia_impact,
-                "proof": f"Plugin output [{v.source_engine or 'OPENVAS'}]: Match confirmé sur port d'écoute actif.",
+                # The evidence (URLs, extracts) is already in the description
+                "proof": None,
                 "ai_analysis": ai_data
             }
             
@@ -145,7 +162,7 @@ def generate_vulnerability_html(
         "scan_name": scan_name,
         "scan_profile": scan_profile,
         "classification": classification,
-        "report_date": (scan_date or datetime.now()).strftime("%d/%m/%Y à %H:%M:%S"),
+        "report_date": _local(scan_date).strftime("%d/%m/%Y à %H:%M:%S"),
         "scanner_company_name": scanner_company_name,
         "target_company_name": target_company_name,
         "executive_summary": executive_summary,
@@ -233,7 +250,7 @@ def generate_discovery_html(
         "scan_name": scan_name,
         "scan_profile": scan_profile,
         "classification": classification,
-        "report_date": (scan_date or datetime.now()).strftime("%d/%m/%Y à %H:%M:%S"),
+        "report_date": _local(scan_date).strftime("%d/%m/%Y à %H:%M:%S"),
         "scanner_company_name": scanner_company_name,
         "target_company_name": target_company_name,
         "assets": template_assets,
