@@ -212,3 +212,30 @@ def test_without_network_zone_the_heading_falls_back_to_the_scan_name(db, make_s
     import re
     scan_id = _scan(db, make_scan, "app.exemple.com", "NMAP")
     assert re.search(r"<h3[^>]*>\s*test\s*</h3>", _html_report(db, scan_id))
+
+
+def test_placeholder_summary_is_not_printed_but_a_real_one_is(db, company):
+    from src.assets.domain.entities import AssetEntity
+    from src.reporting.application.services.html_generator import generate_vulnerability_html
+    asset = AssetEntity(company_id=company.id, name="a.exemple.com", ip_address="a.exemple.com")
+    db.add(asset)
+    db.commit()
+    placeholder = ("Résumé exécutif généré automatiquement : Des vulnérabilités ont été détectées. "
+                   "Veuillez consulter la section détaillée par host pour appliquer les correctifs prioritaires.")
+    html = generate_vulnerability_html(assets=[asset], all_vulnerabilities={}, executive_summary=placeholder).decode()
+    assert "EXECUTIVE SUMMARY" not in html
+    html = generate_vulnerability_html(assets=[asset], all_vulnerabilities={},
+                                       executive_summary="Apache 2.4.49 exploitable : mise à jour urgente.").decode()
+    assert "EXECUTIVE SUMMARY" in html and "mise à jour urgente" in html
+
+
+def test_ai_summary_failure_is_reported_instead_of_a_made_up_text(monkeypatch):
+    import asyncio
+    from src.ai.application.services import nlp
+
+    async def down(*args, **kwargs):
+        raise ConnectionError("ollama unreachable")
+    monkeypatch.setattr(nlp, "_call_ollama", down)
+    monkeypatch.setattr(nlp, "_call_gemini", down)
+    with pytest.raises(RuntimeError):
+        asyncio.run(nlp.generate_executive_summary([{"title": "x"}], language="French"))

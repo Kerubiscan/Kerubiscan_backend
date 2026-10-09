@@ -8,6 +8,17 @@ from src.vulnerabilities.domain.entities import VulnerabilityEntity
 
 NO_REMEDIATION = "Aucune recommandation fournie par le scanner pour ce point."
 
+# Text the AI module used to return when no AI answered; it was saved as if it were a summary
+_PLACEHOLDER_SUMMARIES = ("Résumé exécutif généré automatiquement : Des vulnérabilités ont été détectées.",)
+
+
+def _real_summary(summary: Optional[str]) -> Optional[str]:
+    """The executive summary, unless empty or the old placeholder (shown only when really written)."""
+    text = (summary or "").strip()
+    if not text or any(text.startswith(p) for p in _PLACEHOLDER_SUMMARIES):
+        return None
+    return text
+
 _CIA_LEVELS = {"H": "ÉLEVÉ", "L": "FAIBLE", "N": "AUCUN"}
 
 
@@ -199,7 +210,7 @@ def generate_vulnerability_html(
         "report_date": _report_date(scan_date),
         "scanner_company_name": scanner_company_name,
         "target_company_name": target_company_name,
-        "executive_summary": executive_summary,
+        "executive_summary": _real_summary(executive_summary),
         "assets": template_assets,
         "total_crit": total_crit,
         "total_high": total_high,

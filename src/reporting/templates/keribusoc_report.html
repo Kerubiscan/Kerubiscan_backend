@@ -372,10 +372,11 @@ table{margin:0!important}
         </div>
 
         <div class="clear"></div>
-    </div>
-
-    <div style="width: 1024px; box-sizing: border-box; text-align: center; font-size: 12px; color: #999; padding: 10px 0 20px 0; margin: 0 auto;">
-        © 2026 KVS™ · KerubiSOC Security. All rights reserved.
+        <!-- Inside the report and full width: outside it (1024 px wide, wider than an A4 page) it
+             was pushed alone onto a last, almost empty PDF page -->
+        <div style="width: 100%; box-sizing: border-box; text-align: center; font-size: 12px; color: #999; padding: 10px 0 0 0; break-inside: avoid; break-before: avoid;">
+            © 2026 KVS™ · KerubiSOC Security. All rights reserved.
+        </div>
     </div>
 </body>
 </html>
