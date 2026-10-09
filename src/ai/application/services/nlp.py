@@ -144,8 +144,10 @@ async def generate_executive_summary(vuln_data: List[Dict], language: str = "Fre
                     return await _call_gemini(client, fallback_prompt)
                 return await _call_ollama(client, fallback_prompt)
         except Exception as err:
+            # No made-up summary: the caller reports the failure (it used to receive a generic text
+            # that was then saved and printed in the reports as if the AI had written it)
             logger.error(f"AI generation failed: {str(err)}")
-            return "Résumé exécutif généré automatiquement : Des vulnérabilités ont été détectées. Veuillez consulter la section détaillée par host pour appliquer les correctifs prioritaires."
+            raise RuntimeError(f"Génération du résumé impossible : IA indisponible ({err})") from err
 
 async def generate_vulnerability_remediation(vuln_name: str, vuln_desc: str, language: str = "French", provider: str = None) -> dict:
     lang_name = "Français" if language.lower() in ["french", "français", "fr"] else "English"

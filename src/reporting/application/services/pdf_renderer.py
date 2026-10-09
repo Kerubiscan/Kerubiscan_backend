@@ -17,6 +17,9 @@ class PdfRenderingError(RuntimeError):
     pass
 
 
+PDF_SCALE = 0.7
+
+
 def html_to_pdf(html: Union[bytes, str]) -> bytes:
     """Renders an HTML document to an A4 PDF with the page settings of its @page/print CSS."""
     if isinstance(html, bytes):
@@ -37,7 +40,10 @@ def html_to_pdf(html: Union[bytes, str]) -> bytes:
                 page.set_default_timeout(RENDER_TIMEOUT_MS)
                 page.set_content(html, wait_until="load")
                 page.emulate_media(media="print")
-                return page.pdf(format="A4", print_background=True, prefer_css_page_size=True)
+                # Scale 0.7: the report is laid out for a ~1000 px wide screen (like the Nessus report);
+                # this used to happen by accident through a 1024 px wide footer, which also pushed the
+                # footer alone onto an extra last page
+                return page.pdf(format="A4", print_background=True, prefer_css_page_size=True, scale=PDF_SCALE)
             finally:
                 browser.close()
     except PdfRenderingError:
