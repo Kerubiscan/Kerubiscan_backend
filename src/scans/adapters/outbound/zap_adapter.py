@@ -31,8 +31,12 @@ def _clean(html: str) -> str:
 
 # Time budgets (minutes). Without them a large site keeps the worker busy for up to 24 h.
 SPIDER_MAX_MINUTES = 15
+AJAX_SPIDER_MAX_MINUTES = 10
 ASCAN_MAX_MINUTES = 90
+PASSIVE_SCAN_MAX_S = 300
 BOOT_TIMEOUT_S = 180
+# Browser of the AJAX spider: Firefox ESR from the image + the geckodriver bundled with ZAP
+AJAX_SPIDER_BROWSER = "firefox-headless"
 
 
 class ZAPAdapter:
@@ -64,8 +68,46 @@ class ZAPAdapter:
             time.sleep(poll_s)
 
     @staticmethod
+    def _ajax_spider(zap_url: str, api_key: str, target: str, minutes: int) -> None:
+        """Explores the target in a real browser. The classic spider only follows links in the HTML:
+        on a JavaScript application (Angular, React...) it finds the static files but none of the API
+        calls, so the active scan had no parameter to attack (Juice Shop: CSP/CORS alerts only).
+        Never fatal: without a browser the scan goes on with the classic spider's results."""
+        try:
+            ZAPAdapter._api(zap_url, api_key, "/JSON/ajaxSpider/action/setOptionBrowserId/", String=AJAX_SPIDER_BROWSER)
+            ZAPAdapter._api(zap_url, api_key, "/JSON/ajaxSpider/action/setOptionMaxDuration/", Integer=minutes)
+            ZAPAdapter._api(zap_url, api_key, "/JSON/ajaxSpider/action/scan/", url=target)
+        except ScanError as e:
+            logger.warning(f"ZAP AJAX spider unavailable on {target}, classic spider only: {e}")
+            return
+        deadline = time.time() + minutes * 60 + 60
+        while ZAPAdapter._api(zap_url, api_key, "/JSON/ajaxSpider/view/status/").get("status") == "running":
+            if time.time() > deadline:
+                logger.warning(f"ZAP AJAX spider on {target} exceeded its time budget, stopping it")
+                try:
+                    ZAPAdapter._api(zap_url, api_key, "/JSON/ajaxSpider/action/stop/")
+                except ScanError:
+                    pass
+                break
+            time.sleep(5)
+        found = ZAPAdapter._api(zap_url, api_key, "/JSON/ajaxSpider/view/numberOfResults/").get("numberOfResults", "?")
+        logger.info(f"ZAP AJAX spider on {target}: {found} requests found")
+
+    @staticmethod
+    def _wait_passive_scan(zap_url: str, api_key: str) -> None:
+        """Alerts read while the passive scanner still has records queued would be missing."""
+        deadline = time.time() + PASSIVE_SCAN_MAX_S
+        while time.time() < deadline:
+            left = ZAPAdapter._api(zap_url, api_key, "/JSON/pscan/view/recordsToScan/").get("recordsToScan", "0")
+            if str(left) == "0":
+                return
+            time.sleep(3)
+        logger.warning("ZAP passive scan still running after its time budget, reading the alerts found so far")
+
+    @staticmethod
     def run_scan(targets: Union[str, List[str]], credentials: Dict = None,
-                 spider_minutes: int = SPIDER_MAX_MINUTES, ascan_minutes: int = ASCAN_MAX_MINUTES) -> List[Dict]:
+                 spider_minutes: int = SPIDER_MAX_MINUTES, ascan_minutes: int = ASCAN_MAX_MINUTES,
+                 ajax_minutes: int = AJAX_SPIDER_MAX_MINUTES) -> List[Dict]:
         """Runs ZAP spider + active scan on a list of URLs and returns the raw alerts.
 
         Every target must be a full URL (scheme://host[:port][/path]) so ZAP keeps the
@@ -157,6 +199,8 @@ class ZAPAdapter:
                 spider_id = ZAPAdapter._api(zap_url, api_key, "/JSON/spider/action/scan/", url=target).get("scan")
                 if spider_id is not None:
                     ZAPAdapter._wait(zap_url, api_key, "spider", spider_id, time.time() + spider_minutes * 60 + 60, 2)
+                if ajax_minutes:
+                    ZAPAdapter._ajax_spider(zap_url, api_key, target, ajax_minutes)
                 reached.append(target)
 
             if not reached:
@@ -171,6 +215,7 @@ class ZAPAdapter:
             deadline = time.time() + ascan_minutes * 60 + 120
             for ascan_id in (i for i in ascan_ids if i is not None):
                 ZAPAdapter._wait(zap_url, api_key, "ascan", ascan_id, deadline, 10)
+            ZAPAdapter._wait_passive_scan(zap_url, api_key)
 
             # All alerts, kept when they belong to a scanned host: filtering by base URL lost the
             # alerts of http:// targets redirected to https://

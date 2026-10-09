@@ -125,7 +125,12 @@ table{margin:0!important}
  tr[id^="id-vulndetail-"]{display:table-row!important}
  .button,.expand,.expand-spacer{display:none!important}
  .plugin-row{cursor:default!important}
+ /* A vulnerability row stays with the start of its details, but long details (ZAP lists up to 20
+    URLs) may continue on the next page: kept whole, they left half-empty pages behind them */
  tr,.table-wrapper h3{break-inside:avoid}
+ .plugin-row{break-after:avoid}
+ tr[id^="id-vulndetail-"]{break-inside:auto}
+ .details-box{orphans:4;widows:3}
 }
 </style>
 </head>

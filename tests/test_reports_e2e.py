@@ -239,3 +239,32 @@ def test_ai_summary_failure_is_reported_instead_of_a_made_up_text(monkeypatch):
     monkeypatch.setattr(nlp, "_call_gemini", down)
     with pytest.raises(RuntimeError):
         asyncio.run(nlp.generate_executive_summary([{"title": "x"}], language="French"))
+
+
+@needs_chromium
+def test_long_details_do_not_leave_half_empty_pdf_pages(company):
+    """ZAP findings list up to 20 URLs each. Kept whole, a long detail block jumped to the next page
+    and left the previous one half empty (seen on the Juice Shop report)."""
+    from src.assets.domain.entities import AssetEntity
+    from src.vulnerabilities.domain.entities import VulnerabilityEntity
+    from src.vulnerabilities.domain.models import VulnSeverity
+    from src.reporting.application.services.html_generator import generate_vulnerability_html
+    from src.reporting.application.services.pdf_renderer import html_to_pdf
+    asset = AssetEntity(id="js", company_id=company.id, name="juice-shop", ip_address="juice-shop")
+    urls = "\n\nEmplacements :\n" + "\n".join(
+        f"- http://juice-shop:3000/node_modules/express/lib/router/index.js:{i}:13 (paramètre : //cdnjs.cloudflare.com/"
+        f"ajax/libs/cookieconsent2/3.1.0/cookieconsent.min.js) — preuve : <script src=\"//cdnjs.cloudflare.com/x.js\">"
+        for i in range(20))
+    vulns = [VulnerabilityEntity(id=str(i), asset_id="js", title=f"ZAP alert {i}", severity=VulnSeverity.MEDIUM,
+                                 source_engine="OWASP_ZAP", rule_id=f"zap:1003{i}", description="Alert." + urls)
+             for i in range(6)]
+    pdf = html_to_pdf(generate_vulnerability_html(assets=[asset], all_vulnerabilities={"js": vulns},
+                                                  executive_summary=None, report_title="Cloud"))
+    reader = pypdf.PdfReader(io.BytesIO(pdf))
+    assert len(reader.pages) > 2
+    for number, page in enumerate(reader.pages[:-1], start=1):
+        heights = []
+        # y of each text run in page units (PDF origin is the bottom of the page)
+        page.extract_text(visitor_text=lambda text, cm, tm, *_: text.strip() and heights.append(tm[5] * cm[3] + cm[5]))
+        lowest = min(heights) / float(page.mediabox.height)
+        assert lowest < 0.2, f"page {number} ends at {1 - lowest:.0%} of its height"
