@@ -141,6 +141,11 @@ def _estimate_remaining(db: Session, scan: ScanEntity, elapsed: Optional[int]):
     """(eta_seconds, basis) for a running scan, from real data only (never a made-up figure)."""
     if scan.status != ScanStatus.IN_PROGRESS or elapsed is None:
         return None, None
+    # 0. The running engine itself: from its phases (ZAP) or its own pace (Nmap, Nuclei)
+    from src.scans.application.services.progress import engine_remaining
+    left = engine_remaining(scan)
+    if left is not None:
+        return left, "engine"
     # 1. Previous complete runs of this very scan (rerun on the same row)
     logs = (db.query(AuditLog).filter(AuditLog.resource_type == "SCAN", AuditLog.resource_id == str(scan.id),
                                       AuditLog.action == "SCAN_COMPLETED")
@@ -159,6 +164,10 @@ def _estimate_remaining(db: Session, scan: ScanEntity, elapsed: Optional[int]):
     # A past duration clearly exceeded no longer says anything about this run (engine or target
     # changed): it kept showing "end imminent" for the rest of the scan.
     if estimate and elapsed > estimate * OVERRUN_TOLERANCE:
+        estimate, basis = None, None
+    # Nor one the real progress contradicts, past its first half: a 5 min past run, 5 min elapsed,
+    # but only 18 % done
+    if estimate and elapsed >= estimate / 2 and (scan.progress or 0) < 50 * min(elapsed / estimate, 1.0):
         estimate, basis = None, None
     # 3. Extrapolation from the real progress, once past the port discovery (OpenVAS and ZAP report
     # their own %)

@@ -88,8 +88,9 @@ def recompute_progress(scan: ScanEntity) -> None:
     scan.progress = int(total / len(states) * 100)
 
 
-def set_target_progress(scan_id: str, target: str, percent: int) -> None:
-    """Records a step of a running target (0-99) and updates the scan percentage."""
+def set_target_progress(scan_id: str, target: str, percent: int, remaining_s: Optional[float] = None) -> None:
+    """Records a step of a running target (0-99) and updates the scan percentage. remaining_s, when
+    the engine can tell, is the time it still needs (read back with engine_remaining)."""
     db: Session = SessionLocal()
     try:
         scan = _locked_scan(db, scan_id)
@@ -99,6 +100,9 @@ def set_target_progress(scan_id: str, target: str, percent: int) -> None:
         entry = dict(meta.get(target) or {})
         entry["progress"] = max(int(entry.get("progress") or 0), min(int(percent), 99))
         entry["updated_at"] = now_iso()
+        if remaining_s is not None:
+            entry["eta_s"] = max(int(remaining_s), 0)
+            entry["eta_at"] = entry["updated_at"]
         meta[target] = entry
         scan.target_meta = meta
         flag_modified(scan, "target_meta")
@@ -201,6 +205,22 @@ def heartbeat(scan_id: str, target: str, target_status: Optional[str] = None, en
         db.commit()
     finally:
         db.close()
+
+
+def engine_remaining(scan) -> Optional[int]:
+    """Seconds the running targets' engines still need, as they last estimated it, minus the time
+    elapsed since. None when no running engine gave an estimate."""
+    now = datetime.now(timezone.utc)
+    best = None
+    for target, entry in (scan.target_meta or {}).items():
+        if (scan.target_states or {}).get(target) in TERMINAL_STATES or not isinstance(entry, dict):
+            continue
+        at = _parse_iso(entry.get("eta_at"))
+        if entry.get("eta_s") is None or at is None:
+            continue
+        left = max(int(entry["eta_s"] - (now - at).total_seconds()), 0)
+        best = left if best is None else max(best, left)
+    return best
 
 
 def record_openvas_progress(scan_id: str, target: str, value: int) -> float:

@@ -129,7 +129,9 @@ class ZAPAdapter:
         """Runs ZAP spider + active scan on a list of URLs and returns the raw alerts.
 
         on_progress receives the real progress of ZAP's work, from 0 to 1 (spider, AJAX spider,
-        then the active scan status reported by ZAP).
+        then the active scan status reported by ZAP), and the seconds ZAP still needs, estimated from
+        its phases: what is left of the current one plus the time budgets of the next ones, then,
+        during the active scan, its own pace (capped by what is left of its budget).
 
         Every target must be a full URL (scheme://host[:port][/path]) so ZAP keeps the
         original hostname (Host header, SNI, virtual hosts).
@@ -216,16 +218,27 @@ class ZAPAdapter:
                 logger.warning(f"ZAP: browser-driven scan rules could not be disabled: {e}")
             logger.info("ZAP daemon ready")
 
-            def report(fraction: float) -> None:
+            def report(fraction: float, remaining_s: Optional[float] = None) -> None:
                 if on_progress:
                     try:
-                        on_progress(min(max(fraction, 0.0), 1.0))
+                        on_progress(min(max(fraction, 0.0), 1.0), remaining_s)
                     except Exception as e:   # progress display must never stop the scan
                         logger.warning(f"ZAP progress not recorded: {e}")
+
+            ajax_budget_s = ajax_minutes * 60
+            ascan_budget_s = ascan_minutes * 60
+
+            def pace_left(started: float, percent: float, budget_left: float) -> float:
+                """Seconds left in a phase from its own pace, never beyond its remaining budget."""
+                done = time.time() - started
+                if percent >= 5 and done > 0:
+                    return min(done * (100 - percent) / percent, budget_left)
+                return budget_left
 
             n = len(target_list)
             reached = []
             for k, target in enumerate(target_list):
+                later_targets = n - k - 1
                 try:
                     ZAPAdapter._api(zap_url, api_key, "/JSON/core/action/accessUrl/", url=target, followRedirects="true")
                 except ScanError as e:
@@ -233,13 +246,22 @@ class ZAPAdapter:
                     continue
                 spider_id = ZAPAdapter._api(zap_url, api_key, "/JSON/spider/action/scan/", url=target).get("scan")
                 if spider_id is not None:
-                    ZAPAdapter._wait(zap_url, api_key, "spider", spider_id, time.time() + spider_minutes * 60 + 60, 2,
-                                     on_status=lambda st, k=k: report(PHASE_SPIDER * (k + st / 100) / n))
+                    spider_start = time.time()
+                    ZAPAdapter._wait(
+                        zap_url, api_key, "spider", spider_id, spider_start + spider_minutes * 60 + 60, 2,
+                        on_status=lambda st, k=k, t0=spider_start, rest=later_targets: report(
+                            PHASE_SPIDER * (k + st / 100) / n,
+                            pace_left(t0, st, spider_minutes * 60 - (time.time() - t0))
+                            + rest * (spider_minutes * 60 + ajax_budget_s) + ajax_budget_s * bool(ajax_minutes)
+                            + ascan_budget_s))
                 if ajax_minutes:
-                    ZAPAdapter._ajax_spider(zap_url, api_key, target, ajax_minutes,
-                                            on_fraction=lambda f, k=k: report(PHASE_SPIDER + PHASE_AJAX * (k + f) / n))
+                    ZAPAdapter._ajax_spider(
+                        zap_url, api_key, target, ajax_minutes,
+                        on_fraction=lambda f, k=k, rest=later_targets: report(
+                            PHASE_SPIDER + PHASE_AJAX * (k + f) / n,
+                            ajax_budget_s * (1 - f) + rest * (spider_minutes * 60 + ajax_budget_s) + ascan_budget_s))
                 reached.append(target)
-            report(PHASE_SPIDER + PHASE_AJAX)
+            report(PHASE_SPIDER + PHASE_AJAX, ascan_budget_s)
 
             if not reached:
                 raise ScanError(f"ZAP n'a pu joindre aucune URL : {target_list}")
@@ -250,13 +272,18 @@ class ZAPAdapter:
                     ascan_ids.append(ZAPAdapter._api(zap_url, api_key, "/JSON/ascan/action/scan/", url=target, recurse="true").get("scan"))
                 except ScanError as e:
                     logger.warning(f"ZAP active scan could not start on {target}: {e}")
-            deadline = time.time() + ascan_minutes * 60 + 120
+            ascan_start = time.time()
+            deadline = ascan_start + ascan_minutes * 60 + 120
             started_ids = [i for i in ascan_ids if i is not None]
             base = PHASE_SPIDER + PHASE_AJAX
             for j, ascan_id in enumerate(started_ids):
+                # Overall pace of the active scans (they share one time budget)
                 ZAPAdapter._wait(zap_url, api_key, "ascan", ascan_id, deadline, 10,
-                                 on_status=lambda st, j=j: report(base + (1 - base) * (j + st / 100) / len(started_ids)))
-            report(1.0)
+                                 on_status=lambda st, j=j: report(
+                                     base + (1 - base) * (j + st / 100) / len(started_ids),
+                                     pace_left(ascan_start, 100 * (j + st / 100) / len(started_ids),
+                                               max(ascan_budget_s - (time.time() - ascan_start), 0))))
+            report(1.0, 0)
             ZAPAdapter._wait_passive_scan(zap_url, api_key)
 
             # All alerts, kept when they belong to a scanned host: filtering by base URL lost the
