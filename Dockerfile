@@ -26,6 +26,13 @@ RUN wget https://github.com/zaproxy/zaproxy/releases/download/v2.17.0/ZAP_2.17.0
     && rm ZAP_2.17.0_Linux.tar.gz \
     && ln -s /opt/zaproxy/zap.sh /usr/local/bin/zap
 
+# ZAP AJAX spider: explores JavaScript applications (Angular, React...) in a real browser, as in
+# ZAP's own images: Firefox ESR driven by the geckodriver of the webdriverlinux add-on. The add-ons
+# are installed into /opt/zaproxy/plugin when the release lacks them, since every scan starts ZAP
+# with a fresh home directory. The build fails if one is still missing.
+ENV ZAP_AJAX_ADDONS="spiderAjax selenium webdriverlinux"
+RUN apt-get update && apt-get install -y --no-install-recommends firefox-esr     && rm -rf /var/lib/apt/lists/*     && missing="" && for a in $ZAP_AJAX_ADDONS; do ls /opt/zaproxy/plugin | grep -q "^$a-" || missing="$missing -addoninstall $a"; done     && if [ -n "$missing" ]; then zap -cmd -dir /tmp/zaphome $missing && cp /tmp/zaphome/plugin/*.zap /opt/zaproxy/plugin/ && rm -rf /tmp/zaphome; fi     && for a in $ZAP_AJAX_ADDONS; do ls /opt/zaproxy/plugin | grep -q "^$a-" || { echo "ZAP add-on $a missing"; exit 1; }; done     && firefox-esr --version
+
 # Nuclei, pinned to a fixed release (was COPY from projectdiscovery/nuclei:latest).
 # Pin NUCLEI_SHA256 to the checksum from the release's checksums.txt before production (see REVUE_SCANNER.md R13).
 ENV NUCLEI_VERSION=3.11.1

@@ -555,3 +555,62 @@ def test_finished_run_records_its_duration_for_the_next_estimates(db, make_scan,
     scan_tasks.run_vulnerability_scan(scan_id, "app.exemple.com", "app.exemple.com", "cfg")
     log = db.query(AuditLog).filter(AuditLog.resource_id == scan_id, AuditLog.action == "SCAN_COMPLETED").one()
     assert "duration_seconds" in log.details and log.details["engine"] == "NMAP"
+
+
+def _fake_zap(monkeypatch, api):
+    from src.scans.adapters.outbound import zap_adapter
+
+    class FakeProc:
+        pid = 1234
+        def poll(self): return None
+        def wait(self, timeout=None): return 0
+    monkeypatch.setattr(zap_adapter.subprocess, "Popen", lambda cmd, **kw: FakeProc())
+    monkeypatch.setattr(zap_adapter, "_register", lambda p: None)
+    monkeypatch.setattr(zap_adapter, "_unregister", lambda p: None)
+    monkeypatch.setattr(zap_adapter.ZAPAdapter, "_api", staticmethod(api))
+    monkeypatch.setattr(zap_adapter.ZAPAdapter, "_wait", staticmethod(lambda *a, **kw: True))
+    monkeypatch.setattr(zap_adapter.os, "killpg", lambda *a: None, raising=False)
+    monkeypatch.setattr(zap_adapter.time, "sleep", lambda s: None)
+    return zap_adapter
+
+
+def test_zap_explores_javascript_apps_with_the_ajax_spider_before_the_active_scan(monkeypatch):
+    """Juice Shop (Angular): the classic spider alone found no API call, so ZAP reported CSP/CORS only."""
+    calls = []
+    ajax_status = iter(["running", "stopped"])
+    queued = iter(["12", "0"])
+    alert = {"url": "http://juice-shop:3000/rest/products/search?q=", "alert": "SQL Injection", "risk": "High", "pluginId": "40018"}
+
+    def api(zap_url, api_key, path, **params):
+        calls.append(path)
+        if "version" in path:
+            return {"version": "2.17.0"}
+        if path == "/JSON/ajaxSpider/view/status/":
+            return {"status": next(ajax_status)}
+        if path == "/JSON/pscan/view/recordsToScan/":
+            return {"recordsToScan": next(queued)}
+        if path == "/JSON/core/view/alerts/":
+            return {"alerts": [alert]}
+        return {"scan": "0", "Result": "OK"}
+    zap_adapter = _fake_zap(monkeypatch, api)
+    alerts = zap_adapter.ZAPAdapter.run_scan(["http://juice-shop:3000"])
+    assert alerts == [alert]
+    assert calls.index("/JSON/ajaxSpider/action/scan/") < calls.index("/JSON/ascan/action/scan/")
+    # Alerts are read once the passive scanner has emptied its queue
+    assert calls.count("/JSON/pscan/view/recordsToScan/") == 2
+    assert calls.index("/JSON/pscan/view/recordsToScan/") < calls.index("/JSON/core/view/alerts/")
+
+
+def test_zap_scan_goes_on_when_the_ajax_spider_is_unavailable(monkeypatch):
+    calls = []
+
+    def api(zap_url, api_key, path, **params):
+        calls.append(path)
+        if "version" in path:
+            return {"version": "2.17.0"}
+        if path.startswith("/JSON/ajaxSpider/"):
+            raise zap_adapter.ScanError("no_implementor: ajaxSpider")
+        return {"scan": "0", "alerts": []}
+    zap_adapter = _fake_zap(monkeypatch, api)
+    assert zap_adapter.ZAPAdapter.run_scan(["http://juice-shop:3000"]) == []
+    assert "/JSON/ascan/action/scan/" in calls                   # the active scan still ran
