@@ -5,8 +5,9 @@ import shutil
 import tempfile
 import logging
 import base64
+import re
 import subprocess
-from typing import List, Dict, Optional, Union
+from typing import Callable, List, Dict, Optional, Union
 from urllib.parse import urlsplit
 from src.scans.adapters.outbound.base_adapter import BaseScannerAdapter, ScanError
 from src.vulnerabilities.domain import severity as sev
@@ -23,6 +24,22 @@ PROFILES = {
 }
 
 MIN_TEMPLATES = 100
+
+
+# -stats -sj prints a JSON line every 5 s; "percent" is the share of the planned requests already sent
+_NUCLEI_PERCENT = re.compile(r'"percent"\s*:\s*"?([0-9.]+)')
+
+
+def nuclei_fraction(output: str) -> Optional[float]:
+    """Progress of the Nuclei run (0 to 1) from its latest statistics line, None if none yet."""
+    matches = _NUCLEI_PERCENT.findall(output or "")
+    return min(float(matches[-1]), 100.0) / 100 if matches else None
+
+
+def _report_nuclei_progress(output: str, on_progress: Callable[[float], None]) -> None:
+    fraction = nuclei_fraction(output)
+    if fraction is not None:
+        on_progress(fraction)
 
 
 def _templates_dir() -> str:
@@ -67,7 +84,7 @@ def ensure_templates() -> int:
 class NucleiAdapter(BaseScannerAdapter):
     @staticmethod
     def run_scan(target: Union[str, List[str]], ports: Optional[str] = None, credentials: Optional[Dict] = None,
-                 profile: str = "lan") -> List[Dict]:
+                 profile: str = "lan", on_progress: Optional[Callable[[float], None]] = None) -> List[Dict]:
         """Runs a Nuclei scan and returns the raw JSON findings."""
         targets = [target] if isinstance(target, str) else list(target)
         targets = [t for t in targets if t]
@@ -116,7 +133,13 @@ class NucleiAdapter(BaseScannerAdapter):
             for proxy_var in ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy", "NO_PROXY", "no_proxy"]:
                 env.pop(proxy_var, None)
 
-            returncode, stderr_tail = NucleiAdapter.run_process(cmd=cmd, timeout=12 * 3600, err_file_path=err_file, env=env)
+            on_output = None
+            if on_progress:
+                # JSON statistics every 5 s, with the share of the requests already sent ("percent")
+                cmd.extend(["-stats", "-sj", "-si", "5"])
+                on_output = lambda text: _report_nuclei_progress(text, on_progress)  # noqa: E731
+            returncode, stderr_tail = NucleiAdapter.run_process(cmd=cmd, timeout=12 * 3600, err_file_path=err_file,
+                                                                env=env, on_output=on_output)
             if returncode != 0:
                 raise ScanError(f"Nuclei exited with code {returncode}: {stderr_tail}")
             if not os.path.exists(out_file):

@@ -3,8 +3,9 @@ import signal
 import subprocess
 import threading
 import logging
+import time
 from dataclasses import dataclass
-from typing import List, Optional, Tuple, Dict, Any
+from typing import Callable, List, Optional, Tuple, Dict, Any
 
 logger = logging.getLogger(__name__)
 
@@ -87,25 +88,51 @@ class BaseScannerAdapter:
             pass
 
     @staticmethod
-    def run_process(cmd: List[str], timeout: int, err_file_path: Optional[str] = None, env: Optional[Dict[str, str]] = None) -> Tuple[int, str]:
-        """Runs a scanner subprocess in a new process group with timeout and standard error capturing."""
+    def _tail(path: str, size: int = 8192) -> str:
+        try:
+            with open(path, "rb") as f:
+                f.seek(0, os.SEEK_END)
+                f.seek(max(f.tell() - size, 0))
+                return f.read().decode("utf-8", errors="replace")
+        except OSError:
+            return ""
+
+    @staticmethod
+    def run_process(cmd: List[str], timeout: int, err_file_path: Optional[str] = None, env: Optional[Dict[str, str]] = None,
+                    on_output: Optional[Callable[[str], None]] = None, poll_s: float = 3) -> Tuple[int, str]:
+        """Runs a scanner subprocess in a new process group with timeout and standard error capturing.
+
+        on_output, when given, receives every poll_s seconds the end of the scanner's output (stdout
+        and stderr), from which the adapter reads the scanner's own progress."""
         if not err_file_path:
             import tempfile
             fd, err_file_path = tempfile.mkstemp(prefix="scanner_stderr_")
             os.close(fd)
-            
-        with open(err_file_path, "w") as err:
+        out_path = err_file_path + ".out" if on_output else None
+
+        with open(err_file_path, "w") as err, open(out_path or os.devnull, "w") as out:
             proc = subprocess.Popen(
                 cmd,
                 stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
+                stdout=out if on_output else subprocess.DEVNULL,
                 stderr=err,
                 env=env or os.environ.copy(),
                 start_new_session=True
             )
             _register(proc)
             try:
-                proc.wait(timeout=timeout)
+                deadline = time.monotonic() + timeout
+                while True:
+                    try:
+                        proc.wait(timeout=poll_s if on_output else max(deadline - time.monotonic(), 0))
+                        break
+                    except subprocess.TimeoutExpired:
+                        if time.monotonic() >= deadline:
+                            raise
+                        try:
+                            on_output(BaseScannerAdapter._tail(out_path) + "\n" + BaseScannerAdapter._tail(err_file_path))
+                        except Exception as e:   # a progress display problem never stops the scan
+                            logger.warning(f"Scanner progress not read: {e}")
             except subprocess.TimeoutExpired:
                 logger.error(f"Scanner process timed out after {timeout} seconds.")
                 BaseScannerAdapter._kill(proc)
