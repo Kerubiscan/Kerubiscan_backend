@@ -31,7 +31,20 @@ RUN wget https://github.com/zaproxy/zaproxy/releases/download/v2.17.0/ZAP_2.17.0
 # are installed into /opt/zaproxy/plugin when the release lacks them, since every scan starts ZAP
 # with a fresh home directory. The build fails if one is still missing.
 ENV ZAP_AJAX_ADDONS="spiderAjax selenium webdriverlinux"
-RUN apt-get update && apt-get install -y --no-install-recommends firefox-esr     && rm -rf /var/lib/apt/lists/*     && missing="" && for a in $ZAP_AJAX_ADDONS; do ls /opt/zaproxy/plugin | grep -q "^$a-" || missing="$missing -addoninstall $a"; done     && if [ -n "$missing" ]; then zap -cmd -dir /tmp/zaphome $missing && cp /tmp/zaphome/plugin/*.zap /opt/zaproxy/plugin/ && rm -rf /tmp/zaphome; fi     && for a in $ZAP_AJAX_ADDONS; do ls /opt/zaproxy/plugin | grep -q "^$a-" || { echo "ZAP add-on $a missing"; exit 1; }; done     && firefox-esr --version
+RUN apt-get update && apt-get install -y --no-install-recommends firefox-esr \
+    && rm -rf /var/lib/apt/lists/* \
+    && missing="" && for a in $ZAP_AJAX_ADDONS; do ls /opt/zaproxy/plugin | grep -q "^$a-" || missing="$missing -addoninstall $a"; done \
+    && if [ -n "$missing" ]; then zap -cmd -dir /tmp/zaphome $missing && cp /tmp/zaphome/plugin/*.zap /opt/zaproxy/plugin/ && rm -rf /tmp/zaphome; fi \
+    && for a in $ZAP_AJAX_ADDONS; do ls /opt/zaproxy/plugin | grep -q "^$a-" || { echo "ZAP add-on $a missing"; exit 1; }; done \
+    && firefox-esr --version
+
+# The "client" add-on (Client Spider, browser-based authentication: neither is used here) prepares a
+# Firefox profile while ZAP starts. On the test server ZAP then never answered its API ("Failed to get
+# or create Firefox profile zap-client-profile", then nothing), and already took ~160 s to answer
+# before Firefox was installed. Removed: the add-ons that need it are simply not loaded.
+COPY scripts/zap_smoke_test.sh /opt/zap_smoke_test.sh
+RUN rm -f /opt/zaproxy/plugin/client-*.zap \
+    && sed -i 's/\r$//' /opt/zap_smoke_test.sh && sh /opt/zap_smoke_test.sh
 
 # Nuclei, pinned to a fixed release (was COPY from projectdiscovery/nuclei:latest).
 # Pin NUCLEI_SHA256 to the checksum from the release's checksums.txt before production (see REVUE_SCANNER.md R13).

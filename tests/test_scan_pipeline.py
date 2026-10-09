@@ -31,7 +31,7 @@ def fakes(monkeypatch):
     monkeypatch.setattr(scan_tasks, "_resolve_dns", lambda host: "203.0.113.10")
     monkeypatch.setattr(scan_tasks, "_probe_web", lambda host, path="": list(state["probe"]))
 
-    def phase1(target, ports=None, credentials=None, profile="lan"):
+    def phase1(target, ports=None, credentials=None, profile="lan", **kw):
         calls["phase1"].append((target, profile, credentials))
         return state["phase1_hosts"]
     monkeypatch.setattr(NmapAdapter, "run_detailed_discovery_scan", staticmethod(phase1))
@@ -43,7 +43,7 @@ def fakes(monkeypatch):
 
     from src.scans.adapters.outbound import nuclei_adapter, zap_adapter
 
-    def nuclei(target, ports=None, credentials=None, profile="lan"):
+    def nuclei(target, ports=None, credentials=None, profile="lan", **kw):
         calls["nuclei"].append(list(target))
         return [{"template_id": "CVE-2021-41773", "name": "Apache 2.4.49 - Path Traversal", "severity": "high",
                  "cvss_score": 7.5, "cve_id": "CVE-2021-41773", "cve_ids": ["CVE-2021-41773"],

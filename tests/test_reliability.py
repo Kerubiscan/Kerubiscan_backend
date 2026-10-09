@@ -353,7 +353,7 @@ def test_nuclei_credentials_go_to_a_config_file_not_the_command_line(db, monkeyp
     from src.scans.adapters.outbound import nuclei_adapter
     captured = {}
 
-    def fake_run(cmd, timeout, err_file_path=None, env=None):
+    def fake_run(cmd, timeout, err_file_path=None, env=None, **kw):
         captured["cmd"] = cmd
         import os as _os
         cfg = [c for c in cmd if c.endswith(".yaml")]
@@ -539,8 +539,23 @@ def test_end_estimate_uses_previous_runs_of_the_same_scan(db, make_scan, fakes):
     db.commit()
     eta, basis = endpoints._estimate_remaining(db, scan, elapsed=200)
     assert basis == "history" and eta == 1000
-    eta, _ = endpoints._estimate_remaining(db, scan, elapsed=5000)
-    assert eta == 0                                                 # estimate exceeded: end imminent
+    eta, basis = endpoints._estimate_remaining(db, scan, elapsed=1300)
+    assert basis == "history" and eta == 0                          # just past the usual duration: end imminent
+
+
+def test_a_clearly_exceeded_past_duration_is_no_longer_used(db, make_scan, fakes):  # noqa: F811
+    """Juice Shop: the first ZAP run took 5 min; with the AJAX spider the next one lasts much longer,
+    and "end imminent" stayed on screen for the whole scan."""
+    from src.scans.adapters.inbound.api import endpoints
+    scan_id = make_scan("app.exemple.com", "NMAP")
+    scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).one()
+    db.add(AuditLog(user_id="system", action="SCAN_COMPLETED", resource_type="SCAN",
+                    resource_id=scan_id, details={"duration_seconds": 300}))
+    db.commit()
+    scan.progress = 20
+    assert endpoints._estimate_remaining(db, scan, elapsed=1000) == (None, None)   # "estimating"
+    scan.progress = 50
+    assert endpoints._estimate_remaining(db, scan, elapsed=1000) == (1000, "progress")
 
 
 def test_no_end_estimate_without_reliable_basis(db, make_scan):
@@ -615,3 +630,88 @@ def test_zap_scan_goes_on_when_the_ajax_spider_is_unavailable(monkeypatch):
     zap_adapter = _fake_zap(monkeypatch, api)
     assert zap_adapter.ZAPAdapter.run_scan(["http://juice-shop:3000"]) == []
     assert "/JSON/ascan/action/scan/" in calls                   # the active scan still ran
+
+
+def test_zap_reports_its_real_progress_through_every_phase(monkeypatch):
+    """The scan stayed at 5 % during the whole ZAP run."""
+    ascan = iter(["0", "40", "100"])
+
+    def api(zap_url, api_key, path, **params):
+        if "version" in path:
+            return {"version": "2.17.0"}
+        if path == "/JSON/ajaxSpider/view/status/":
+            return {"status": "stopped"}
+        if path == "/JSON/ascan/view/status/":
+            return {"status": next(ascan)}
+        if path == "/JSON/spider/view/status/":
+            return {"status": "100"}
+        return {"scan": "0", "alerts": []}
+    from src.scans.adapters.outbound import zap_adapter as module
+    real_wait = module.ZAPAdapter.__dict__["_wait"]                 # the real polling, kept by this test
+    zap_adapter = _fake_zap(monkeypatch, api)
+    monkeypatch.setattr(zap_adapter.ZAPAdapter, "_wait", real_wait)
+    seen = []
+    zap_adapter.ZAPAdapter.run_scan(["http://juice-shop:3000"], on_progress=seen.append)
+    assert seen == sorted(seen) and seen[-1] == 1.0                 # never goes back, ends at 100 %
+    assert any(0.25 < f < 1.0 for f in seen)                        # the active scan status is followed
+
+
+def test_engine_progress_maps_to_the_scan_percentage_without_redundant_writes():
+    steps = []
+
+    class Ctx:
+        def alive(self): pass
+        def step(self, percent): steps.append(percent)
+    on_progress = scan_tasks._engine_progress(Ctx(), 5, 85)
+    for fraction in (0.0, 0.001, 0.5, 0.5, 1.0):
+        on_progress(fraction)
+    assert steps == [5, 45, 85]
+
+
+# ----------------------------------------------------------------------------- live progress
+
+
+def test_nmap_progress_is_read_from_its_statistics_lines():
+    from src.scans.adapters.outbound.nmap_adapter import nmap_fraction
+    assert nmap_fraction("Starting Nmap 7.95") is None
+    out = ("Stats: 0:00:10 elapsed; 0 hosts completed (1 up), 1 undergoing SYN Stealth Scan\n"
+           "SYN Stealth Scan Timing: About 40.00% done; ETC: 18:30 (0:00:15 remaining)\n")
+    assert nmap_fraction(out) == pytest.approx(0.05 + 0.45 * 0.40)
+    out += "Service scan Timing: About 50.00% done; ETC: 18:31 (0:00:30 remaining)\n"
+    assert nmap_fraction(out) == pytest.approx(0.625)                # latest phase wins
+    out += "NSE Timing: About 99.50% done; ETC: 18:32 (0:00:01 remaining)\n"
+    assert 0.99 < nmap_fraction(out) <= 1.0
+
+
+def test_nuclei_progress_is_read_from_its_json_statistics():
+    from src.scans.adapters.outbound.nuclei_adapter import nuclei_fraction
+    assert nuclei_fraction("[INF] Templates loaded for current scan: 9000") is None
+    out = ('{"duration":"0:00:05","errors":"0","hosts":"1","matched":"0","percent":"12","requests":"1200"}\n'
+           '{"duration":"0:00:10","errors":"0","hosts":"1","matched":"1","percent":"37","requests":"3700"}\n')
+    assert nuclei_fraction(out) == 0.37
+    assert nuclei_fraction('{"percent": 64}') == 0.64
+
+
+def test_scanner_output_is_followed_while_the_process_runs(tmp_path):
+    """The percentage moved only between fixed steps (5, 30, 95 %) during Nmap and Nuclei runs."""
+    import sys
+    from src.scans.adapters.outbound.base_adapter import BaseScannerAdapter
+    script = ("import time\n"
+              "for p in (10, 50, 90):\n"
+              "    print(f'SYN Stealth Scan Timing: About {p}.00% done', flush=True)\n"
+              "    time.sleep(0.4)\n")
+    seen = []
+    code, _ = BaseScannerAdapter.run_process([sys.executable, "-c", script], timeout=30,
+                                             err_file_path=str(tmp_path / "err.log"),
+                                             on_output=seen.append, poll_s=0.1)
+    assert code == 0
+    texts = "".join(seen)
+    assert "About 10.00% done" in texts and "About 50.00% done" in texts   # read during the run, not after
+
+
+def test_scanner_timeout_still_applies_when_its_output_is_followed(tmp_path):
+    import sys
+    from src.scans.adapters.outbound.base_adapter import BaseScannerAdapter, ScanTimeout
+    with pytest.raises(ScanTimeout):
+        BaseScannerAdapter.run_process([sys.executable, "-c", "import time; time.sleep(30)"], timeout=1,
+                                       err_file_path=str(tmp_path / "err.log"), on_output=lambda t: None, poll_s=0.2)

@@ -343,6 +343,26 @@ def _host_step(index: int, count: int, engine_done: bool) -> float:
     return STEP_DISCOVERED + share * index + share * (0.85 if engine_done else 1.0)
 
 
+def _host_range(index: int, count: int) -> Tuple[float, float]:
+    """Percentages between which the engine itself runs on host `index` (after the port discovery)."""
+    low = STEP_DISCOVERED if index == 0 else _host_step(index - 1, count, engine_done=False)
+    return low, _host_step(index, count, engine_done=True)
+
+
+def _engine_progress(ctx: "ScanContext", low: float, high: float):
+    """Callback turning an engine's own progress (0 to 1) into the scan percentage between low and
+    high. Recorded only when the whole percentage changes (one database write per point at most)."""
+    last = [None]
+
+    def on_progress(fraction: float) -> None:
+        percent = int(low + (high - low) * fraction)
+        if percent != last[0]:
+            last[0] = percent
+            ctx.alive()
+            ctx.step(percent)
+    return on_progress
+
+
 def _select_policy(db: Session, scan: ScanEntity):
     from src.policies.domain.entities import PolicyEntity
     if scan.policy_id:
@@ -512,7 +532,8 @@ def _phase1(ctx: ScanContext, target: ScanTarget, tolerate_failure: bool) -> Lis
     from src.scans.adapters.outbound.nmap_adapter import NmapAdapter
     try:
         hosts = NmapAdapter.run_detailed_discovery_scan(target.host, ports=ctx.port_range,
-                                                        credentials=ctx.credentials, profile=ctx.profile)
+                                                        credentials=ctx.credentials, profile=ctx.profile,
+                                                        on_progress=_engine_progress(ctx, STEP_STARTED, STEP_DISCOVERED))
     except ScanError as e:
         if not tolerate_failure:
             raise
@@ -542,7 +563,8 @@ def _run_nmap(ctx: ScanContext, target: ScanTarget) -> str:
         scan_host = _identity(target, host)
         logger.info(f"Phase 2: Nmap vulnerability scripts on {scan_host} ports {','.join(tcp_ports)}")
         vuln_hosts = NmapAdapter.run_vulnerability_scan(scan_host, ports=",".join(tcp_ports),
-                                                        credentials=ctx.credentials, profile=ctx.profile)
+                                                        credentials=ctx.credentials, profile=ctx.profile,
+                                                        on_progress=_engine_progress(ctx, *_host_range(i, len(hosts))))
         findings = [f for vh in vuln_hosts for f in vh.get("vulns", [])]
         ctx.step(_host_step(i, len(hosts), engine_done=True))
         _store(ctx, asset_id, "NMAP", findings)
@@ -591,7 +613,8 @@ def _run_nuclei(ctx: ScanContext, target: ScanTarget) -> str:
             states.append(_no_input_state(host, had_ports))
             continue
         logger.info(f"Phase 2: Nuclei on {inputs}")
-        raw = NucleiAdapter.run_scan(inputs, credentials=ctx.credentials, profile=ctx.profile)
+        raw = NucleiAdapter.run_scan(inputs, credentials=ctx.credentials, profile=ctx.profile,
+                                     on_progress=_engine_progress(ctx, *_host_range(i, len(work))))
         ctx.step(_host_step(i, len(work), engine_done=True))
         _store(ctx, asset_id, "NUCLEI", normalize_nuclei(raw))
         ctx.step(_host_step(i, len(work), engine_done=False))
@@ -608,7 +631,10 @@ def _run_zap(ctx: ScanContext, target: ScanTarget) -> str:
             states.append(_no_input_state(host, had_ports))
             continue
         logger.info(f"Phase 2: OWASP ZAP on {inputs}")
-        alerts = ZAPAdapter.run_scan(inputs, credentials=ctx.credentials)
+        # No port discovery before ZAP: its real progress fills the host's share from the start
+        low = STEP_STARTED if i == 0 else _host_step(i - 1, len(work), engine_done=False)
+        alerts = ZAPAdapter.run_scan(inputs, credentials=ctx.credentials,
+                                     on_progress=_engine_progress(ctx, low, _host_step(i, len(work), engine_done=True)))
         ctx.step(_host_step(i, len(work), engine_done=True))
         _store(ctx, asset_id, "OWASP_ZAP", normalize_zap(alerts))
         ctx.step(_host_step(i, len(work), engine_done=False))

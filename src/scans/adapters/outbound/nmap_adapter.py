@@ -5,7 +5,7 @@ import tempfile
 import ipaddress
 import logging
 from lxml import etree
-from typing import List, Dict, Optional
+from typing import Callable, List, Dict, Optional
 from src.scans.adapters.outbound.base_adapter import BaseScannerAdapter, ScanError
 from src.vulnerabilities.domain import severity as sev
 from src.vulnerabilities.domain.models import VulnSeverity
@@ -81,6 +81,37 @@ def _build_port_args(ports: Optional[str]) -> List[str]:
     return args
 
 
+# Nmap reports a percentage per phase ("SYN Stealth Scan Timing: About 42.10% done"): each phase
+# is given its share of the whole run, in the order Nmap runs them.
+_NMAP_STATS = re.compile(r"^([A-Za-z][A-Za-z /-]*?) Timing: About ([0-9.]+)% done", re.MULTILINE)
+_NMAP_PHASES = [  # (words of the phase name, start, end) as fractions of the whole run
+    (("ping", "arp", "dns"), 0.00, 0.05),
+    (("syn", "connect", "udp", "ack", "window", "fin", "null", "xmas"), 0.05, 0.50),
+    (("service",), 0.50, 0.75),
+    (("os",), 0.75, 0.80),
+    (("nse", "script"), 0.80, 1.00),
+]
+
+
+def nmap_fraction(output: str) -> Optional[float]:
+    """Progress of the whole Nmap run (0 to 1) from its latest statistics line, None if none yet."""
+    matches = _NMAP_STATS.findall(output or "")
+    if not matches:
+        return None
+    phase, percent = matches[-1]
+    words = phase.lower().split()
+    for keys, start, end in _NMAP_PHASES:
+        if any(k in words for k in keys):
+            return start + (end - start) * min(float(percent), 100.0) / 100
+    return None
+
+
+def _report_nmap_progress(output: str, on_progress: Callable[[float], None]) -> None:
+    fraction = nmap_fraction(output)
+    if fraction is not None:
+        on_progress(fraction)
+
+
 def _profile_args(profile: str) -> List[str]:
     p = PROFILES.get(profile, PROFILES["lan"])
     return [p["timing"], "--max-retries", p["max_retries"], "--host-timeout", p["host_timeout"]]
@@ -123,7 +154,8 @@ class NmapAdapter(BaseScannerAdapter):
         return []
 
     @staticmethod
-    def _run(cmd_head: List[str], target: str, timeout: int, credentials: Optional[Dict] = None) -> List[Dict]:
+    def _run(cmd_head: List[str], target: str, timeout: int, credentials: Optional[Dict] = None,
+             on_progress: Optional[Callable[[float], None]] = None) -> List[Dict]:
         workdir = tempfile.mkdtemp(prefix="nmap_")
         out_xml = os.path.join(workdir, "output.xml")
         err_file = os.path.join(workdir, "stderr.log")
@@ -133,12 +165,17 @@ class NmapAdapter(BaseScannerAdapter):
             if _is_ipv6(targets):
                 cmd.append("-6")
             cmd.extend(NmapAdapter._build_nmap_auth_args(credentials, workdir))
+            if on_progress:
+                # Nmap prints "<phase> Timing: About 42.10% done" every 5 s
+                cmd.extend(["--stats-every", "5s"])
             cmd.extend(["-oX", out_xml, "--", *targets])
             logger.info(f"Executing Nmap command: {' '.join(c for c in cmd if not c.startswith(workdir))}")
 
             env = os.environ.copy()
             env["NMAP_PRIVILEGED"] = "1"
-            returncode, stderr = NmapAdapter.run_process(cmd, timeout, err_file, env)
+            returncode, stderr = NmapAdapter.run_process(
+                cmd, timeout, err_file, env,
+                on_output=(lambda text: _report_nmap_progress(text, on_progress)) if on_progress else None)
             if returncode != 0:
                 raise ScanError(f"Nmap failed with code {returncode}: {stderr}")
             with open(out_xml, "r", encoding="utf-8") as f:
@@ -155,18 +192,19 @@ class NmapAdapter(BaseScannerAdapter):
 
     @staticmethod
     def run_detailed_discovery_scan(target: str, ports: Optional[str] = None, credentials: Optional[Dict] = None,
-                                    profile: str = "lan") -> List[Dict]:
+                                    profile: str = "lan", on_progress: Optional[Callable[[float], None]] = None) -> List[Dict]:
         logger.info(f"Running Nmap detailed discovery on {target} (profile={profile})")
         cmd = ["nmap", "-sS", "-sV", "-O", "-Pn", *_profile_args(profile), *_build_port_args(ports),
                "--script", "nbstat,smb-os-discovery"]
-        return NmapAdapter._run(cmd, target, PHASE1_TIMEOUT_S, credentials)
+        return NmapAdapter._run(cmd, target, PHASE1_TIMEOUT_S, credentials, on_progress)
 
     @staticmethod
     def run_vulnerability_scan(target: str, ports: Optional[str] = None, credentials: Optional[Dict] = None,
-                               profile: str = "lan", scripts: str = DEFAULT_VULN_SCRIPTS) -> List[Dict]:
+                               profile: str = "lan", scripts: str = DEFAULT_VULN_SCRIPTS,
+                               on_progress: Optional[Callable[[float], None]] = None) -> List[Dict]:
         logger.info(f"Running Nmap vulnerability scan on {target} (profile={profile})")
         cmd = ["nmap", "-sS", "-sV", "-Pn", *_profile_args(profile), *_build_port_args(ports), "--script", scripts]
-        return NmapAdapter._run(cmd, target, PHASE2_TIMEOUT_S, credentials)
+        return NmapAdapter._run(cmd, target, PHASE2_TIMEOUT_S, credentials, on_progress)
 
     # ------------------------------------------------------------------ parsing
 
