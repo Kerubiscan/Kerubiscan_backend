@@ -26,6 +26,38 @@ def _unregister(proc: subprocess.Popen) -> None:
         _RUNNING_PROCS.discard(proc)
 
 
+def session_pids(sid: int) -> List[int]:
+    """Processes of a session (Linux /proc). A scanner started with start_new_session leads its own
+    session; the browsers it launches (Firefox for ZAP) create their own process groups but stay
+    in that session, so killing the process group alone left them running."""
+    pids = []
+    for entry in os.listdir("/proc") if os.path.isdir("/proc") else []:
+        if not entry.isdigit():
+            continue
+        try:
+            with open(f"/proc/{entry}/stat", encoding="utf-8", errors="replace") as f:
+                fields = f.read().rsplit(")", 1)[1].split()
+            if int(fields[3]) == sid:   # after "pid (comm)": state, ppid, pgrp, session
+                pids.append(int(entry))
+        except (OSError, IndexError, ValueError):
+            continue
+    return pids
+
+
+def kill_session(sid: int) -> int:
+    """Kills every process of the session `sid`; returns how many were signalled."""
+    killed = 0
+    for pid in session_pids(sid):
+        if pid == os.getpid():
+            continue
+        try:
+            os.kill(pid, signal.SIGKILL)
+            killed += 1
+        except (ProcessLookupError, PermissionError):
+            pass
+    return killed
+
+
 def kill_all_running() -> int:
     """Kills every registered scanner process. Called on worker shutdown."""
     with _RUNNING_LOCK:
@@ -82,6 +114,7 @@ class BaseScannerAdapter:
             os.killpg(proc.pid, signal.SIGKILL)
         except (AttributeError, ProcessLookupError, PermissionError):
             proc.kill()  # Windows (no process groups) or already gone
+        kill_session(proc.pid)   # children that left the process group (browsers)
         try:
             proc.wait(timeout=30)
         except Exception:
