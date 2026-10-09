@@ -239,8 +239,8 @@ def generate_vulnerability_pdf(
         # Color coding for severity header
         sev_color = SEV_CRIT if sev_str == "Critical" else (SEV_HIGH if sev_str == "High" else (SEV_MED if sev_str == "Medium" else SEV_LOW))
         
-        vector = v.cvss_vector or f"CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:{'H' if score>=7 else 'M'}/I:{'H' if score>=7 else 'L'}/A:{'H' if score>=8 else 'L'}"
-        qod = "100%" if v.source_engine and "NUCLEI" in v.source_engine.upper() else "80% (NVT Verified)"
+        # Only what the scanner provided: no vector, quality or proof is made up from the score
+        vector = v.cvss_vector or "N/A"
         
         title_p = Paragraph(f"<b>{idx+1}. {html.escape(v.title)}</b>", ParagraphStyle('VT', parent=styles['Heading3'], textColor=colors.white, fontName='Helvetica-Bold'))
         
@@ -256,8 +256,8 @@ def generate_vulnerability_pdf(
         details_data = [
             ["CVE / ID :", v.cve_id or "N/A", "Sévérité :", sev_str],
             ["Score CVSS :", f"{v.cvss_base_score or 'N/A'} / 10", "Statut :", getattr(v.status, "value", str(v.status))],
-            ["Moteur :", v.source_engine or "OPENVAS", "Qualité (QoD) :", qod],
-            ["Vecteur CVSS :", vector, "Impact CIA :", "Confidentialité / Intégrité / Disponibilité"]
+            ["Moteur :", v.source_engine or "OPENVAS", "", ""],
+            ["Vecteur CVSS :", vector, "", ""]
         ]
         t_details = Table(details_data, colWidths=[90, 170, 90, 170])
         t_details.setStyle(TableStyle([
@@ -276,13 +276,8 @@ def generate_vulnerability_pdf(
         vuln_story.append(Paragraph(html.escape(desc_text).replace('\n', '<br/>'), normal_style))
         vuln_story.append(Spacer(1, 6))
 
-        vuln_story.append(Paragraph("<b>Preuve de Détection / Output :</b>", subheading_style))
-        proof_code = f"Match confirmé sur port actif via {v.source_engine or 'OPENVAS'}. Signature détectée dans la réponse du service."
-        vuln_story.append(Paragraph(html.escape(proof_code), code_style))
-        vuln_story.append(Spacer(1, 6))
-
-        vuln_story.append(Paragraph("<b>Recommandation & Remédiation (IA) :</b>", subheading_style))
-        rem_text = v.remediation or "Appliquer immédiatement les patchs éditeurs officiels et restreindre les accès réseau."
+        vuln_story.append(Paragraph("<b>Recommandation & Remédiation :</b>", subheading_style))
+        rem_text = v.remediation or "Aucune recommandation fournie par le scanner pour ce point."
         vuln_story.append(Paragraph(html.escape(rem_text).replace('\n', '<br/>'), normal_style))
         vuln_story.append(Spacer(1, 18))
 
@@ -523,7 +518,7 @@ def generate_scan_vulnerability_pdf(
             vuln_story.append(Spacer(1, 6))
 
             vuln_story.append(Paragraph("<b>Remédiation :</b>", subheading_style))
-            rem_text = v.remediation or "Appliquer les patchs de sécurité."
+            rem_text = v.remediation or "Aucune recommandation fournie par le scanner."
             vuln_story.append(Paragraph(html.escape(rem_text).replace('\n', '<br/>'), normal_style))
             vuln_story.append(Spacer(1, 18))
             story.append(KeepTogether(vuln_story))
