@@ -503,3 +503,55 @@ def test_scan_response_gives_end_time_and_duration():
     scan.status = ScanStatus.IN_PROGRESS
     started, finished, duration = _timing(scan)
     assert finished is None and duration > 0                 # elapsed time while it runs
+
+
+ANALYST = {"sub": "u1", "preferred_username": "analyst", "realm_access": {"roles": ["Security Analyst"]}}
+
+
+def test_rerun_restarts_the_same_scan_row_instead_of_creating_one(db, make_scan, fakes, monkeypatch):  # noqa: F811
+    from src.scans.adapters.inbound.api import endpoints
+    scan_id = make_scan("app.exemple.com", "NMAP")
+    scan_tasks.run_vulnerability_scan(scan_id, "app.exemple.com", "app.exemple.com", "cfg")
+    queued = []
+    monkeypatch.setattr(endpoints, "_queue_scan", lambda scan, targets: queued.append((scan.id, targets)))
+    count_before = db.query(ScanEntity).count()
+
+    resp = endpoints.rerun_scan(scan_id, db=db, current_user=ANALYST)
+
+    assert db.query(ScanEntity).count() == count_before            # no new scan
+    assert resp.id == scan_id and resp.status == "IN_PROGRESS" and resp.progress == 0
+    assert resp.target_states == {"app.exemple.com": "PENDING"}
+    assert queued == [(scan_id, ["app.exemple.com"])]
+    # A running scan cannot be rerun (stop it first)
+    with pytest.raises(Exception) as exc:
+        endpoints.rerun_scan(scan_id, db=db, current_user=ANALYST)
+    assert getattr(exc.value, "status_code", None) == 409
+
+
+def test_end_estimate_uses_previous_runs_of_the_same_scan(db, make_scan, fakes):  # noqa: F811
+    from src.scans.adapters.inbound.api import endpoints
+    scan_id = make_scan("app.exemple.com", "NMAP")
+    scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).one()
+    for d in (1100, 1200, 1300):   # three previous complete runs: about 20 min
+        db.add(AuditLog(user_id="system", action="SCAN_COMPLETED", resource_type="SCAN",
+                        resource_id=scan_id, details={"duration_seconds": d}))
+    db.commit()
+    eta, basis = endpoints._estimate_remaining(db, scan, elapsed=200)
+    assert basis == "history" and eta == 1000
+    eta, _ = endpoints._estimate_remaining(db, scan, elapsed=5000)
+    assert eta == 0                                                 # estimate exceeded: end imminent
+
+
+def test_no_end_estimate_without_reliable_basis(db, make_scan):
+    from src.scans.adapters.inbound.api import endpoints
+    scan_id = make_scan("nouvelle-cible.exemple.com", "NUCLEI")
+    scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).one()
+    scan.progress = 30            # only the port discovery is done: extrapolating would be meaningless
+    assert endpoints._estimate_remaining(db, scan, elapsed=30) == (None, None)
+
+
+def test_finished_run_records_its_duration_for_the_next_estimates(db, make_scan, fakes):  # noqa: F811
+    scan_id = make_scan("app.exemple.com", "NMAP")
+    scan_tasks.run_vulnerability_scan(scan_id, "app.exemple.com", "app.exemple.com", "cfg")
+    log = db.query(AuditLog).filter(AuditLog.resource_id == scan_id, AuditLog.action == "SCAN_COMPLETED").one()
+    assert "duration_seconds" in log.details and log.details["engine"] == "NMAP"
