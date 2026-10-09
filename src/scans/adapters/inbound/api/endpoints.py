@@ -1,5 +1,6 @@
 import io
 import logging
+from datetime import datetime, timezone
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -78,11 +79,49 @@ class ScanResponse(BaseModel):
     recurrence_rule: Optional[str] = None
     next_run_at: Optional[str] = None
     created_at: Optional[str] = None
+    # First target started / last target finished (None while the scan runs) and duration in seconds
+    # (elapsed time while it runs)
+    started_at: Optional[str] = None
+    finished_at: Optional[str] = None
+    duration_seconds: Optional[int] = None
     class Config:
         from_attributes = True
 
 
+def _parse_ts(value) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        dt = value if isinstance(value, datetime) else datetime.fromisoformat(str(value))
+    except ValueError:
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def _timing(scan: ScanEntity):
+    """(started_at, finished_at, duration_seconds) from the per-target timestamps (scans.target_meta).
+
+    A finished scan ends at the last update of its targets; older scans without per-target
+    timestamps fall back to created_at / updated_at.
+    """
+    meta = scan.target_meta or {}
+    starts = [t for t in (_parse_ts(e.get("started_at")) for e in meta.values() if isinstance(e, dict)) if t]
+    ends = [t for t in (_parse_ts(e.get("updated_at")) for e in meta.values() if isinstance(e, dict)) if t]
+    started = min(starts) if starts else _parse_ts(scan.created_at)
+    finished = None
+    if scan.status in (ScanStatus.COMPLETED, ScanStatus.FAILED):
+        finished = max(ends) if ends else _parse_ts(scan.updated_at)
+    if started is None:
+        return None, None, None
+    if finished is not None and finished < started:
+        finished = started
+    end = finished or (datetime.now(timezone.utc) if scan.status == ScanStatus.IN_PROGRESS else None)
+    duration = int((end - started).total_seconds()) if end else None
+    return started.isoformat(), finished.isoformat() if finished else None, duration
+
+
 def _to_response(scan: ScanEntity) -> ScanResponse:
+    started_at, finished_at, duration = _timing(scan)
     return ScanResponse(
         id=scan.id,
         company_id=scan.company_id,
@@ -101,7 +140,10 @@ def _to_response(scan: ScanEntity) -> ScanResponse:
         credential_id=scan.credential_id,
         recurrence_rule=scan.recurrence_rule,
         next_run_at=scan.next_run_at.isoformat() if scan.next_run_at else None,
-        created_at=scan.created_at.isoformat() if scan.created_at else None
+        created_at=scan.created_at.isoformat() if scan.created_at else None,
+        started_at=started_at,
+        finished_at=finished_at,
+        duration_seconds=duration,
     )
 
 

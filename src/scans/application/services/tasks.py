@@ -327,6 +327,21 @@ class ScanContext:
         """Records activity on the target (watched by watchdog.py)."""
         progress.heartbeat(self.scan_id, self.target_raw)
 
+    def step(self, percent: float):
+        """Records a real step of the target (shown as the scan percentage)."""
+        progress.set_target_progress(self.scan_id, self.target_raw, int(percent))
+
+
+# Real steps of a non-OpenVAS target: started, ports discovered, engine done per host, results stored
+STEP_STARTED, STEP_DISCOVERED, STEP_ENGINE_END = 5, 30, 95
+
+
+def _host_step(index: int, count: int, engine_done: bool) -> float:
+    """Percentage after host `index` (0-based) of `count`: the engine part (30 -> 95 %) is shared
+    between the hosts; within one host, the engine itself counts 85 % of its share and storing 15 %."""
+    share = (STEP_ENGINE_END - STEP_DISCOVERED) / max(count, 1)
+    return STEP_DISCOVERED + share * index + share * (0.85 if engine_done else 1.0)
+
 
 def _select_policy(db: Session, scan: ScanEntity):
     from src.policies.domain.entities import PolicyEntity
@@ -504,6 +519,7 @@ def _phase1(ctx: ScanContext, target: ScanTarget, tolerate_failure: bool) -> Lis
         logger.error(f"Phase 1 (Nmap) FAILED on {target.host} — check Nmap in the worker; continuing with web probing: {e}")
         return []
     ctx.alive()
+    ctx.step(STEP_DISCOVERED)
     for host in hosts:
         n_open = len(open_ports(host.get("ports")))
         logger.info(f"Phase 1 on {target.host}: host {host['ip']} has {n_open} open port(s)"
@@ -517,7 +533,7 @@ def _run_nmap(ctx: ScanContext, target: ScanTarget) -> str:
     if not hosts:
         return progress.HOST_UNREACHABLE
     states = []
-    for host in hosts:
+    for i, host in enumerate(hosts):
         asset_id = _save_host(ctx, target, host)
         tcp_ports = [str(p["port"]) for p in open_ports(host["ports"]) if (p.get("protocol") or "tcp") == "tcp"]
         if not tcp_ports:
@@ -528,7 +544,9 @@ def _run_nmap(ctx: ScanContext, target: ScanTarget) -> str:
         vuln_hosts = NmapAdapter.run_vulnerability_scan(scan_host, ports=",".join(tcp_ports),
                                                         credentials=ctx.credentials, profile=ctx.profile)
         findings = [f for vh in vuln_hosts for f in vh.get("vulns", [])]
+        ctx.step(_host_step(i, len(hosts), engine_done=True))
         _store(ctx, asset_id, "NMAP", findings)
+        ctx.step(_host_step(i, len(hosts), engine_done=False))
         states.append(progress.COMPLETED)
     return _aggregate(states)
 
@@ -564,7 +582,8 @@ def _web_work(ctx: ScanContext, target: ScanTarget, include_network: bool) -> Li
 def _run_nuclei(ctx: ScanContext, target: ScanTarget) -> str:
     from src.scans.adapters.outbound.nuclei_adapter import NucleiAdapter, normalize_nuclei
     states = []
-    for asset_id, inputs, host, had_ports in _web_work(ctx, target, include_network=True):
+    work = _web_work(ctx, target, include_network=True)
+    for i, (asset_id, inputs, host, had_ports) in enumerate(work):
         if inputs and target.kind != "cidr" and not target.is_url:
             # The bare target is also given to Nuclei, which runs its own HTTP probing on it (5bae702)
             inputs = inputs + [t for t in [_identity(target, host)] if t not in inputs]
@@ -573,7 +592,9 @@ def _run_nuclei(ctx: ScanContext, target: ScanTarget) -> str:
             continue
         logger.info(f"Phase 2: Nuclei on {inputs}")
         raw = NucleiAdapter.run_scan(inputs, credentials=ctx.credentials, profile=ctx.profile)
+        ctx.step(_host_step(i, len(work), engine_done=True))
         _store(ctx, asset_id, "NUCLEI", normalize_nuclei(raw))
+        ctx.step(_host_step(i, len(work), engine_done=False))
         states.append(progress.COMPLETED)
     return _aggregate(states)
 
@@ -581,13 +602,16 @@ def _run_nuclei(ctx: ScanContext, target: ScanTarget) -> str:
 def _run_zap(ctx: ScanContext, target: ScanTarget) -> str:
     from src.scans.adapters.outbound.zap_adapter import ZAPAdapter, normalize_zap
     states = []
-    for asset_id, inputs, host, had_ports in _web_work(ctx, target, include_network=False):
+    work = _web_work(ctx, target, include_network=False)
+    for i, (asset_id, inputs, host, had_ports) in enumerate(work):
         if not inputs:
             states.append(_no_input_state(host, had_ports))
             continue
         logger.info(f"Phase 2: OWASP ZAP on {inputs}")
         alerts = ZAPAdapter.run_scan(inputs, credentials=ctx.credentials)
+        ctx.step(_host_step(i, len(work), engine_done=True))
         _store(ctx, asset_id, "OWASP_ZAP", normalize_zap(alerts))
+        ctx.step(_host_step(i, len(work), engine_done=False))
         states.append(progress.COMPLETED)
     return _aggregate(states)
 
@@ -645,6 +669,7 @@ def run_vulnerability_scan(self, scan_id: str, asset_ip: str, asset_name: str, c
         update_scan_progress(scan_id, target_raw, progress.FAILED, detail=f"Moteur non supporté : {ctx.engine}")
         return False
 
+    ctx.step(STEP_STARTED)
     try:
         state = runner(ctx, target)
     except Retry:

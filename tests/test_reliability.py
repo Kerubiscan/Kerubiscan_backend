@@ -469,3 +469,37 @@ def test_worker_process_registers_every_model_for_foreign_keys(tmp_path):
     root = Path(__file__).resolve().parents[1]
     res = subprocess.run([sys.executable, "-c", code], cwd=root, env=env, capture_output=True, text=True, timeout=120)
     assert res.returncode == 0 and "OK" in res.stdout, res.stderr[-1500:]
+
+
+def test_scan_percentage_follows_real_steps_and_reaches_100_only_when_finished():
+    # One-target scans used to stay at 0 % until the very end (finished targets / targets)
+    scan = ScanEntity(target_states={"a": progress.IN_PROGRESS, "b": progress.COMPLETED},
+                      target_meta={"a": {"progress": 30}})
+    progress.recompute_progress(scan)
+    assert scan.progress == 65                              # (30 % + 100 %) / 2
+    scan.target_meta = {"a": {"progress": 30, "ov_progress": 80}}
+    progress.recompute_progress(scan)
+    assert scan.progress == 90                              # OpenVAS-reported progress is used
+    scan.target_meta = {"a": {"progress": 100}}
+    progress.recompute_progress(scan)
+    assert scan.progress < 100                              # 100 % only once every target is finished
+
+
+def test_engine_steps_are_recorded_and_finished_scan_is_100(db, make_scan, fakes):  # noqa: F811
+    scan_id = make_scan("app.exemple.com", "NMAP")
+    scan_tasks.run_vulnerability_scan(scan_id, "app.exemple.com", "app.exemple.com", "cfg")
+    db.expire_all()
+    scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).one()
+    assert scan.target_meta["app.exemple.com"]["progress"] == 95   # last step before the final state
+    assert scan.progress == 100 and scan.status == ScanStatus.COMPLETED
+
+
+def test_scan_response_gives_end_time_and_duration():
+    from src.scans.adapters.inbound.api.endpoints import _timing
+    scan = ScanEntity(status=ScanStatus.COMPLETED, created_at=datetime(2026, 10, 8, 19, 22, 0, tzinfo=timezone.utc),
+                      target_meta={"a": {"started_at": "2026-10-08T19:22:14+00:00", "updated_at": "2026-10-08T19:41:18+00:00"}})
+    started, finished, duration = _timing(scan)
+    assert finished == "2026-10-08T19:41:18+00:00" and duration == 19 * 60 + 4
+    scan.status = ScanStatus.IN_PROGRESS
+    started, finished, duration = _timing(scan)
+    assert finished is None and duration > 0                 # elapsed time while it runs

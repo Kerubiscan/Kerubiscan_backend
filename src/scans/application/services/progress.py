@@ -51,6 +51,54 @@ def overall_status(states: dict) -> ScanStatus:
     return ScanStatus.FAILED
 
 
+def target_fraction(state: Optional[str], entry: Optional[dict]) -> float:
+    """Progress of one target, 0..1, from real events only.
+
+    A finished target counts 1. A running one counts its last recorded step (start, port discovery
+    done, engine done...) or, for OpenVAS, the progress reported by OpenVAS itself. Never 1 before
+    the target is really finished.
+    """
+    if state in TERMINAL_STATES:
+        return 1.0
+    entry = entry or {}
+    steps = [entry.get("progress") or 0]
+    if entry.get("ov_progress") is not None:
+        steps.append(entry["ov_progress"])
+    return min(max(float(v) for v in steps), 99.0) / 100.0
+
+
+def recompute_progress(scan: ScanEntity) -> None:
+    """Overall percentage = mean progress of the targets (used to be finished targets / targets,
+    which stayed at 0 % for the whole duration of a one-target scan)."""
+    states = scan.target_states or {}
+    meta = scan.target_meta or {}
+    if not states:
+        scan.progress = 100
+        return
+    total = sum(target_fraction(state, meta.get(t)) for t, state in states.items())
+    scan.progress = int(total / len(states) * 100)
+
+
+def set_target_progress(scan_id: str, target: str, percent: int) -> None:
+    """Records a step of a running target (0-99) and updates the scan percentage."""
+    db: Session = SessionLocal()
+    try:
+        scan = _locked_scan(db, scan_id)
+        if not scan or (scan.target_states or {}).get(target) in TERMINAL_STATES:
+            return
+        meta = dict(scan.target_meta or {})
+        entry = dict(meta.get(target) or {})
+        entry["progress"] = max(int(entry.get("progress") or 0), min(int(percent), 99))
+        entry["updated_at"] = now_iso()
+        meta[target] = entry
+        scan.target_meta = meta
+        flag_modified(scan, "target_meta")
+        recompute_progress(scan)
+        db.commit()
+    finally:
+        db.close()
+
+
 def _locked_scan(db: Session, scan_id: str) -> Optional[ScanEntity]:
     # Row lock: two targets finishing at the same time used to overwrite each other's state
     # (read-modify-write of the JSON column), leaving one target IN_PROGRESS forever.
@@ -87,9 +135,11 @@ def apply_target_state(db: Session, scan: ScanEntity, target: str, target_status
     flag_modified(scan, "target_states")
     flag_modified(scan, "target_meta")
 
-    total = len(states)
-    done = sum(1 for s in states.values() if s in TERMINAL_STATES)
-    scan.progress = int((done / total) * 100) if total else 100
+    if target_status == PENDING:
+        entry.pop("progress", None)
+        entry.pop("ov_progress", None)
+        meta[target] = entry
+    recompute_progress(scan)
 
     status = overall_status(states)
     if status != ScanStatus.IN_PROGRESS and scan.status not in (ScanStatus.PAUSED, status):
@@ -159,6 +209,7 @@ def record_openvas_progress(scan_id: str, target: str, value: int) -> float:
         meta[target] = entry
         scan.target_meta = meta
         flag_modified(scan, "target_meta")
+        recompute_progress(scan)
         db.commit()
         return stalled
     finally:
