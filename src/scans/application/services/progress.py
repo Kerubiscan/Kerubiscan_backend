@@ -67,6 +67,15 @@ def target_fraction(state: Optional[str], entry: Optional[dict]) -> float:
     return min(max(float(v) for v in steps), 99.0) / 100.0
 
 
+def run_duration_seconds(meta: Optional[dict]) -> Optional[int]:
+    """Duration of the current run: first target start -> now."""
+    starts = [_parse_iso(e.get("started_at")) for e in (meta or {}).values() if isinstance(e, dict)]
+    starts = [t for t in starts if t]
+    if not starts:
+        return None
+    return max(int((datetime.now(timezone.utc) - min(starts)).total_seconds()), 0)
+
+
 def recompute_progress(scan: ScanEntity) -> None:
     """Overall percentage = mean progress of the targets (used to be finished targets / targets,
     which stayed at 0 % for the whole duration of a one-target scan)."""
@@ -146,8 +155,13 @@ def apply_target_state(db: Session, scan: ScanEntity, target: str, target_status
         scan.status = status
         from src.audit.domain.models import AuditLog
         action = "SCAN_COMPLETED" if status == ScanStatus.COMPLETED else "SCAN_FAILED"
+        details = {"status": status.name, "targets": states, "engine": scan.scanner_engine.name if scan.scanner_engine else None}
+        duration = run_duration_seconds(meta)
+        if duration is not None:
+            # History used to estimate the end of the next runs (see endpoints._estimate_remaining)
+            details["duration_seconds"] = duration
         db.add(AuditLog(user_id="system", username="celery_worker", action=action, resource_type="SCAN",
-                        resource_id=str(scan.id), details={"status": status.name, "targets": states}))
+                        resource_id=str(scan.id), details=details))
     elif status == ScanStatus.IN_PROGRESS and scan.status in (ScanStatus.COMPLETED, ScanStatus.FAILED):
         scan.status = ScanStatus.IN_PROGRESS
 

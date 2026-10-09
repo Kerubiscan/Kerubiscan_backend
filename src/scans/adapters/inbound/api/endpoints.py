@@ -84,6 +84,11 @@ class ScanResponse(BaseModel):
     started_at: Optional[str] = None
     finished_at: Optional[str] = None
     duration_seconds: Optional[int] = None
+    # Running scan: estimated seconds before the end (0 = estimate exceeded) and what it is based on
+    # ("history": previous runs of this scan, "similar": finished scans of the same target and
+    # engine, "progress": extrapolated from the real progress). None = no reliable basis.
+    eta_seconds: Optional[int] = None
+    eta_basis: Optional[str] = None
     class Config:
         from_attributes = True
 
@@ -120,8 +125,45 @@ def _timing(scan: ScanEntity):
     return started.isoformat(), finished.isoformat() if finished else None, duration
 
 
-def _to_response(scan: ScanEntity) -> ScanResponse:
+def _median(values: List[int]) -> Optional[int]:
+    values = sorted(v for v in values if v and v > 0)
+    if not values:
+        return None
+    mid = len(values) // 2
+    return values[mid] if len(values) % 2 else (values[mid - 1] + values[mid]) // 2
+
+
+def _estimate_remaining(db: Session, scan: ScanEntity, elapsed: Optional[int]):
+    """(eta_seconds, basis) for a running scan, from real data only (never a made-up figure)."""
+    if scan.status != ScanStatus.IN_PROGRESS or elapsed is None:
+        return None, None
+    # 1. Previous complete runs of this very scan (rerun on the same row)
+    logs = (db.query(AuditLog).filter(AuditLog.resource_type == "SCAN", AuditLog.resource_id == str(scan.id),
+                                      AuditLog.action == "SCAN_COMPLETED")
+            .order_by(AuditLog.timestamp.desc()).limit(5).all())
+    estimate = _median([(log.details or {}).get("duration_seconds") for log in logs])
+    basis = "history" if estimate else None
+    # 2. Finished scans of the same target with the same engine
+    if not estimate:
+        similar = (db.query(ScanEntity).filter(ScanEntity.id != scan.id, ScanEntity.target == scan.target,
+                                               ScanEntity.scanner_engine == scan.scanner_engine,
+                                               ScanEntity.scan_type == scan.scan_type,
+                                               ScanEntity.status == ScanStatus.COMPLETED)
+                   .order_by(ScanEntity.created_at.desc()).limit(5).all())
+        estimate = _median([_timing(o)[2] for o in similar])
+        basis = "similar" if estimate else None
+    # 3. Extrapolation from the real progress, once past the port discovery (OpenVAS reports its own %)
+    if not estimate and (scan.progress or 0) >= 35:
+        estimate = int(elapsed * 100 / scan.progress)
+        basis = "progress"
+    if not estimate:
+        return None, None
+    return max(estimate - elapsed, 0), basis
+
+
+def _to_response(scan: ScanEntity, db: Optional[Session] = None) -> ScanResponse:
     started_at, finished_at, duration = _timing(scan)
+    eta, eta_basis = _estimate_remaining(db, scan, duration) if db is not None else (None, None)
     return ScanResponse(
         id=scan.id,
         company_id=scan.company_id,
@@ -144,6 +186,8 @@ def _to_response(scan: ScanEntity) -> ScanResponse:
         started_at=started_at,
         finished_at=finished_at,
         duration_seconds=duration,
+        eta_seconds=eta,
+        eta_basis=eta_basis,
     )
 
 
@@ -313,7 +357,7 @@ def get_scans(company_id: Optional[str] = None, network_zone: Optional[str] = No
             query = query.filter(ScanEntity.status == ScanStatus[status.upper()])
         except KeyError:
             pass  # ignore invalid status values
-    return [_to_response(s) for s in query.order_by(ScanEntity.created_at.desc()).all()]
+    return [_to_response(s, db) for s in query.order_by(ScanEntity.created_at.desc()).all()]
 
 @router.delete("/{scan_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_scan(scan_id: str, db: Session = Depends(get_db),
@@ -629,6 +673,39 @@ def resume_scan(scan_id: str, db: Session = Depends(get_db),
     if targets_to_requeue:
         _queue_scan(scan, targets_to_requeue if scan.scan_type != ScanType.DISCOVERY else split_targets(scan.target))
     return _to_response(scan)
+
+
+@router.post("/{scan_id}/rerun", response_model=ScanResponse)
+def rerun_scan(scan_id: str, db: Session = Depends(get_db),
+               current_user: dict = Depends(require_permissions([Permission.SCAN_EXECUTE]))):
+    """Runs a finished scan again on the same row (used to create a new scan each time).
+
+    The targets restart from scratch; findings already stored are kept and updated by the new run
+    (same title and port), so the history of each vulnerability is preserved.
+    """
+    scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
+    if not scan or scan.is_deleted:
+        raise HTTPException(status_code=404, detail="Scan not found")
+    if scan.status in (ScanStatus.IN_PROGRESS, ScanStatus.PENDING, ScanStatus.PAUSED):
+        raise HTTPException(status_code=409, detail="Ce scan est déjà en cours : arrêtez-le avant de le relancer")
+    # The perimeter may have changed since creation (R18)
+    targets = _validate_scan_targets(scan.target, scan.scan_type, current_user)
+
+    previous = {"status": scan.status.name, "progress": scan.progress}
+    from sqlalchemy.orm.attributes import flag_modified
+    scan.status = ScanStatus.IN_PROGRESS
+    scan.progress = 0
+    scan.target_states = {t: "PENDING" for t in targets}
+    scan.target_meta = {}
+    flag_modified(scan, "target_states")
+    flag_modified(scan, "target_meta")
+    db.add(AuditLog(user_id=_user_id(current_user), username=_username(current_user), action="RERUN",
+                    resource_type="SCAN", resource_id=str(scan.id), details={"previous": previous}))
+    db.commit()
+    db.refresh(scan)
+
+    _queue_scan(scan, targets)
+    return _to_response(scan, db)
 
 
 @router.put("/{scan_id}/stop", response_model=ScanResponse)
