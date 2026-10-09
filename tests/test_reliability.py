@@ -394,6 +394,7 @@ def test_zap_credentials_are_set_via_the_api_not_the_command_line(monkeypatch):
     zap_adapter.ZAPAdapter.run_scan(["http://site.com"], credentials={"credential_type": "HTTP", "username": "u", "password": "s3cr3t"})
     cmd = next(c for tag, c in calls if tag == "cmd")
     assert "s3cr3t" not in " ".join(cmd)                         # not on the command line
+    assert "-silent" in cmd                                      # no update check delaying the startup
     addrule = [p for path, p in calls if isinstance(path, str) and "addRule" in path]
     assert addrule and "s3cr3t" not in str(addrule)             # set via API, as base64 only
 

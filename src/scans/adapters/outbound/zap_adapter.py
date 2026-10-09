@@ -34,7 +34,7 @@ SPIDER_MAX_MINUTES = 15
 AJAX_SPIDER_MAX_MINUTES = 10
 ASCAN_MAX_MINUTES = 90
 PASSIVE_SCAN_MAX_S = 300
-BOOT_TIMEOUT_S = 180
+BOOT_TIMEOUT_S = 300
 # Browser of the AJAX spider: Firefox ESR from the image + the geckodriver bundled with ZAP
 AJAX_SPIDER_BROWSER = "firefox-headless"
 
@@ -135,7 +135,9 @@ class ZAPAdapter:
                 s.bind(('127.0.0.1', 0))
                 free_port = s.getsockname()[1]
 
-            cmd = [ZAP_BIN, "-daemon", "-host", "127.0.0.1", "-dir", zap_home_dir,
+            # -silent: no unsolicited request at startup (update check, news, telemetry). Without it
+            # the API answered only after ~160 s on the test server, then not within 180 s at all.
+            cmd = [ZAP_BIN, "-daemon", "-silent", "-host", "127.0.0.1", "-dir", zap_home_dir,
                    "-port", str(free_port), "-config", f"api.key={api_key}"]
 
             c_type = str((credentials or {}).get("credential_type", "")).upper()
