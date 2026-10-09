@@ -715,3 +715,38 @@ def test_scanner_timeout_still_applies_when_its_output_is_followed(tmp_path):
     with pytest.raises(ScanTimeout):
         BaseScannerAdapter.run_process([sys.executable, "-c", "import time; time.sleep(30)"], timeout=1,
                                        err_file_path=str(tmp_path / "err.log"), on_output=lambda t: None, poll_s=0.2)
+
+
+def test_zap_limits_its_browsers_to_spare_the_memory(monkeypatch):
+    """5 AJAX spider browsers, then up to 8 Firefox for the DOM XSS rule: ZAP was killed after 55 min."""
+    calls = []
+
+    def api(zap_url, api_key, path, **params):
+        calls.append((path, params))
+        if "version" in path:
+            return {"version": "2.17.0"}
+        if path == "/JSON/ajaxSpider/view/status/":
+            return {"status": "stopped"}
+        return {"scan": "0", "alerts": []}
+    zap_adapter = _fake_zap(monkeypatch, api)
+    zap_adapter.ZAPAdapter.run_scan(["http://juice-shop:3000"])
+    params = {path: p for path, p in calls}
+    assert params["/JSON/ajaxSpider/action/setOptionNumberOfBrowsers/"] == {"Integer": 2}
+    assert "40026" in params["/JSON/ascan/action/disableScanners/"]["ids"]
+
+
+@pytest.mark.skipif(not __import__("os").path.isdir("/proc"), reason="Linux /proc needed")
+def test_processes_that_left_the_process_group_are_killed_with_the_session():
+    import os, signal, subprocess, sys, time
+    from src.scans.adapters.outbound.base_adapter import kill_session, session_pids
+    # A leader that starts a child in its own process group (as Firefox does), then exits
+    code = ("import os, subprocess, sys\n"
+            "subprocess.Popen([sys.executable, '-c', 'import os, time; os.setpgid(0, 0); time.sleep(60)'])\n")
+    leader = subprocess.Popen([sys.executable, "-c", code], start_new_session=True)
+    leader.wait(timeout=10)
+    time.sleep(0.5)
+    left = session_pids(leader.pid)
+    assert left                                            # killpg(leader) would not reach it
+    assert kill_session(leader.pid) == len(left)
+    time.sleep(0.5)
+    assert not [p for p in session_pids(leader.pid) if open(f"/proc/{p}/stat").read().split()[2] != "Z"]

@@ -14,7 +14,7 @@ import urllib3
 from html import unescape
 from typing import Callable, List, Dict, Optional, Union
 from urllib.parse import urlsplit
-from src.scans.adapters.outbound.base_adapter import ScanError, _register, _unregister
+from src.scans.adapters.outbound.base_adapter import ScanError, _register, _unregister, kill_session
 from src.vulnerabilities.domain import severity as sev
 
 logger = logging.getLogger(__name__)
@@ -37,6 +37,12 @@ PASSIVE_SCAN_MAX_S = 300
 BOOT_TIMEOUT_S = 300
 # Browser of the AJAX spider: Firefox ESR from the image + the geckodriver bundled with ZAP
 AJAX_SPIDER_BROWSER = "firefox-headless"
+# Browsers opened at once by the AJAX spider (ZAP's default: one per CPU). Each Firefox takes
+# 300 MB or more: with 5 of them and ZAP, the 6 GB test server ran out of memory.
+AJAX_SPIDER_BROWSERS = 2
+# Active scan rules that drive their own browsers: "Cross Site Scripting (DOM Based)" kept up to
+# 8 Firefox open during the active scan, and ZAP was killed (connection reset) after 55 min.
+BROWSER_SCAN_RULES = "40026"
 # Share of each phase in the ZAP progress reported to the scan (the active scan is by far the longest)
 PHASE_SPIDER, PHASE_AJAX = 0.10, 0.15
 
@@ -81,6 +87,8 @@ class ZAPAdapter:
         Never fatal: without a browser the scan goes on with the classic spider's results."""
         try:
             ZAPAdapter._api(zap_url, api_key, "/JSON/ajaxSpider/action/setOptionBrowserId/", String=AJAX_SPIDER_BROWSER)
+            ZAPAdapter._api(zap_url, api_key, "/JSON/ajaxSpider/action/setOptionNumberOfBrowsers/",
+                            Integer=AJAX_SPIDER_BROWSERS)
             ZAPAdapter._api(zap_url, api_key, "/JSON/ajaxSpider/action/setOptionMaxDuration/", Integer=minutes)
             ZAPAdapter._api(zap_url, api_key, "/JSON/ajaxSpider/action/scan/", url=target)
         except ScanError as e:
@@ -202,6 +210,10 @@ class ZAPAdapter:
                 except ScanError as e:
                     # Degrade gracefully: scan unauthenticated rather than fail entirely
                     logger.error(f"ZAP: could not set authentication, scanning unauthenticated: {e}")
+            try:
+                ZAPAdapter._api(zap_url, api_key, "/JSON/ascan/action/disableScanners/", ids=BROWSER_SCAN_RULES)
+            except ScanError as e:
+                logger.warning(f"ZAP: browser-driven scan rules could not be disabled: {e}")
             logger.info("ZAP daemon ready")
 
             def report(fraction: float) -> None:
@@ -273,6 +285,10 @@ class ZAPAdapter:
                         proc.wait(timeout=10)
                     except Exception:
                         pass
+                # Browsers have their own process groups and outlived ZAP (8 Firefox left after a crash)
+                left = kill_session(proc.pid)
+                if left:
+                    logger.warning(f"ZAP: {left} leftover process(es) of the scan killed (browsers)")
             if log_handle:
                 log_handle.close()
             shutil.rmtree(zap_home_dir, ignore_errors=True)
