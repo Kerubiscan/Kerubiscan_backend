@@ -241,6 +241,8 @@ class ZAPAdapter:
                 if proc.poll() is None:
                     try:
                         os.killpg(proc.pid, signal.SIGKILL)
+                        # Reaped here, or it stays a <defunct> java process as long as the worker lives
+                        proc.wait(timeout=10)
                     except Exception:
                         pass
             if log_handle:
