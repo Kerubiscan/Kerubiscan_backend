@@ -343,6 +343,20 @@ def _host_step(index: int, count: int, engine_done: bool) -> float:
     return STEP_DISCOVERED + share * index + share * (0.85 if engine_done else 1.0)
 
 
+def _engine_progress(ctx: "ScanContext", low: float, high: float):
+    """Callback turning an engine's own progress (0 to 1) into the scan percentage between low and
+    high. Recorded only when the whole percentage changes (one database write per point at most)."""
+    last = [None]
+
+    def on_progress(fraction: float) -> None:
+        percent = int(low + (high - low) * fraction)
+        if percent != last[0]:
+            last[0] = percent
+            ctx.alive()
+            ctx.step(percent)
+    return on_progress
+
+
 def _select_policy(db: Session, scan: ScanEntity):
     from src.policies.domain.entities import PolicyEntity
     if scan.policy_id:
@@ -608,7 +622,10 @@ def _run_zap(ctx: ScanContext, target: ScanTarget) -> str:
             states.append(_no_input_state(host, had_ports))
             continue
         logger.info(f"Phase 2: OWASP ZAP on {inputs}")
-        alerts = ZAPAdapter.run_scan(inputs, credentials=ctx.credentials)
+        # No port discovery before ZAP: its real progress fills the host's share from the start
+        low = STEP_STARTED if i == 0 else _host_step(i - 1, len(work), engine_done=False)
+        alerts = ZAPAdapter.run_scan(inputs, credentials=ctx.credentials,
+                                     on_progress=_engine_progress(ctx, low, _host_step(i, len(work), engine_done=True)))
         ctx.step(_host_step(i, len(work), engine_done=True))
         _store(ctx, asset_id, "OWASP_ZAP", normalize_zap(alerts))
         ctx.step(_host_step(i, len(work), engine_done=False))

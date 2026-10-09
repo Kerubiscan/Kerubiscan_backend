@@ -12,7 +12,7 @@ import secrets
 import requests
 import urllib3
 from html import unescape
-from typing import List, Dict, Union
+from typing import Callable, List, Dict, Optional, Union
 from urllib.parse import urlsplit
 from src.scans.adapters.outbound.base_adapter import ScanError, _register, _unregister
 from src.vulnerabilities.domain import severity as sev
@@ -37,6 +37,8 @@ PASSIVE_SCAN_MAX_S = 300
 BOOT_TIMEOUT_S = 300
 # Browser of the AJAX spider: Firefox ESR from the image + the geckodriver bundled with ZAP
 AJAX_SPIDER_BROWSER = "firefox-headless"
+# Share of each phase in the ZAP progress reported to the scan (the active scan is by far the longest)
+PHASE_SPIDER, PHASE_AJAX = 0.10, 0.15
 
 
 class ZAPAdapter:
@@ -52,10 +54,13 @@ class ZAPAdapter:
         return data
 
     @staticmethod
-    def _wait(zap_url: str, api_key: str, kind: str, scan_id: str, deadline: float, poll_s: int) -> bool:
+    def _wait(zap_url: str, api_key: str, kind: str, scan_id: str, deadline: float, poll_s: int,
+              on_status: Optional[Callable[[int], None]] = None) -> bool:
         """Polls spider/ascan status. Returns False (and stops the scan) when the deadline is exceeded."""
         while True:
             status = ZAPAdapter._api(zap_url, api_key, f"/JSON/{kind}/view/status/", scanId=scan_id).get("status")
+            if on_status and str(status).isdigit():
+                on_status(int(status))
             if status == "100":
                 return True
             if time.time() > deadline:
@@ -68,7 +73,8 @@ class ZAPAdapter:
             time.sleep(poll_s)
 
     @staticmethod
-    def _ajax_spider(zap_url: str, api_key: str, target: str, minutes: int) -> None:
+    def _ajax_spider(zap_url: str, api_key: str, target: str, minutes: int,
+                     on_fraction: Optional[Callable[[float], None]] = None) -> None:
         """Explores the target in a real browser. The classic spider only follows links in the HTML:
         on a JavaScript application (Angular, React...) it finds the static files but none of the API
         calls, so the active scan had no parameter to attack (Juice Shop: CSP/CORS alerts only).
@@ -80,8 +86,11 @@ class ZAPAdapter:
         except ScanError as e:
             logger.warning(f"ZAP AJAX spider unavailable on {target}, classic spider only: {e}")
             return
-        deadline = time.time() + minutes * 60 + 60
+        started = time.time()
+        deadline = started + minutes * 60 + 60
         while ZAPAdapter._api(zap_url, api_key, "/JSON/ajaxSpider/view/status/").get("status") == "running":
+            if on_fraction:   # the AJAX spider reports no percentage: share of its time budget used
+                on_fraction(min((time.time() - started) / (minutes * 60), 1.0))
             if time.time() > deadline:
                 logger.warning(f"ZAP AJAX spider on {target} exceeded its time budget, stopping it")
                 try:
@@ -107,8 +116,12 @@ class ZAPAdapter:
     @staticmethod
     def run_scan(targets: Union[str, List[str]], credentials: Dict = None,
                  spider_minutes: int = SPIDER_MAX_MINUTES, ascan_minutes: int = ASCAN_MAX_MINUTES,
-                 ajax_minutes: int = AJAX_SPIDER_MAX_MINUTES) -> List[Dict]:
+                 ajax_minutes: int = AJAX_SPIDER_MAX_MINUTES,
+                 on_progress: Optional[Callable[[float], None]] = None) -> List[Dict]:
         """Runs ZAP spider + active scan on a list of URLs and returns the raw alerts.
+
+        on_progress receives the real progress of ZAP's work, from 0 to 1 (spider, AJAX spider,
+        then the active scan status reported by ZAP).
 
         Every target must be a full URL (scheme://host[:port][/path]) so ZAP keeps the
         original hostname (Host header, SNI, virtual hosts).
@@ -191,8 +204,16 @@ class ZAPAdapter:
                     logger.error(f"ZAP: could not set authentication, scanning unauthenticated: {e}")
             logger.info("ZAP daemon ready")
 
+            def report(fraction: float) -> None:
+                if on_progress:
+                    try:
+                        on_progress(min(max(fraction, 0.0), 1.0))
+                    except Exception as e:   # progress display must never stop the scan
+                        logger.warning(f"ZAP progress not recorded: {e}")
+
+            n = len(target_list)
             reached = []
-            for target in target_list:
+            for k, target in enumerate(target_list):
                 try:
                     ZAPAdapter._api(zap_url, api_key, "/JSON/core/action/accessUrl/", url=target, followRedirects="true")
                 except ScanError as e:
@@ -200,10 +221,13 @@ class ZAPAdapter:
                     continue
                 spider_id = ZAPAdapter._api(zap_url, api_key, "/JSON/spider/action/scan/", url=target).get("scan")
                 if spider_id is not None:
-                    ZAPAdapter._wait(zap_url, api_key, "spider", spider_id, time.time() + spider_minutes * 60 + 60, 2)
+                    ZAPAdapter._wait(zap_url, api_key, "spider", spider_id, time.time() + spider_minutes * 60 + 60, 2,
+                                     on_status=lambda st, k=k: report(PHASE_SPIDER * (k + st / 100) / n))
                 if ajax_minutes:
-                    ZAPAdapter._ajax_spider(zap_url, api_key, target, ajax_minutes)
+                    ZAPAdapter._ajax_spider(zap_url, api_key, target, ajax_minutes,
+                                            on_fraction=lambda f, k=k: report(PHASE_SPIDER + PHASE_AJAX * (k + f) / n))
                 reached.append(target)
+            report(PHASE_SPIDER + PHASE_AJAX)
 
             if not reached:
                 raise ScanError(f"ZAP n'a pu joindre aucune URL : {target_list}")
@@ -215,8 +239,12 @@ class ZAPAdapter:
                 except ScanError as e:
                     logger.warning(f"ZAP active scan could not start on {target}: {e}")
             deadline = time.time() + ascan_minutes * 60 + 120
-            for ascan_id in (i for i in ascan_ids if i is not None):
-                ZAPAdapter._wait(zap_url, api_key, "ascan", ascan_id, deadline, 10)
+            started_ids = [i for i in ascan_ids if i is not None]
+            base = PHASE_SPIDER + PHASE_AJAX
+            for j, ascan_id in enumerate(started_ids):
+                ZAPAdapter._wait(zap_url, api_key, "ascan", ascan_id, deadline, 10,
+                                 on_status=lambda st, j=j: report(base + (1 - base) * (j + st / 100) / len(started_ids)))
+            report(1.0)
             ZAPAdapter._wait_passive_scan(zap_url, api_key)
 
             # All alerts, kept when they belong to a scanned host: filtering by base URL lost the

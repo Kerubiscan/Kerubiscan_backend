@@ -133,6 +133,10 @@ def _median(values: List[int]) -> Optional[int]:
     return values[mid] if len(values) % 2 else (values[mid - 1] + values[mid]) // 2
 
 
+# Beyond this multiple of a past duration, that duration is no longer used as the estimate
+OVERRUN_TOLERANCE = 1.15
+
+
 def _estimate_remaining(db: Session, scan: ScanEntity, elapsed: Optional[int]):
     """(eta_seconds, basis) for a running scan, from real data only (never a made-up figure)."""
     if scan.status != ScanStatus.IN_PROGRESS or elapsed is None:
@@ -152,7 +156,12 @@ def _estimate_remaining(db: Session, scan: ScanEntity, elapsed: Optional[int]):
                    .order_by(ScanEntity.created_at.desc()).limit(5).all())
         estimate = _median([_timing(o)[2] for o in similar])
         basis = "similar" if estimate else None
-    # 3. Extrapolation from the real progress, once past the port discovery (OpenVAS reports its own %)
+    # A past duration clearly exceeded no longer says anything about this run (engine or target
+    # changed): it kept showing "end imminent" for the rest of the scan.
+    if estimate and elapsed > estimate * OVERRUN_TOLERANCE:
+        estimate, basis = None, None
+    # 3. Extrapolation from the real progress, once past the port discovery (OpenVAS and ZAP report
+    # their own %)
     if not estimate and (scan.progress or 0) >= 35:
         estimate = int(elapsed * 100 / scan.progress)
         basis = "progress"
