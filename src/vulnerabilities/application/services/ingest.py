@@ -157,6 +157,8 @@ def ingest_findings(db: Session, asset: AssetEntity, engine: str, findings: List
             vuln.cvss_base_score = cvss
             vuln.contextual_risk_score = risk
             vuln.description = description
+            if f.get("rule_id"):
+                vuln.rule_id = f["rule_id"]
             if f.get("remediation"):
                 vuln.remediation = f["remediation"]
             if vuln.status == VulnStatus.FIXED:
@@ -177,6 +179,7 @@ def ingest_findings(db: Session, asset: AssetEntity, engine: str, findings: List
             port=port,
             service=f.get("service"),
             source_engine=engine,
+            rule_id=f.get("rule_id"),
             status=VulnStatus.NEW,
         )
         db.add(vuln)

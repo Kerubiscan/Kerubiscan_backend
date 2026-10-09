@@ -237,41 +237,58 @@ table{margin:0!important}
 
             <!-- Vulnerability Table for Host -->
             <div id="id-table-{{ loop.index }}" style="display: none;" class="table-wrapper vuln-table-wrapper">
+                <!-- Same column grid as the Nessus "Vulnerabilities by Host" table (spacer columns included) -->
                 <table cellpadding="0" cellspacing="0">
                     <thead>
                         <tr>
-                            <th width="12%"></th>
+                            <th width="1%"></th>
                             <th width="10%"></th>
-                            <th width="18%"></th>
-                            <th width="60%"></th>
+                            <th width="2%"></th>
+                            <th width="7%"></th>
+                            <th width="2%"></th>
+                            <th width="9%"></th>
+                            <th width="2%"></th>
+                            <th width="16%"></th>
+                            <th width="1%"></th>
+                            <th width="50%"></th>
                         </tr>
                     </thead>
                     <tbody>
                         <tr class="plugin-row-header">
-                            <td style="padding-left: 10px; font-weight: 700;">Severity</td>
-                            <td style="font-weight: 700;">CVSS v3.0</td>
-                            <td style="font-weight: 700;">Scanner / Plugin</td>
-                            <td style="font-weight: 700;">Name</td>
+                            <td></td>
+                            <td>Severity</td>
+                            <td></td>
+                            <td>CVSS v3.0</td>
+                            <td></td>
+                            <td>Scanner</td>
+                            <td></td>
+                            <td>Plugin</td>
+                            <td></td>
+                            <td>Name</td>
                         </tr>
                         {% if asset.vulnerabilities %}
                             {% for v in asset.vulnerabilities %}
                             <tr class="plugin-row" style="cursor: pointer;" onclick="toggleRow('id-vulndetail-{{ loop.index0 }}-{{ asset.id }}');" title="Click to expand/collapse details">
-                                <td style="padding-left: 10px;">
-                                    <span class="badge badge-{{ v.severity|lower }}">{{ v.severity }}</span>
+                                <td></td>
+                                <td><span class="badge badge-{{ v.severity|lower }}">{{ v.severity }}</span></td>
+                                <td></td>
+                                <td>{{ v.cvss }}</td>
+                                <td></td>
+                                <td>{{ v.engine }}</td>
+                                <td></td>
+                                <td style="overflow-wrap: anywhere;">
+                                    {% if v.plugin_url %}<a href="{{ v.plugin_url }}" target="_blank" onclick="event.stopPropagation();">{{ v.plugin }}</a>{% else %}{{ v.plugin }}{% endif %}
                                 </td>
-                                <td style="font-weight: 600; color: #1e293b;">{{ v.cvss }}</td>
+                                <td></td>
                                 <td>
-                                    <span style="font-size: 11px; font-weight: 600; color: #475569;">{{ v.engine }}</span>
-                                    {% if v.cve and v.cve != 'N/A' %}
-                                    <br><a href="{{ v.ref_url }}" target="_blank" style="font-size: 10px;" onclick="event.stopPropagation();">{{ v.cve }}</a>
-                                    {% endif %}
-                                </td>
-                                <td style="font-weight: 600; color: #1e293b;">
                                     {{ v.title }}
+                                    {% if v.cve and v.cve != 'N/A' %}
+                                    (<a href="{{ v.ref_url }}" target="_blank" onclick="event.stopPropagation();">{{ v.cve }}</a>)
+                                    {% endif %}
                                 </td>
                             </tr>
                             <tr id="id-vulndetail-{{ loop.index0 }}-{{ asset.id }}" style="display: none;">
-                                <td colspan="4" style="padding: 0; background: #f8fafc; border: 1px solid #ddd; border-top: none;">
+                                <td colspan="10" style="padding: 0; background: #f8fafc; border: 1px solid #ddd; border-top: none;">
                                     <div class="details-box">
                                         <div style="margin-bottom: 8px;">
                                             <strong>Description:</strong> 
@@ -331,11 +348,15 @@ table{margin:0!important}
                             {% endfor %}
                         {% else %}
                             <tr class="plugin-row">
-                                <td colspan="4" style="text-align: center; color: #94a3b8; font-style: italic;">
+                                <td colspan="10" style="text-align: center; color: #94a3b8; font-style: italic;">
                                     No vulnerabilities identified on this host.
                                 </td>
                             </tr>
                         {% endif %}
+                        <tr class="plugin-row">
+                            <td style="border-left-style: hidden; border-bottom-style: hidden; border-right-style: hidden;"></td>
+                            <td colspan="9" style="border-left-style: hidden; border-bottom-style: hidden; border-right-style: hidden; font-size: 11px; color: #64748b;">N/A indicates that the scanner did not provide a CVSS v3.0 score</td>
+                        </tr>
                     </tbody>
                 </table>
 

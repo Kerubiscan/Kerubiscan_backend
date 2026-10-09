@@ -421,15 +421,17 @@ def _scan_report_html(db: Session, scan: ScanEntity, scanner_company: str, targe
     from src.reporting.application.services.html_generator import generate_vulnerability_html, generate_discovery_html
 
     display_name = _display_name(db, scan, target_company)
+    # The network zone is the report heading, where Nessus shows the scan name
+    zone = (scan.network_zone or "").strip() or None
     if scan.scan_type == ScanType.DISCOVERY:
         return generate_discovery_html(assets=assets, scanner_company_name=scanner_company,
                                        target_company_name=target_company, scan_name=display_name,
-                                       scan_date=scan.created_at)
+                                       scan_date=scan.created_at, report_title=zone)
     return generate_vulnerability_html(assets=assets, all_vulnerabilities=all_vulns,
                                        executive_summary=executive_summary,
                                        scanner_company_name=scanner_company,
                                        target_company_name=target_company, scan_name=display_name,
-                                       scan_date=scan.created_at)
+                                       scan_date=scan.created_at, report_title=zone)
 
 
 @router.get("/{scan_id}/report/html")

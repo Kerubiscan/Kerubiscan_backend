@@ -27,6 +27,35 @@ def _cia_from_vector(vector: Optional[str]) -> Optional[str]:
             f"Disponibilité : {_CIA_LEVELS.get(metrics['A'], metrics['A'])}")
 
 
+def _plugin(rule_id: Optional[str]):
+    """(label, url) for the "Plugin" column, like the plugin ID of a Nessus report.
+
+    rule_id is "<engine>:<id>[:<extra>]"; findings stored before the column existed have none.
+    """
+    if not rule_id or ":" not in rule_id:
+        return "-", None
+    engine, _, rest = rule_id.partition(":")
+    if engine == "nuclei":
+        template = rest.split(":", 1)[0]
+        return template, f"https://cloud.projectdiscovery.io/public/{template}"
+    if engine == "nmap":
+        if rest.startswith("vulners:"):
+            cve = rest.split(":", 1)[1]
+            return "vulners", f"https://vulners.com/cve/{cve}"
+        return rest, f"https://nmap.org/nsedoc/scripts/{rest}.html"
+    if engine == "zap":
+        return rest, f"https://www.zaproxy.org/docs/alerts/{rest}/"
+    if engine == "openvas":
+        return rest, None   # NVT OID: no stable public page
+    return rest, None
+
+
+def _report_date(dt: Optional[datetime]) -> str:
+    """Same layout as the Nessus report date ("Thu, 08 Oct 2026 20:22:14 Africa/Lagos")."""
+    local = _local(dt)
+    return f"{local.strftime('%a, %d %b %Y %H:%M:%S')} {os.environ.get('TZ') or local.tzname() or 'UTC'}"
+
+
 def _local(dt: Optional[datetime]) -> datetime:
     """Dates are stored in UTC: show them in the server's time zone (TZ), like the logs."""
     if dt is None:
@@ -44,9 +73,10 @@ def generate_vulnerability_html(
     scan_name: str = "Vulnerability Scan Report",
     scan_profile: str = "Full Security Audit (Multi-Engine)",
     classification: str = "CONFIDENTIEL - USAGE INTERNE",
-    scan_date: datetime = None
+    scan_date: datetime = None,
+    report_title: Optional[str] = None
 ) -> bytes:
-    
+    """report_title (the scan's network zone) is the report heading, where Nessus shows the scan name."""
     template_assets = []
     all_vulns_flat: List[Dict] = []
     
@@ -86,9 +116,10 @@ def generate_vulnerability_html(
         def sort_vulns(v):
             sev_str = getattr(v.severity, "value", str(v.severity))
             cvss = float(getattr(v, "cvss_base_score", 0.0) or 0.0)
-            return (get_severity_weight(sev_str), cvss)
+            return (-get_severity_weight(sev_str), -cvss, (v.title or "").lower())
 
-        for v in sorted(vulns, key=sort_vulns, reverse=True):
+        # Same order as Nessus: severity, then CVSS score, then name
+        for v in sorted(vulns, key=sort_vulns):
             sev_str = getattr(v.severity, "value", str(v.severity))
             score = float(v.cvss_base_score) if v.cvss_base_score is not None else 0.0
             if score > 0:
@@ -119,6 +150,7 @@ def generate_vulnerability_html(
 
             # Parse AI Analysis if available
             ai_data = getattr(v, "ai_analysis", None)
+            plugin, plugin_url = _plugin(getattr(v, "rule_id", None))
 
             vuln_obj = {
                 "id": str(v.id),
@@ -129,6 +161,8 @@ def generate_vulnerability_html(
                 "cve": cve,
                 "ref_url": ref_url,
                 "engine": v.source_engine or "OPENVAS / MULTI-ENGINE",
+                "plugin": plugin,
+                "plugin_url": plugin_url,
                 "title": v.title,
                 "description": v.description or "Aucune description fournie par le scanner.",
                 "remediation": getattr(v, "remediation", None) or NO_REMEDIATION,
@@ -159,10 +193,10 @@ def generate_vulnerability_html(
     top_vulnerabilities = sorted(all_vulns_flat, key=sort_flat_vulns, reverse=True)[:10]
 
     template_data = {
-        "scan_name": scan_name,
+        "scan_name": report_title or scan_name,
         "scan_profile": scan_profile,
         "classification": classification,
-        "report_date": _local(scan_date).strftime("%d/%m/%Y à %H:%M:%S"),
+        "report_date": _report_date(scan_date),
         "scanner_company_name": scanner_company_name,
         "target_company_name": target_company_name,
         "executive_summary": executive_summary,
@@ -211,7 +245,8 @@ def generate_discovery_html(
     scan_name: str = "Discovery Scan Report",
     scan_profile: str = "Host Discovery",
     classification: str = "CONFIDENTIEL - USAGE INTERNE",
-    scan_date: datetime = None
+    scan_date: datetime = None,
+    report_title: Optional[str] = None
 ) -> bytes:
     template_assets = []
 
@@ -247,10 +282,10 @@ def generate_discovery_html(
         template_assets.append(asset_data)
         
     template_data = {
-        "scan_name": scan_name,
+        "scan_name": report_title or scan_name,
         "scan_profile": scan_profile,
         "classification": classification,
-        "report_date": _local(scan_date).strftime("%d/%m/%Y à %H:%M:%S"),
+        "report_date": _report_date(scan_date),
         "scanner_company_name": scanner_company_name,
         "target_company_name": target_company_name,
         "assets": template_assets,
