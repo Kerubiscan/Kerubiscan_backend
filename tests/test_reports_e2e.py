@@ -180,3 +180,35 @@ def test_report_shows_only_data_provided_by_the_scanner(db, company):
     assert html.count("CVSS:3.1/") == 1                      # only the real vector
     assert "Confidentialité : ÉLEVÉ | Intégrité : ÉLEVÉ | Disponibilité : AUCUN" in html
     assert NO_REMEDIATION in html and "Mettre à jour Apache httpd en 2.4.51 ou plus." in html
+
+
+def test_report_follows_the_nessus_layout_with_the_network_zone_as_heading(db, make_scan, fakes):  # noqa: F811
+    """Same skeleton as a Nessus "Vulnerabilities by Host" report: the network zone takes the place
+    of the Nessus scan name, each finding has a Plugin column, rows are sorted by severity."""
+    import re
+    from src.scans.domain.entities import ScanEntity
+    scan_id = _scan(db, make_scan, "app.exemple.com", "NMAP")
+    scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).one()
+    scan.network_zone = "Scan_domaines_kimia"
+    db.commit()
+
+    html = _html_report(db, scan_id)
+    # Heading = network zone, at the place of the Nessus scan name (the <h3> under the header)
+    assert re.search(r"<h3[^>]*>\s*Scan_domaines_kimia\s*</h3>", html)
+    # Plugin column with a link to the test that produced the finding (rule_id kept at ingestion)
+    assert ">Plugin<" in html and "https://vulners.com/cve/CVE-2021-42013" in html
+    # Nessus order: every Critical row comes before the first High row
+    badges = re.findall(r'class="badge badge-(\w+)"', html)
+    order = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
+    assert badges == sorted(badges, key=order.__getitem__)
+    # Nessus date layout: "Thu, 08 Oct 2026 20:22:14 <time zone>"
+    assert re.search(r"<h4[^>]*>\w{3}, \d{2} \w{3} \d{4} \d{2}:\d{2}:\d{2} [^<]+</h4>", html)
+
+    pdf = _pdf_text(db, scan_id)
+    assert "Scan_domaines_kimia" in pdf
+
+
+def test_without_network_zone_the_heading_falls_back_to_the_scan_name(db, make_scan, fakes):  # noqa: F811
+    import re
+    scan_id = _scan(db, make_scan, "app.exemple.com", "NMAP")
+    assert re.search(r"<h3[^>]*>\s*test\s*</h3>", _html_report(db, scan_id))

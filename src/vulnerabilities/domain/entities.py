@@ -22,7 +22,10 @@ class VulnerabilityEntity(Base):
     service = Column(String, nullable=True)
     
     source_engine = Column(String, default="OPENVAS", nullable=False)
-    
+    # Test that produced the finding ("nuclei:<template>:<matcher>", "nmap:<script>", "zap:<id>",
+    # "openvas:<oid>"): the "Plugin" column of the reports
+    rule_id = Column(String, nullable=True)
+
     ai_analysis = Column(JSON, nullable=True)
     
     severity = Column(SQLEnum(VulnSeverity), default=VulnSeverity.INFO, nullable=False)

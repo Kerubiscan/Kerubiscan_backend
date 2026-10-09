@@ -72,3 +72,6 @@ def test_upgrade_removes_nessus_and_adds_columns(old_schema_db, monkeypatch):
         scan_cols = [r[0] for r in c.execute(text(
             "SELECT column_name FROM information_schema.columns WHERE table_name='scans'"))]
         assert "target_meta" in scan_cols
+        vuln_cols = [r[0] for r in c.execute(text(
+            "SELECT column_name FROM information_schema.columns WHERE table_name='vulnerabilities'"))]
+        assert "rule_id" in vuln_cols
