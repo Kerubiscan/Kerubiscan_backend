@@ -792,3 +792,29 @@ def test_processes_that_left_the_process_group_are_killed_with_the_session():
     assert kill_session(leader.pid) == len(left)
     time.sleep(0.5)
     assert not [p for p in session_pids(leader.pid) if open(f"/proc/{p}/stat").read().split()[2] != "Z"]
+
+
+def test_last_scan_is_the_one_that_ran_last_at_its_run_time(db, make_scan):
+    """Dashboard after rerunning Juice Shop: 'last scan' showed 13:41 (first run, in UTC) instead of
+    the rerun that ended at 19:50 local time."""
+    from datetime import datetime, timedelta, timezone
+    from src.dashboard.adapters.outbound.repository import DashboardRepository
+    from src.scans.adapters.inbound.api import endpoints
+    from src.scans.application.services.progress import last_run_at
+    old_id = make_scan("juice-shop", "NMAP")          # created first, rerun today
+    new_id = make_scan("app.exemple.com", "NMAP")     # created later, ran yesterday
+    now = datetime.now(timezone.utc)
+    for scan_id, start, end in ((old_id, now - timedelta(minutes=15), now),
+                                (new_id, now - timedelta(days=1, minutes=20), now - timedelta(days=1))):
+        scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).one()
+        target = next(iter(scan.target_states))
+        scan.status = ScanStatus.COMPLETED
+        scan.target_states = {target: "COMPLETED"}
+        scan.target_meta = {target: {"started_at": start.isoformat(), "updated_at": end.isoformat()}}
+    db.commit()
+    old = db.query(ScanEntity).filter(ScanEntity.id == old_id).one()
+    assert last_run_at(old) == now
+    latest = DashboardRepository(db).get_latest_scan()
+    assert latest["name"] == old.name
+    assert latest["date"] == now.astimezone().strftime("%d %b %Y, %H:%M")     # local time, not UTC
+    assert endpoints._run_date(old) == now - timedelta(minutes=15)               # report: start of this run

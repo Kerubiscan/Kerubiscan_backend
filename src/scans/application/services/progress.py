@@ -6,7 +6,7 @@ reason of a failure (scans.target_meta), and the watchdog (watchdog.py) closes f
 """
 import logging
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Optional, Tuple
 
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
@@ -205,6 +205,41 @@ def heartbeat(scan_id: str, target: str, target_status: Optional[str] = None, en
         db.commit()
     finally:
         db.close()
+
+
+def parse_ts(value) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        dt = value if isinstance(value, datetime) else datetime.fromisoformat(str(value))
+    except ValueError:
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def run_window(scan) -> Tuple[Optional[datetime], Optional[datetime]]:
+    """(start, end) of the scan's latest run, from the per-target timestamps (target_meta).
+
+    A rerun keeps the row (and its created_at): the start is the earliest target start of this
+    run, the end (finished scans only) the last update of its targets. Older scans without
+    per-target timestamps fall back to created_at / updated_at."""
+    meta = scan.target_meta or {}
+    entries = [e for e in meta.values() if isinstance(e, dict)]
+    starts = [t for t in (parse_ts(e.get("started_at")) for e in entries) if t]
+    ends = [t for t in (parse_ts(e.get("updated_at")) for e in entries) if t]
+    started = min(starts) if starts else parse_ts(scan.created_at)
+    finished = None
+    if scan.status in (ScanStatus.COMPLETED, ScanStatus.FAILED):
+        finished = max(ends) if ends else parse_ts(scan.updated_at)
+    if started is not None and finished is not None and finished < started:
+        finished = started
+    return started, finished
+
+
+def last_run_at(scan) -> Optional[datetime]:
+    """When the scan last ran: its end once finished, else its start (UTC)."""
+    started, finished = run_window(scan)
+    return finished or started
 
 
 def engine_remaining(scan) -> Optional[int]:
