@@ -327,9 +327,9 @@ class ScanContext:
         """Records activity on the target (watched by watchdog.py)."""
         progress.heartbeat(self.scan_id, self.target_raw)
 
-    def step(self, percent: float):
+    def step(self, percent: float, remaining_s: Optional[float] = None):
         """Records a real step of the target (shown as the scan percentage)."""
-        progress.set_target_progress(self.scan_id, self.target_raw, int(percent))
+        progress.set_target_progress(self.scan_id, self.target_raw, int(percent), remaining_s)
 
 
 # Real steps of a non-OpenVAS target: started, ports discovered, engine done per host, results stored
@@ -349,17 +349,29 @@ def _host_range(index: int, count: int) -> Tuple[float, float]:
     return low, _host_step(index, count, engine_done=True)
 
 
-def _engine_progress(ctx: "ScanContext", low: float, high: float):
-    """Callback turning an engine's own progress (0 to 1) into the scan percentage between low and
-    high. Recorded only when the whole percentage changes (one database write per point at most)."""
-    last = [None]
+# The time an engine still needs is refreshed at least this often, even when its % does not move
+ETA_REFRESH_S = 30
 
-    def on_progress(fraction: float) -> None:
+
+def _engine_progress(ctx: "ScanContext", low: float, high: float, estimate: bool = True):
+    """Callback turning an engine's own progress (0 to 1) into the scan percentage between low and
+    high, with the time the engine still needs: given by the engine (ZAP, from its phases) or, from
+    5 % on, extrapolated from its own pace. Recorded when the whole percentage changes, or every
+    ETA_REFRESH_S seconds. estimate=False for a step that is not the last one (port discovery: the
+    engine still has to run after it, its remaining time would announce the end too early)."""
+    started = time.monotonic()
+    last = {"percent": None, "at": 0.0}
+
+    def on_progress(fraction: float, remaining_s: Optional[float] = None) -> None:
         percent = int(low + (high - low) * fraction)
-        if percent != last[0]:
-            last[0] = percent
-            ctx.alive()
-            ctx.step(percent)
+        now = time.monotonic()
+        if percent == last["percent"] and now - last["at"] < ETA_REFRESH_S:
+            return
+        if estimate and remaining_s is None and fraction >= 0.05:
+            remaining_s = (now - started) * (1 - fraction) / fraction
+        last["percent"], last["at"] = percent, now
+        ctx.alive()
+        ctx.step(percent, remaining_s if estimate else None)
     return on_progress
 
 
@@ -533,7 +545,8 @@ def _phase1(ctx: ScanContext, target: ScanTarget, tolerate_failure: bool) -> Lis
     try:
         hosts = NmapAdapter.run_detailed_discovery_scan(target.host, ports=ctx.port_range,
                                                         credentials=ctx.credentials, profile=ctx.profile,
-                                                        on_progress=_engine_progress(ctx, STEP_STARTED, STEP_DISCOVERED))
+                                                        on_progress=_engine_progress(ctx, STEP_STARTED, STEP_DISCOVERED,
+                                                                                     estimate=False))
     except ScanError as e:
         if not tolerate_failure:
             raise

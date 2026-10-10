@@ -539,6 +539,7 @@ def test_end_estimate_uses_previous_runs_of_the_same_scan(db, make_scan, fakes):
     db.commit()
     eta, basis = endpoints._estimate_remaining(db, scan, elapsed=200)
     assert basis == "history" and eta == 1000
+    scan.progress = 90
     eta, basis = endpoints._estimate_remaining(db, scan, elapsed=1300)
     assert basis == "history" and eta == 0                          # just past the usual duration: end imminent
 
@@ -650,10 +651,13 @@ def test_zap_reports_its_real_progress_through_every_phase(monkeypatch):
     real_wait = module.ZAPAdapter.__dict__["_wait"]                 # the real polling, kept by this test
     zap_adapter = _fake_zap(monkeypatch, api)
     monkeypatch.setattr(zap_adapter.ZAPAdapter, "_wait", real_wait)
-    seen = []
-    zap_adapter.ZAPAdapter.run_scan(["http://juice-shop:3000"], on_progress=seen.append)
+    seen, left = [], []
+    zap_adapter.ZAPAdapter.run_scan(["http://juice-shop:3000"], ajax_minutes=10, ascan_minutes=90,
+                                    on_progress=lambda f, r=None: (seen.append(f), left.append(r)))
     assert seen == sorted(seen) and seen[-1] == 1.0                 # never goes back, ends at 100 %
     assert any(0.25 < f < 1.0 for f in seen)                        # the active scan status is followed
+    # Remaining time from the phases: up to the active scan's 90 min budget, then 0 at the end
+    assert left[0] >= 90 * 60 and left[-1] == 0
 
 
 def test_engine_progress_maps_to_the_scan_percentage_without_redundant_writes():
@@ -661,11 +665,49 @@ def test_engine_progress_maps_to_the_scan_percentage_without_redundant_writes():
 
     class Ctx:
         def alive(self): pass
-        def step(self, percent): steps.append(percent)
+        def step(self, percent, remaining_s=None): steps.append(percent)
     on_progress = scan_tasks._engine_progress(Ctx(), 5, 85)
     for fraction in (0.0, 0.001, 0.5, 0.5, 1.0):
         on_progress(fraction)
     assert steps == [5, 45, 85]
+
+
+def test_engine_estimate_comes_from_its_own_pace_unless_the_engine_gives_it(monkeypatch):
+    recorded = []
+
+    class Ctx:
+        def alive(self): pass
+        def step(self, percent, remaining_s=None): recorded.append((percent, remaining_s))
+    clock = [1000.0]
+    monkeypatch.setattr(scan_tasks.time, "monotonic", lambda: clock[0])
+    on_progress = scan_tasks._engine_progress(Ctx(), 30, 85)
+    clock[0] += 600
+    on_progress(0.25)                                   # 25 % in 10 min: 30 min left at this pace
+    assert recorded[-1][1] == pytest.approx(1800)
+    on_progress(0.30, 5400)                             # the engine knows better (ZAP's phases)
+    assert recorded[-1][1] == 5400
+    discovery = scan_tasks._engine_progress(Ctx(), 5, 30, estimate=False)
+    clock[0] += 60
+    discovery(0.5)
+    assert recorded[-1] == (17, None)                   # port discovery alone says nothing about the end
+
+
+def test_engine_estimate_is_shown_and_counts_down(db, make_scan):
+    """Juice Shop: 'end imminent' at 5 min 25 s and 18 %, from a 5 min run made before the AJAX spider."""
+    from datetime import datetime, timedelta, timezone
+    from src.scans.adapters.inbound.api import endpoints
+    scan_id = make_scan("app.exemple.com", "NMAP")
+    scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).one()
+    db.add(AuditLog(user_id="system", action="SCAN_COMPLETED", resource_type="SCAN",
+                    resource_id=scan_id, details={"duration_seconds": 300}))
+    db.commit()
+    target = next(iter(scan.target_states))
+    scan.progress = 18
+    assert endpoints._estimate_remaining(db, scan, elapsed=325) == (None, None)   # stale history dropped
+    at = (datetime.now(timezone.utc) - timedelta(seconds=60)).isoformat()
+    scan.target_meta = {target: {"progress": 18, "eta_s": 6000, "eta_at": at}}
+    eta, basis = endpoints._estimate_remaining(db, scan, elapsed=325)
+    assert basis == "engine" and 5935 <= eta <= 5941                             # 6000 s minus the minute gone
 
 
 # ----------------------------------------------------------------------------- live progress
