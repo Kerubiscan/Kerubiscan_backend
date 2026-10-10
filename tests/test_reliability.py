@@ -818,3 +818,17 @@ def test_last_scan_is_the_one_that_ran_last_at_its_run_time(db, make_scan):
     assert latest["name"] == old.name
     assert latest["date"] == now.astimezone().strftime("%d %b %Y, %H:%M")     # local time, not UTC
     assert endpoints._run_date(old) == now - timedelta(minutes=15)               # report: start of this run
+
+
+def test_openvas_gives_its_end_estimate_from_its_own_pace(db, company):
+    """OpenVAS had no engine estimate: nothing was shown before 35 %."""
+    from datetime import datetime, timedelta, timezone
+    from src.scans.adapters.inbound.api import endpoints
+    start = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
+    scan_id = _scan(db, company, "OPENVAS", {"10.0.0.5": "IN_PROGRESS"},
+                    meta={"10.0.0.5": {"ov_started_at": start, "ov_progress": 5}})
+    progress.record_openvas_progress(scan_id, "10.0.0.5", 20)        # 20 % in 10 min: 40 min left
+    scan = _reload(db, scan_id)
+    assert 2390 <= scan.target_meta["10.0.0.5"]["eta_s"] <= 2400
+    eta, basis = endpoints._estimate_remaining(db, scan, elapsed=600)
+    assert basis == "engine" and 2380 <= eta <= 2400

@@ -275,6 +275,14 @@ def record_openvas_progress(scan_id: str, target: str, value: int) -> float:
             stalled = 0.0
         else:
             stalled = (now - changed_at).total_seconds()
+        # Time OpenVAS still needs, from its own pace since its task started reporting (from 5 %,
+        # earlier figures say little); read back by engine_remaining like the other engines
+        started = _parse_iso(entry.get("ov_started_at"))
+        if started is None:
+            entry["ov_started_at"] = now.isoformat()
+        elif value >= 5:
+            entry["eta_s"] = int((now - started).total_seconds() * (100 - value) / value)
+            entry["eta_at"] = now.isoformat()
         meta[target] = entry
         scan.target_meta = meta
         flag_modified(scan, "target_meta")
