@@ -13,6 +13,8 @@ router = APIRouter()
 
 # A past local day (YYYY-MM-DD) picked on the over-time chart; absent: the current dashboard
 DayParam = Query(None, description="Jour local (AAAA-MM-JJ) choisi sur le graphique ; absent : vue actuelle")
+# One scan of that day, picked in the list of the day's scans (takes precedence over the day)
+ScanParam = Query(None, max_length=64, description="Scan choisi dans la liste des scans du jour")
 
 def get_dashboard_repository(db: Session = Depends(get_db)) -> DashboardRepository:
     return DashboardRepository(db)
@@ -22,20 +24,22 @@ def get_dashboard_repository(db: Session = Depends(get_db)) -> DashboardReposito
 async def get_kpis(
     request: Request,
     date: Optional[date] = DayParam,
+    scan_id: Optional[str] = ScanParam,
     repo: DashboardRepository = Depends(get_dashboard_repository),
     current_user: dict = Depends(require_permissions([Permission.ASSET_READ]))
 ):
-    return repo.get_kpis(date)
+    return repo.get_kpis(date, scan_id)
 
 @router.get("/charts/distribution")
 @limiter.limit("50/minute")
 async def get_distribution_chart(
     request: Request,
     date: Optional[date] = DayParam,
+    scan_id: Optional[str] = ScanParam,
     repo: DashboardRepository = Depends(get_dashboard_repository),
     current_user: dict = Depends(require_permissions([Permission.ASSET_READ]))
 ):
-    return repo.get_distribution_chart(date)
+    return repo.get_distribution_chart(date, scan_id)
 
 @router.get("/charts/over-time")
 @limiter.limit("50/minute")
@@ -70,10 +74,11 @@ async def get_assets_by_os(
 async def get_recent_vulnerabilities(
     request: Request,
     date: Optional[date] = DayParam,
+    scan_id: Optional[str] = ScanParam,
     repo: DashboardRepository = Depends(get_dashboard_repository),
     current_user: dict = Depends(require_permissions([Permission.ASSET_READ]))
 ):
-    return repo.get_recent_vulnerabilities(date)
+    return repo.get_recent_vulnerabilities(date, scan_id)
 
 
 @router.get("/scans-of-day")
