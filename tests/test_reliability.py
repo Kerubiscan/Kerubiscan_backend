@@ -832,3 +832,34 @@ def test_openvas_gives_its_end_estimate_from_its_own_pace(db, company):
     assert 2390 <= scan.target_meta["10.0.0.5"]["eta_s"] <= 2400
     eta, basis = endpoints._estimate_remaining(db, scan, elapsed=600)
     assert basis == "engine" and 2380 <= eta <= 2400
+
+
+def test_stop_button_kills_the_running_scanner(tmp_path):
+    """Stop revokes the task with SIGTERM: the worker child died at once and Nuclei, in its own
+    session, went on scanning as an orphan. SIGTERM now unwinds the task, which kills the scanner."""
+    import sys, time
+    from src.scans.application.services import worker_signals
+    from src.scans.adapters.outbound.base_adapter import BaseScannerAdapter
+    with pytest.raises(SystemExit):
+        worker_signals._terminate(15, None)
+    procs = []
+
+    def terminated(_output):           # SIGTERM arriving while the scanner runs
+        worker_signals._terminate(15, None)
+    real_popen = __import__("subprocess").Popen
+
+    def spy(*a, **kw):
+        p = real_popen(*a, **kw)
+        procs.append(p)
+        return p
+    import src.scans.adapters.outbound.base_adapter as base
+    base.subprocess.Popen, saved = spy, base.subprocess.Popen
+    try:
+        started = time.monotonic()
+        with pytest.raises(SystemExit):
+            BaseScannerAdapter.run_process([sys.executable, "-c", "import time; time.sleep(60)"], timeout=120,
+                                           err_file_path=str(tmp_path / "err.log"), on_output=terminated, poll_s=0.2)
+    finally:
+        base.subprocess.Popen = saved
+    assert time.monotonic() - started < 30
+    assert procs and procs[0].poll() is not None        # the scanner is dead, not orphaned
