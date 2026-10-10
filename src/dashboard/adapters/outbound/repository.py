@@ -24,6 +24,26 @@ def _as_utc(value: datetime) -> datetime:
     return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
 
 
+_BADGES = {
+    VulnSeverity.CRITICAL: "bg-status-critical/10 text-status-critical border border-status-critical/20",
+    VulnSeverity.HIGH: "bg-status-high/10 text-status-high border border-status-high/20",
+    VulnSeverity.MEDIUM: "bg-status-medium/10 text-status-medium border border-status-medium/20",
+    VulnSeverity.LOW: "bg-status-low/10 text-status-low border border-status-low/20",
+}
+
+
+def _vuln_row(vuln: VulnerabilityEntity, asset: AssetEntity) -> Dict[str, Any]:
+    return {
+        "severity": vuln.severity.value,
+        "name": vuln.title,
+        "target": asset.ip_address,
+        "service": vuln.service if vuln.service else "Unknown",
+        "port": str(vuln.port) if vuln.port else "-",
+        "date": _as_utc(vuln.first_detected_at).astimezone().strftime("%d %b %Y, %H:%M"),
+        "badgeClass": _BADGES.get(vuln.severity, "bg-status-info/10 text-status-info border border-status-info/20"),
+    }
+
+
 class DashboardRepository:
     def __init__(self, db: Session):
         self.db = db
@@ -40,7 +60,31 @@ class DashboardRepository:
             kpis[severity.value.lower()] = count
         return kpis
 
-    def get_kpis(self, day: Optional[date] = None) -> Dict[str, int]:
+    def _scan_findings(self, scan_id: str) -> List[Tuple[VulnerabilityEntity, AssetEntity]]:
+        """Findings of one scan: its engine's findings on the assets it covers (as in its report)."""
+        from src.scans.application.services.scan_assets import scan_assets
+        scan = self.db.query(ScanEntity).filter(ScanEntity.id == scan_id, ScanEntity.is_deleted == False).first()  # noqa: E712
+        if not scan:
+            return []
+        engine = scan.scanner_engine.value if scan.scanner_engine else None
+        pairs = []
+        for asset in scan_assets(self.db, scan):
+            query = self.db.query(VulnerabilityEntity).filter(VulnerabilityEntity.asset_id == asset.id)
+            if engine:
+                query = query.filter(VulnerabilityEntity.source_engine == engine)
+            seen = set()
+            for vuln in query.all():
+                if (vuln.title, vuln.port) not in seen:
+                    seen.add((vuln.title, vuln.port))
+                    pairs.append((vuln, asset))
+        return pairs
+
+    def get_kpis(self, day: Optional[date] = None, scan_id: Optional[str] = None) -> Dict[str, int]:
+        if scan_id:
+            kpis = {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}
+            for vuln, _ in self._scan_findings(scan_id):
+                kpis[vuln.severity.value.lower()] += 1
+            return kpis
         if day is not None:
             return self._kpis_of_day(day)
         # User requested: Dashboard should reflect the latest scan regardless of status
@@ -74,8 +118,8 @@ class DashboardRepository:
             
         return kpis
 
-    def get_distribution_chart(self, day: Optional[date] = None) -> List[Dict[str, Any]]:
-        kpis = self.get_kpis(day)
+    def get_distribution_chart(self, day: Optional[date] = None, scan_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        kpis = self.get_kpis(day, scan_id)
         return [
             {"name": "Critical", "value": kpis["critical"], "color": "var(--status-critical)"},
             {"name": "High", "value": kpis["high"], "color": "var(--status-high)"},
@@ -184,7 +228,14 @@ class DashboardRepository:
             del row["_at"]
         return out
 
-    def get_recent_vulnerabilities(self, day: Optional[date] = None) -> List[Dict[str, Any]]:
+    def get_recent_vulnerabilities(self, day: Optional[date] = None, scan_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Latest findings; of a past day (most severe first); or of one scan (its 10 most severe)."""
+        if scan_id:
+            rank = {VulnSeverity.CRITICAL: 0, VulnSeverity.HIGH: 1, VulnSeverity.MEDIUM: 2,
+                    VulnSeverity.LOW: 3, VulnSeverity.INFO: 4}
+            pairs = sorted(self._scan_findings(scan_id),
+                           key=lambda p: (rank.get(p[0].severity, 5), -(p[0].cvss_base_score or 0), p[0].title))
+            return [_vuln_row(v, a) for v, a in pairs[:10]]
         query = self.db.query(VulnerabilityEntity, AssetEntity)\
             .join(AssetEntity, VulnerabilityEntity.asset_id == AssetEntity.id)
         if day is not None:
@@ -194,33 +245,7 @@ class DashboardRepository:
                 .order_by(desc(VulnerabilityEntity.cvss_base_score), desc(VulnerabilityEntity.first_detected_at))
         else:
             query = query.order_by(desc(VulnerabilityEntity.first_detected_at))
-        query = query.limit(5)
-            
-        results = query.all()
-        
-        out = []
-        for vuln, asset in results:
-            badge_class = "bg-status-info/10 text-status-info border border-status-info/20"
-            if vuln.severity == VulnSeverity.CRITICAL:
-                badge_class = "bg-status-critical/10 text-status-critical border border-status-critical/20"
-            elif vuln.severity == VulnSeverity.HIGH:
-                badge_class = "bg-status-high/10 text-status-high border border-status-high/20"
-            elif vuln.severity == VulnSeverity.MEDIUM:
-                badge_class = "bg-status-medium/10 text-status-medium border border-status-medium/20"
-            elif vuln.severity == VulnSeverity.LOW:
-                badge_class = "bg-status-low/10 text-status-low border border-status-low/20"
-
-            out.append({
-                "severity": vuln.severity.value,
-                "name": vuln.title,
-                "target": asset.ip_address,
-                "service": vuln.service if vuln.service else "Unknown",
-                "port": str(vuln.port) if vuln.port else "-",
-                "date": _as_utc(vuln.first_detected_at).astimezone().strftime("%d %b %Y, %H:%M"),
-                "badgeClass": badge_class
-            })
-            
-        return out
+        return [_vuln_row(v, a) for v, a in query.limit(5).all()]
 
     def get_scheduled_scans(self) -> List[Dict[str, Any]]:
         scans = self.db.query(ScheduleEntity).order_by(asc(ScheduleEntity.created_at)).limit(3).all()

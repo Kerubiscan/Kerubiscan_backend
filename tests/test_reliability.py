@@ -908,3 +908,26 @@ def test_dashboard_goes_back_to_a_past_day(db, company, make_scan):
     assert [(s["id"], s["zone"]) for s in scans] == [(scan_id, "LAB_PENTEST")]
     assert repo.get_scans_of_day(yesterday - timedelta(days=3)) == []
     assert repo.get_latest_scan()["zone"] == "LAB_PENTEST"
+
+
+def test_dashboard_shows_the_findings_of_one_scan_of_the_day(db, company, make_scan):
+    """In the list of the day's scans, a click on a scan shows its own findings, most severe first."""
+    from src.assets.domain.entities import AssetEntity
+    from src.vulnerabilities.domain.entities import VulnerabilityEntity
+    from src.vulnerabilities.domain.models import VulnSeverity
+    from src.dashboard.adapters.outbound.repository import DashboardRepository
+    scan_id = make_scan("172.20.0.2", "OPENVAS")
+    scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).one()
+    asset = AssetEntity(company_id=scan.company_id, name="lab-apache", ip_address="172.20.0.2")
+    db.add(asset)
+    db.commit()
+    for title, sev, cvss, engine in (("TCP timestamps", VulnSeverity.LOW, 2.6, "OPENVAS"),
+                                     ("CVE-2021-41773", VulnSeverity.CRITICAL, 9.8, "OPENVAS"),
+                                     ("vulners CVE", VulnSeverity.HIGH, 8.0, "NMAP")):   # another engine's scan
+        db.add(VulnerabilityEntity(asset_id=asset.id, title=title, severity=sev, cvss_base_score=cvss,
+                                   source_engine=engine))
+    db.commit()
+    repo = DashboardRepository(db)
+    assert repo.get_kpis(scan_id=scan_id) == {"critical": 1, "high": 0, "medium": 0, "low": 1, "info": 0}
+    assert [v["name"] for v in repo.get_recent_vulnerabilities(scan_id=scan_id)] == ["CVE-2021-41773", "TCP timestamps"]
+    assert sum(p["value"] for p in repo.get_distribution_chart(scan_id=scan_id)) == 2
