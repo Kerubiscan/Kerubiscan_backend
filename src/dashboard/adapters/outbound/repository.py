@@ -16,7 +16,7 @@ class DashboardRepository:
     def get_kpis(self) -> Dict[str, int]:
         # User requested: Dashboard should reflect the latest scan regardless of status
         # And if the latest scan is deleted, the dashboard should show zero
-        latest_scan = self.db.query(ScanEntity).order_by(desc(ScanEntity.created_at)).first()
+        _, latest_scan = self._latest_scan()
         if not latest_scan or latest_scan.is_deleted:
             return {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}
 
@@ -121,15 +121,24 @@ class DashboardRepository:
             
         return out
 
+    def _latest_scan(self):
+        """(time of its latest run, scan) for the scan that ran last. A rerun keeps its row and
+        created_at, so ordering by creation showed an older scan, at its first run's time."""
+        from src.scans.application.services.progress import last_run_at
+        recent = self.db.query(ScanEntity).order_by(desc(ScanEntity.updated_at)).limit(20).all()
+        dated = [(t, s) for t, s in ((last_run_at(s), s) for s in recent) if t]
+        return max(dated, key=lambda d: d[0]) if dated else (None, None)
+
     def get_latest_scan(self) -> Dict[str, Any]:
-        scan = self.db.query(ScanEntity).order_by(desc(ScanEntity.created_at)).first()
+        ran_at, scan = self._latest_scan()
         if not scan:
             return None
-            
+
         return {
             "name": scan.name,
             "target": scan.target,
-            "date": scan.created_at.strftime("%d %b %Y, %H:%M"),
+            # Stored in UTC: shown in the server's time zone, like the reports and the logs
+            "date": ran_at.astimezone().strftime("%d %b %Y, %H:%M"),
             "status": scan.status.value,
             "vulnerabilities": scan.vulnerabilities_found or 0
         }

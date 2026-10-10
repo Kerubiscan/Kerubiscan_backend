@@ -94,13 +94,8 @@ class ScanResponse(BaseModel):
 
 
 def _parse_ts(value) -> Optional[datetime]:
-    if not value:
-        return None
-    try:
-        dt = value if isinstance(value, datetime) else datetime.fromisoformat(str(value))
-    except ValueError:
-        return None
-    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    from src.scans.application.services.progress import parse_ts
+    return parse_ts(value)
 
 
 def _timing(scan: ScanEntity):
@@ -109,20 +104,19 @@ def _timing(scan: ScanEntity):
     A finished scan ends at the last update of its targets; older scans without per-target
     timestamps fall back to created_at / updated_at.
     """
-    meta = scan.target_meta or {}
-    starts = [t for t in (_parse_ts(e.get("started_at")) for e in meta.values() if isinstance(e, dict)) if t]
-    ends = [t for t in (_parse_ts(e.get("updated_at")) for e in meta.values() if isinstance(e, dict)) if t]
-    started = min(starts) if starts else _parse_ts(scan.created_at)
-    finished = None
-    if scan.status in (ScanStatus.COMPLETED, ScanStatus.FAILED):
-        finished = max(ends) if ends else _parse_ts(scan.updated_at)
+    from src.scans.application.services.progress import run_window
+    started, finished = run_window(scan)
     if started is None:
         return None, None, None
-    if finished is not None and finished < started:
-        finished = started
     end = finished or (datetime.now(timezone.utc) if scan.status == ScanStatus.IN_PROGRESS else None)
     duration = int((end - started).total_seconds()) if end else None
     return started.isoformat(), finished.isoformat() if finished else None, duration
+
+
+def _run_date(scan: ScanEntity) -> Optional[datetime]:
+    """Date shown on a report: the start of the run it shows (a rerun keeps the row's created_at)."""
+    from src.scans.application.services.progress import run_window
+    return run_window(scan)[0] or scan.created_at
 
 
 def _median(values: List[int]) -> Optional[int]:
@@ -266,14 +260,14 @@ def get_scanner_status(db: Session = Depends(get_db), current_user: dict = Depen
     ).count()
     scheduled = db.query(ScheduleEntity).count()
 
-    last_scan = db.query(ScanEntity).filter(
-        ScanEntity.status.in_([ScanStatus.COMPLETED, ScanStatus.FAILED])
-    ).order_by(ScanEntity.created_at.desc()).first()
-
-    if last_scan and last_scan.created_at:
-        last_scan_time = last_scan.created_at.strftime("%Y-%m-%d %H:%M")
-    else:
-        last_scan_time = "Aucun"
+    from src.scans.application.services.progress import last_run_at
+    finished = db.query(ScanEntity).filter(
+        ScanEntity.status.in_([ScanStatus.COMPLETED, ScanStatus.FAILED]),
+        ScanEntity.is_deleted == False,  # noqa: E712
+    ).order_by(ScanEntity.updated_at.desc()).limit(20).all()
+    # A rerun keeps its row and created_at: the last scan is the one that ran last
+    ran = [t for t in (last_run_at(s) for s in finished) if t]
+    last_scan_time = max(ran).astimezone().strftime("%Y-%m-%d %H:%M") if ran else "Aucun"
 
     return ScannerStatus(
         status="Opérationnel",
@@ -530,12 +524,12 @@ def _scan_report_html(db: Session, scan: ScanEntity, scanner_company: str, targe
     if scan.scan_type == ScanType.DISCOVERY:
         return generate_discovery_html(assets=assets, scanner_company_name=scanner_company,
                                        target_company_name=target_company, scan_name=display_name,
-                                       scan_date=scan.created_at, report_title=zone)
+                                       scan_date=_run_date(scan), report_title=zone)
     return generate_vulnerability_html(assets=assets, all_vulnerabilities=all_vulns,
                                        executive_summary=executive_summary,
                                        scanner_company_name=scanner_company,
                                        target_company_name=target_company, scan_name=display_name,
-                                       scan_date=scan.created_at, report_title=zone)
+                                       scan_date=_run_date(scan), report_title=zone)
 
 
 @router.get("/{scan_id}/report/html")
@@ -622,7 +616,7 @@ def download_scan_report_pdf(
             scanner_company_name=scanner_company,
             target_company_name=target_company,
             scan_name=_display_name(db, scan, target_company),
-            scan_date=scan.created_at
+            scan_date=_run_date(scan)
         )
 
     from src.reporting.application.services.pdf_renderer import render_pdf
