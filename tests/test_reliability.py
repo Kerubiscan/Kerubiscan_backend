@@ -863,3 +863,48 @@ def test_stop_button_kills_the_running_scanner(tmp_path):
         base.subprocess.Popen = saved
     assert time.monotonic() - started < 30
     assert procs and procs[0].poll() is not None        # the scanner is dead, not orphaned
+
+
+# ----------------------------------------------------------------------------- dashboard over time
+
+
+def test_dashboard_goes_back_to_a_past_day(db, company, make_scan):
+    """Clicking a day of the over-time chart shows that day: its counts, its findings, its scans by zone."""
+    from datetime import datetime, timedelta, timezone
+    from src.assets.domain.entities import AssetEntity
+    from src.vulnerabilities.domain.entities import VulnerabilityEntity
+    from src.vulnerabilities.domain.models import VulnSeverity
+    from src.dashboard.adapters.outbound.repository import DashboardRepository, day_bounds
+    now = datetime.now(timezone.utc)
+    yesterday = now.astimezone().date() - timedelta(days=1)
+    noon_yesterday = day_bounds(yesterday)[0] + timedelta(hours=12)
+    asset = AssetEntity(company_id=company.id, name="172.20.0.2", ip_address="172.20.0.2")
+    db.add(asset)
+    db.commit()
+    for title, sev, at in (("old crit", VulnSeverity.CRITICAL, noon_yesterday),
+                           ("old high", VulnSeverity.HIGH, noon_yesterday),
+                           ("new info", VulnSeverity.INFO, now)):
+        db.add(VulnerabilityEntity(asset_id=asset.id, title=title, severity=sev, source_engine="NMAP",
+                                   first_detected_at=at, last_seen_at=at))
+    scan_id = make_scan("172.20.0.2", "NMAP")
+    scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).one()
+    scan.network_zone = "LAB_PENTEST"
+    target = next(iter(scan.target_states))
+    scan.status = ScanStatus.COMPLETED
+    scan.target_states = {target: "COMPLETED"}
+    scan.target_meta = {target: {"started_at": noon_yesterday.isoformat(),
+                                 "updated_at": (noon_yesterday + timedelta(minutes=5)).isoformat()}}
+    db.commit()
+    repo = DashboardRepository(db)
+
+    chart = repo.get_over_time_chart(14)
+    point = next(p for p in chart if p["date"] == yesterday.isoformat())
+    assert point["Critical"] == 1 and point["High"] == 1 and point["Info"] == 0
+    assert chart[-1]["date"] == now.astimezone().date().isoformat()          # ends today, no future day
+
+    assert repo.get_kpis(yesterday) == {"critical": 1, "high": 1, "medium": 0, "low": 0, "info": 0}
+    assert [v["name"] for v in repo.get_recent_vulnerabilities(yesterday)] == ["old crit", "old high"]
+    scans = repo.get_scans_of_day(yesterday)
+    assert [(s["id"], s["zone"]) for s in scans] == [(scan_id, "LAB_PENTEST")]
+    assert repo.get_scans_of_day(yesterday - timedelta(days=3)) == []
+    assert repo.get_latest_scan()["zone"] == "LAB_PENTEST"

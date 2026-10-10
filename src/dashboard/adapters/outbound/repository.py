@@ -1,7 +1,7 @@
 from sqlalchemy.orm import Session
 from sqlalchemy import select, func, desc, asc
-from typing import List, Dict, Any
-from datetime import datetime, timedelta
+from typing import List, Dict, Any, Optional, Tuple
+from datetime import date, datetime, time, timedelta, timezone
 
 from src.vulnerabilities.domain.entities import VulnerabilityEntity
 from src.vulnerabilities.domain.models import VulnStatus, VulnSeverity
@@ -9,11 +9,40 @@ from src.assets.domain.entities import AssetEntity
 from src.scans.domain.entities import ScanEntity
 from src.scheduling.domain.entities import ScheduleEntity
 
+def _local_tz():
+    """The server's time zone (TZ), the one of the reports and the logs."""
+    return datetime.now().astimezone().tzinfo
+
+
+def day_bounds(day: date) -> Tuple[datetime, datetime]:
+    """[start, end) of a local calendar day, in UTC (dates are stored in UTC)."""
+    start = datetime.combine(day, time.min, tzinfo=_local_tz())
+    return start.astimezone(timezone.utc), (start + timedelta(days=1)).astimezone(timezone.utc)
+
+
+def _as_utc(value: datetime) -> datetime:
+    return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+
+
 class DashboardRepository:
     def __init__(self, db: Session):
         self.db = db
 
-    def get_kpis(self) -> Dict[str, int]:
+    def _kpis_of_day(self, day: date) -> Dict[str, int]:
+        """Vulnerabilities found on a past day (first detection), as the over-time chart counts them."""
+        start, end = day_bounds(day)
+        rows = self.db.execute(
+            select(VulnerabilityEntity.severity, func.count(VulnerabilityEntity.id))
+            .where(VulnerabilityEntity.first_detected_at >= start, VulnerabilityEntity.first_detected_at < end)
+            .group_by(VulnerabilityEntity.severity)).all()
+        kpis = {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}
+        for severity, count in rows:
+            kpis[severity.value.lower()] = count
+        return kpis
+
+    def get_kpis(self, day: Optional[date] = None) -> Dict[str, int]:
+        if day is not None:
+            return self._kpis_of_day(day)
         # User requested: Dashboard should reflect the latest scan regardless of status
         # And if the latest scan is deleted, the dashboard should show zero
         _, latest_scan = self._latest_scan()
@@ -45,8 +74,8 @@ class DashboardRepository:
             
         return kpis
 
-    def get_distribution_chart(self) -> List[Dict[str, Any]]:
-        kpis = self.get_kpis()
+    def get_distribution_chart(self, day: Optional[date] = None) -> List[Dict[str, Any]]:
+        kpis = self.get_kpis(day)
         return [
             {"name": "Critical", "value": kpis["critical"], "color": "var(--status-critical)"},
             {"name": "High", "value": kpis["high"], "color": "var(--status-high)"},
@@ -55,45 +84,25 @@ class DashboardRepository:
             {"name": "Info", "value": kpis["info"], "color": "var(--status-info)"},
         ]
 
-    def get_over_time_chart(self) -> List[Dict[str, Any]]:
-        # In a real app, we'd query historical snapshots or aggregate VulnerabilityHistoryEntity.
-        # For simplicity, we'll group by the date part of first_detected_at for the last 7 days + today + tomorrow.
-        seven_days_ago = datetime.utcnow() - timedelta(days=7)
-        
-        # We need a raw query to extract date in sqlite/postgres compatible way, 
-        # but func.date is usually supported in Postgres and SQLite
-        query = select(
-            func.date(VulnerabilityEntity.first_detected_at).label("date"),
-            VulnerabilityEntity.severity,
-            func.count(VulnerabilityEntity.id).label("count")
-        ).where(VulnerabilityEntity.first_detected_at >= seven_days_ago)\
-         .group_by(func.date(VulnerabilityEntity.first_detected_at), VulnerabilityEntity.severity)\
-         .order_by("date")
-
-        results = self.db.execute(query).all()
-
-        # Build time series dictionary
-        time_series = {}
-        for d in range(9):
-            dt = (seven_days_ago + timedelta(days=d)).date().isoformat()
-            # We map to the french keys because the frontend expects it or we can change frontend to english
-            # Let's change frontend to english later, and output english here.
-            time_series[dt] = {
-                "name": (seven_days_ago + timedelta(days=d)).strftime("%d %b"),
-                "Critical": 0,
-                "High": 0,
-                "Medium": 0,
-                "Low": 0,
-                "Info": 0
-            }
-
-        for row in results:
-            date_str = str(row.date)
-            if date_str in time_series:
-                sev = row.severity.value
-                time_series[date_str][sev] = row.count
-                
-        return list(time_series.values())
+    def get_over_time_chart(self, days: int = 14) -> List[Dict[str, Any]]:
+        """Vulnerabilities found per local day (first detection) over the last `days` days. Each point
+        carries its date ("date": YYYY-MM-DD): clicking it shows the dashboard of that day."""
+        tz = _local_tz()
+        today = datetime.now(tz).date()
+        first = today - timedelta(days=days - 1)
+        start, _ = day_bounds(first)
+        series = {}
+        for d in range(days):
+            day = first + timedelta(days=d)
+            series[day] = {"name": day.strftime("%d %b"), "date": day.isoformat(),
+                           "Critical": 0, "High": 0, "Medium": 0, "Low": 0, "Info": 0}
+        rows = self.db.execute(select(VulnerabilityEntity.first_detected_at, VulnerabilityEntity.severity)
+                               .where(VulnerabilityEntity.first_detected_at >= start)).all()
+        for detected_at, severity in rows:
+            day = _as_utc(detected_at).astimezone(tz).date()
+            if day in series:
+                series[day][severity.value] += 1
+        return list(series.values())
 
     def get_assets_by_os(self) -> List[Dict[str, Any]]:
         query = select(AssetEntity.operating_system, func.count(AssetEntity.id))\
@@ -135,19 +144,57 @@ class DashboardRepository:
             return None
 
         return {
+            "id": scan.id,
             "name": scan.name,
             "target": scan.target,
+            "zone": scan.network_zone,
             # Stored in UTC: shown in the server's time zone, like the reports and the logs
             "date": ran_at.astimezone().strftime("%d %b %Y, %H:%M"),
             "status": scan.status.value,
             "vulnerabilities": scan.vulnerabilities_found or 0
         }
 
-    def get_recent_vulnerabilities(self) -> List[Dict[str, Any]]:
+    def get_scans_of_day(self, day: date) -> List[Dict[str, Any]]:
+        """Scans that ran on a local day (their latest run started or ended that day), most recent
+        first, with their network zone so the dashboard can group them by zone."""
+        from src.scans.application.services.progress import run_window
+        start, end = day_bounds(day)
+        candidates = self.db.query(ScanEntity).filter(
+            ScanEntity.is_deleted == False,  # noqa: E712
+            ScanEntity.updated_at >= start - timedelta(days=1)).all()
+        out = []
+        for scan in candidates:
+            began, finished = run_window(scan)
+            moments = [m for m in (began, finished) if m]
+            if not any(start <= m < end for m in moments):
+                continue
+            out.append({
+                "id": scan.id,
+                "name": scan.name,
+                "target": scan.target,
+                "zone": scan.network_zone,
+                "engine": scan.scanner_engine.value if scan.scanner_engine else None,
+                "status": scan.status.value,
+                "time": (began or finished).astimezone().strftime("%H:%M"),
+                "vulnerabilities": scan.vulnerabilities_found or 0,
+                "_at": began or finished,
+            })
+        out.sort(key=lambda r: r["_at"], reverse=True)
+        for row in out:
+            del row["_at"]
+        return out
+
+    def get_recent_vulnerabilities(self, day: Optional[date] = None) -> List[Dict[str, Any]]:
         query = self.db.query(VulnerabilityEntity, AssetEntity)\
-            .join(AssetEntity, VulnerabilityEntity.asset_id == AssetEntity.id)\
-            .order_by(desc(VulnerabilityEntity.first_detected_at))\
-            .limit(5)
+            .join(AssetEntity, VulnerabilityEntity.asset_id == AssetEntity.id)
+        if day is not None:
+            start, end = day_bounds(day)
+            query = query.filter(VulnerabilityEntity.first_detected_at >= start,
+                                 VulnerabilityEntity.first_detected_at < end)\
+                .order_by(desc(VulnerabilityEntity.cvss_base_score), desc(VulnerabilityEntity.first_detected_at))
+        else:
+            query = query.order_by(desc(VulnerabilityEntity.first_detected_at))
+        query = query.limit(5)
             
         results = query.all()
         
@@ -169,7 +216,7 @@ class DashboardRepository:
                 "target": asset.ip_address,
                 "service": vuln.service if vuln.service else "Unknown",
                 "port": str(vuln.port) if vuln.port else "-",
-                "date": vuln.first_detected_at.strftime("%d %b %Y, %H:%M"),
+                "date": _as_utc(vuln.first_detected_at).astimezone().strftime("%d %b %Y, %H:%M"),
                 "badgeClass": badge_class
             })
             
