@@ -175,7 +175,7 @@ table{margin:0!important}
                     <ul style="list-style-type: disc; margin: 10px 0 0 20px;">
                         {% for asset in assets %}
                         <li style="margin: 0 0 10px 0; color: #000000;">
-                            <a href="#id-host-{{ loop.index }}">{{ asset.name }}</a>
+                            <a href="#id-host-{{ loop.index }}">{{ asset.heading }}</a>{% if asset.hostname %} <span style="color: #999;">({{ asset.hostname }})</span>{% endif %}
                         </li>
                         {% endfor %}
                     </ul>
@@ -191,7 +191,7 @@ table{margin:0!important}
 
             {% for asset in assets %}
             <div id="id-host-{{ loop.index }}" style="font-size: 22px; font-weight: 700; padding: 10px 0; overflow-wrap: break-word">
-                {{ asset.name }}
+                {{ asset.heading }}{% if asset.hostname %} <span style="font-size: 13px; font-weight: 400; color: #999;">{{ asset.hostname }}</span>{% endif %}
                 <div class="clear"></div>
             </div>
 

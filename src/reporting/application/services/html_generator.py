@@ -1,4 +1,5 @@
 import os
+import ipaddress
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 from datetime import datetime, timezone
 from typing import List, Dict, Optional
@@ -57,8 +58,24 @@ def _plugin(rule_id: Optional[str]):
     if engine == "zap":
         return rest, f"https://www.zaproxy.org/docs/alerts/{rest}/"
     if engine == "openvas":
-        return rest, None   # NVT OID: no stable public page
+        # NVT OID: no stable public page. A break opportunity before the NVT number keeps the
+        # narrow column readable ("1.3.6.1.4.1.25623.1.0." / "146871" instead of "...1468" / "71")
+        head, dot, number = rest.rpartition(".")
+        return (f"{head}{dot}​{number}" if dot else rest), None
     return rest, None
+
+
+def _ip(value: Optional[str]):
+    try:
+        return ipaddress.ip_address((value or "").strip())
+    except ValueError:
+        return None
+
+
+def _host_order(asset_data: Dict):
+    """IP hosts first, in numeric order (172.20.0.2 before 172.20.0.10), then names alphabetically."""
+    ip = _ip(asset_data["ip_address"])
+    return (0, ip.version, int(ip), "") if ip else (1, 0, 0, asset_data["heading"].lower())
 
 
 def _report_date(dt: Optional[datetime]) -> str:
@@ -185,9 +202,17 @@ def generate_vulnerability_html(
             
             asset_data["vulnerabilities"].append(vuln_obj)
             all_vulns_flat.append(vuln_obj)
-            
+
         template_assets.append(asset_data)
-        
+
+    # Hosts in address order, under their IP, as in a Nessus report (the order of the scan targets
+    # changed from one report to the next, and only the Docker host name was shown)
+    for asset_data in template_assets:
+        ip = _ip(asset_data["ip_address"])
+        asset_data["heading"] = str(ip) if ip else asset_data["name"]
+        asset_data["hostname"] = asset_data["name"] if ip and asset_data["name"] != asset_data["heading"] else ""
+    template_assets.sort(key=_host_order)
+
     # Calculate Overall Risk Score (weighted CVSS average)
     overall_cvss_avg = round(sum(cvss_scores) / len(cvss_scores), 1) if cvss_scores else 0.0
     

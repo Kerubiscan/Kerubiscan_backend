@@ -268,3 +268,25 @@ def test_long_details_do_not_leave_half_empty_pdf_pages(company):
         page.extract_text(visitor_text=lambda text, cm, tm, *_: text.strip() and heights.append(tm[5] * cm[3] + cm[5]))
         lowest = min(heights) / float(page.mediabox.height)
         assert lowest < 0.2, f"page {number} ends at {1 - lowest:.0%} of its height"
+
+
+def test_hosts_are_listed_by_ip_under_their_address(company):
+    """LAB_PENTEST reports: hosts in a different order in each report, and only the Docker name shown."""
+    from src.assets.domain.entities import AssetEntity
+    from src.vulnerabilities.domain.entities import VulnerabilityEntity
+    from src.vulnerabilities.domain.models import VulnSeverity
+    from src.reporting.application.services.html_generator import generate_vulnerability_html
+    assets = [AssetEntity(id=i, company_id=company.id, name=n, ip_address=ip) for i, n, ip in (
+        ("a", "lab-ssh-target-1.lab", "172.20.0.4"), ("b", "web.exemple.com", "web.exemple.com"),
+        ("c", "lab-apache-vuln-1.lab", "172.20.0.10"), ("d", "lab-juice-shop-1.lab", "172.20.0.3"))]
+    oid = VulnerabilityEntity(id="v", asset_id="c", title="Apache Active Check", severity=VulnSeverity.CRITICAL,
+                              source_engine="OPENVAS", rule_id="openvas:1.3.6.1.4.1.25623.1.0.146871")
+    html = generate_vulnerability_html(assets=assets, all_vulnerabilities={"c": [oid]},
+                                       executive_summary=None).decode("utf-8")
+    order = [html.index(f'id="id-host-{n}"') for n in (1, 2, 3, 4)]
+    assert order == sorted(order)
+    headings = [html.split(f'id="id-host-{n}"', 1)[1].split("<div", 1)[0] for n in (1, 2, 3, 4)]
+    assert "172.20.0.3" in headings[0] and "lab-juice-shop-1.lab" in headings[0]   # numeric, not text order
+    assert "172.20.0.4" in headings[1] and "172.20.0.10" in headings[2]
+    assert "web.exemple.com" in headings[3]                                        # names after the IPs
+    assert "1.3.6.1.4.1.25623.1.0.​146871" in html    # the OID breaks before the NVT number
