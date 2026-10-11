@@ -424,7 +424,8 @@ def _load_credentials(db: Session, scan: ScanEntity, target: ScanTarget) -> Dict
     return {**secret, "credential_type": credential.credential_type}
 
 
-def _load_context(scan_id: str, target_raw: str, target: ScanTarget) -> Optional[ScanContext]:
+def _load_context(scan_id: str, target_raw: str, target: ScanTarget,
+                  celery_task: Optional[str] = None) -> Optional[ScanContext]:
     db: Session = SessionLocal()
     try:
         scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).with_for_update().first()
@@ -438,7 +439,15 @@ def _load_context(scan_id: str, target_raw: str, target: ScanTarget) -> Optional
             db.commit()
             return None
 
-        progress.apply_target_state(db, scan, target_raw, progress.IN_PROGRESS)
+        state = (scan.target_states or {}).get(target_raw)
+        if state in progress.TERMINAL_STATES:
+            # Stopped (or already done) while this task waited in the queue: Stop ends the whole
+            # batch, the queued targets must not start one after the other
+            logger.info(f"Scan {scan_id}: {target_raw} is {state}, task dropped")
+            return None
+
+        # The Celery task id is recorded with the state, under the same lock: "Stop" sees it at once
+        progress.apply_target_state(db, scan, target_raw, progress.IN_PROGRESS, celery_task=celery_task)
         scan.status = ScanStatus.IN_PROGRESS
 
         policy = _select_policy(db, scan)
@@ -727,12 +736,9 @@ def run_vulnerability_scan(self, scan_id: str, asset_ip: str, asset_name: str, c
         update_scan_progress(scan_id, target_raw, progress.INVALID_TARGET, detail=str(e))
         return False
 
-    ctx = _load_context(scan_id, target_raw, target)
+    ctx = _load_context(scan_id, target_raw, target, celery_task=self.request.id)
     if ctx is None:
         return True
-
-    # Record the Celery task id so "Stop scan" can revoke this running task
-    progress.heartbeat(scan_id, target_raw, celery_task=self.request.id)
 
     if target.is_hostname and not _resolve_dns(target.host):
         logger.error(f"Scan {scan_id}: DNS resolution failed for {target.host}")
@@ -927,21 +933,12 @@ def parse_report(adapter, report_id: str, asset_ip: str, scan_id: str, final_sta
 
 @celery_app.task(name="stop_scan_task")
 def stop_scan_task(scan_id: str):
-    """Stops every non-finished target of a scan: revoke the Celery task, stop the OpenVAS task,
-    then mark the target INTERRUPTED (partial results, if any, are kept)."""
-    db = SessionLocal()
+    """Stops the whole scan at once: every non-finished target is first marked INTERRUPTED (so the
+    queued ones never start), then the running Celery tasks are revoked and the OpenVAS tasks
+    stopped. Partial results, if any, are kept."""
     adapter = None
-    try:
-        scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
-        if not scan:
-            return 0
-        meta = scan.target_meta or {}
-        pending = [t for t, s in (scan.target_states or {}).items() if s not in progress.TERMINAL_STATES]
-    finally:
-        db.close()
-
-    for target in pending:
-        entry = meta.get(target) or {}
+    pending = progress.interrupt_targets(scan_id, "Scan arrêté par un utilisateur")
+    for target, entry in pending.items():
         if entry.get("celery_task"):
             # terminate=True kills the worker child running the scan; base_adapter then kills the scanner
             celery_app.control.revoke(entry["celery_task"], terminate=True, signal="SIGTERM")
@@ -953,7 +950,6 @@ def stop_scan_task(scan_id: str):
                     adapter = None
             if adapter is not None:
                 adapter.stop_task(entry["engine_task"])
-        update_scan_progress(scan_id, target, progress.INTERRUPTED, detail="Scan arrêté par un utilisateur")
     if adapter is not None:
         adapter.disconnect()
     logger.info(f"Scan {scan_id} stopped: {len(pending)} target(s) interrupted")

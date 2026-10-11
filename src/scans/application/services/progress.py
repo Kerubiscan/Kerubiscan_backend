@@ -191,6 +191,27 @@ def update_scan_progress(scan_id: str, target: str, target_status: str, detail: 
         db.close()
 
 
+def interrupt_targets(scan_id: str, detail: str) -> dict:
+    """Marks every non-finished target of the scan INTERRUPTED, all in one locked transaction, and
+    returns their metadata (Celery and OpenVAS task ids) as recorded at that moment.
+
+    Stopping target by target let a queued target start in the slot freed by the first one: the
+    batch went on although the user pressed Stop. A task starting now finds its target INTERRUPTED."""
+    db: Session = SessionLocal()
+    try:
+        scan = _locked_scan(db, scan_id)
+        if not scan:
+            return {}
+        pending = [t for t, s in (scan.target_states or {}).items() if s not in TERMINAL_STATES]
+        for target in pending:
+            apply_target_state(db, scan, target, INTERRUPTED, detail)
+        meta = {t: dict((scan.target_meta or {}).get(t) or {}) for t in pending}
+        db.commit()
+        return meta
+    finally:
+        db.close()
+
+
 def heartbeat(scan_id: str, target: str, target_status: Optional[str] = None, engine_task: Optional[str] = None,
               celery_task: Optional[str] = None):
     """Records activity on a target (and optionally QUEUED/IN_PROGRESS) without ending it."""
