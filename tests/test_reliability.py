@@ -417,6 +417,7 @@ def test_zap_credentials_are_set_via_the_api_not_the_command_line(monkeypatch):
         def wait(self, timeout=None): return 0
     monkeypatch.setattr(zap_adapter.subprocess, "Popen", lambda cmd, **kw: (calls.append(("cmd", cmd)), FakeProc())[1])
     monkeypatch.setattr(zap_adapter, "_register", lambda p: None)
+    monkeypatch.setattr(zap_adapter, "AJAX_START_TIMEOUT_S", 0)
     monkeypatch.setattr(zap_adapter, "_unregister", lambda p: None)
 
     def fake_api(zap_url, api_key, path, **params):
@@ -626,6 +627,8 @@ def _fake_zap(monkeypatch, api):
     monkeypatch.setattr(zap_adapter.ZAPAdapter, "_wait", staticmethod(lambda *a, **kw: True))
     monkeypatch.setattr(zap_adapter.os, "killpg", lambda *a: None, raising=False)
     monkeypatch.setattr(zap_adapter.time, "sleep", lambda s: None)
+    # Fake ZAPs whose AJAX spider never reports "running": no wait for it to start
+    monkeypatch.setattr(zap_adapter, "AJAX_START_TIMEOUT_S", 0)
     return zap_adapter
 
 
@@ -1144,3 +1147,53 @@ def test_api_stores_and_returns_the_scan_depth(db, company, monkeypatch):
     # Untouched when the edit does not mention it
     assert endpoints.update_scan(quick.id, endpoints.ScanUpdateRequest(name="x"), db=db,
                                  current_user=user).scan_depth == "APPROFONDI"
+
+
+# ----------------------------------------------------------------------------- AJAX spider start
+
+
+def test_ajax_spider_is_followed_until_it_really_ran(monkeypatch):
+    """Lab, Juice Shop behind the shared server: the AJAX spider still said "stopped" right after its
+    scan action, the scan went on at once ("0 requests found") and the next URL was refused
+    ("scan_in_progress")."""
+    statuses = iter(["stopped", "stopped", "running", "running", "stopped",      # 1st URL
+                     "stopped", "running", "stopped"])                           # 2nd URL
+    calls = []
+
+    def api(zap_url, api_key, path, **params):
+        calls.append(path)
+        if "version" in path:
+            return {"version": "2.17.0"}
+        if path == "/JSON/ajaxSpider/view/status/":
+            return {"status": next(statuses)}
+        if path == "/JSON/ajaxSpider/view/numberOfResults/":
+            return {"numberOfResults": "0"}
+        if path == "/JSON/pscan/view/recordsToScan/":
+            return {"recordsToScan": "0"}
+        return {"scan": "0", "alerts": []}
+    zap_adapter = _fake_zap(monkeypatch, api)
+    monkeypatch.setattr(zap_adapter, "AJAX_START_TIMEOUT_S", 60)
+    zap_adapter.ZAPAdapter.run_scan(["https://support.lab.internal", "https://support.lab.internal:8443"])
+    assert next(statuses, "all read") == "all read"               # waited for both explorations
+    assert calls.count("/JSON/ajaxSpider/action/scan/") == 2
+
+
+def test_ajax_spider_retries_when_the_previous_exploration_still_runs(monkeypatch):
+    scans = []
+    statuses = iter(["running", "stopped", "running", "stopped"])
+
+    def api(zap_url, api_key, path, **params):
+        if "version" in path:
+            return {"version": "2.17.0"}
+        if path == "/JSON/ajaxSpider/action/scan/":
+            scans.append(params["url"])
+            if len(scans) == 1:
+                raise zap_adapter.ScanError("ZAP API /JSON/ajaxSpider/action/scan/ error: {'code': 'scan_in_progress'}")
+        if path == "/JSON/ajaxSpider/view/status/":
+            return {"status": next(statuses, "stopped")}
+        if path == "/JSON/pscan/view/recordsToScan/":
+            return {"recordsToScan": "0"}
+        return {"scan": "0", "alerts": []}
+    zap_adapter = _fake_zap(monkeypatch, api)
+    zap_adapter.ZAPAdapter.run_scan(["http://erp.lab.internal:8080"])
+    assert scans == ["http://erp.lab.internal:8080", "http://erp.lab.internal:8080"]   # retried once

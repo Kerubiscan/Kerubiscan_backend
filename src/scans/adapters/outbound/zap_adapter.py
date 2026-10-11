@@ -53,6 +53,10 @@ AJAX_TWO_BROWSERS_MB = 1500
 # The second one waits for the first one's exploration (10 min at most), then explores in turn.
 AJAX_LOCK_PATH = os.path.join(tempfile.gettempdir(), "kvs-zap-ajax.lock")
 AJAX_LOCK_POLL_S = 5
+# Right after its scan action the AJAX spider still reports "stopped" while its browsers start. Read
+# as "finished", the scan went on at once ("0 requests found" on Juice Shop in the lab) and the next
+# URL's exploration was refused ("scan_in_progress"). Seconds allowed for it to start.
+AJAX_START_TIMEOUT_S = 60
 # Active scan rules that drive their own browsers: "Cross Site Scripting (DOM Based)" kept up to
 # 8 Firefox open during the active scan, and ZAP was killed (connection reset) after 55 min.
 BROWSER_SCAN_RULES = "40026"
@@ -144,19 +148,48 @@ class ZAPAdapter:
             ZAPAdapter._explore(zap_url, api_key, target, minutes, _ajax_browsers(target, has_turn), on_fraction)
 
     @staticmethod
+    def _ajax_status(zap_url: str, api_key: str) -> str:
+        return ZAPAdapter._api(zap_url, api_key, "/JSON/ajaxSpider/view/status/").get("status", "")
+
+    @staticmethod
+    def _ajax_results(zap_url: str, api_key: str) -> int:
+        try:
+            return int(ZAPAdapter._api(zap_url, api_key, "/JSON/ajaxSpider/view/numberOfResults/")
+                       .get("numberOfResults") or 0)
+        except (ScanError, ValueError):
+            return 0
+
+    @staticmethod
     def _explore(zap_url: str, api_key: str, target: str, minutes: int, browsers: int,
                  on_fraction: Optional[Callable[[float], None]] = None) -> None:
         try:
             ZAPAdapter._api(zap_url, api_key, "/JSON/ajaxSpider/action/setOptionBrowserId/", String=AJAX_SPIDER_BROWSER)
             ZAPAdapter._api(zap_url, api_key, "/JSON/ajaxSpider/action/setOptionNumberOfBrowsers/", Integer=browsers)
             ZAPAdapter._api(zap_url, api_key, "/JSON/ajaxSpider/action/setOptionMaxDuration/", Integer=minutes)
-            ZAPAdapter._api(zap_url, api_key, "/JSON/ajaxSpider/action/scan/", url=target)
+            try:
+                ZAPAdapter._api(zap_url, api_key, "/JSON/ajaxSpider/action/scan/", url=target)
+            except ScanError as e:
+                if "scan_in_progress" not in str(e):
+                    raise
+                # The exploration of the previous URL is still running: let it end, then retry once
+                logger.info(f"ZAP AJAX spider on {target}: previous exploration still running, waiting for it")
+                busy_until = time.time() + minutes * 60 + 60
+                while ZAPAdapter._ajax_status(zap_url, api_key) == "running" and time.time() < busy_until:
+                    time.sleep(5)
+                ZAPAdapter._api(zap_url, api_key, "/JSON/ajaxSpider/action/scan/", url=target)
         except ScanError as e:
             logger.warning(f"ZAP AJAX spider unavailable on {target}, classic spider only: {e}")
             return
+        start_deadline = time.time() + AJAX_START_TIMEOUT_S
+        while ZAPAdapter._ajax_status(zap_url, api_key) != "running" and not ZAPAdapter._ajax_results(zap_url, api_key):
+            if time.time() > start_deadline:
+                logger.warning(f"ZAP AJAX spider on {target} did not start within {AJAX_START_TIMEOUT_S}s "
+                               f"(browser unavailable?): classic spider results only")
+                break
+            time.sleep(1)
         started = time.time()
         deadline = started + minutes * 60 + 60
-        while ZAPAdapter._api(zap_url, api_key, "/JSON/ajaxSpider/view/status/").get("status") == "running":
+        while ZAPAdapter._ajax_status(zap_url, api_key) == "running":
             if on_fraction:   # the AJAX spider reports no percentage: share of its time budget used
                 on_fraction(min((time.time() - started) / (minutes * 60), 1.0))
             if time.time() > deadline:
@@ -167,8 +200,7 @@ class ZAPAdapter:
                     pass
                 break
             time.sleep(5)
-        found = ZAPAdapter._api(zap_url, api_key, "/JSON/ajaxSpider/view/numberOfResults/").get("numberOfResults", "?")
-        logger.info(f"ZAP AJAX spider on {target}: {found} requests found")
+        logger.info(f"ZAP AJAX spider on {target}: {ZAPAdapter._ajax_results(zap_url, api_key)} requests found")
 
     @staticmethod
     def _wait_passive_scan(zap_url: str, api_key: str) -> None:
