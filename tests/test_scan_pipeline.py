@@ -25,7 +25,7 @@ WEB_PORTS = [{"port": 443, "state": "open", "service": "http", "tunnel": "ssl", 
 
 @pytest.fixture()
 def fakes(monkeypatch):
-    calls = {"phase1": [], "nuclei": [], "zap": [], "nmap_vuln": []}
+    calls = {"phase1": [], "phase1_ports": [], "nuclei": [], "zap": [], "nmap_vuln": []}
     state = {"phase1_hosts": [_host(ports=WEB_PORTS)], "probe": []}
 
     monkeypatch.setattr(scan_tasks, "_resolve_dns", lambda host: "203.0.113.10")
@@ -33,6 +33,7 @@ def fakes(monkeypatch):
 
     def phase1(target, ports=None, credentials=None, profile="lan", **kw):
         calls["phase1"].append((target, profile, credentials))
+        calls["phase1_ports"].append(ports)
         return state["phase1_hosts"]
     monkeypatch.setattr(NmapAdapter, "run_detailed_discovery_scan", staticmethod(phase1))
 
@@ -115,6 +116,26 @@ def test_url_target_scans_exactly_that_url_without_port_sweep(db, make_scan, fak
     assert calls["phase1"] == []
     assert calls["zap"] == [["https://app.exemple.com:8443/portal"]]
     assert db.query(AssetEntity).one().ip_address == "app.exemple.com"
+
+
+def test_zap_on_a_domain_probes_only_the_web_ports_before_zap(db, make_scan, fakes):
+    """kimia-technologies.com: a 65 535-port sweep over the internet ran for hours before ZAP
+    could start. A web scan only needs the web ports."""
+    calls, _ = fakes
+    scan_id = make_scan("app.exemple.com", "OWASP_ZAP")
+    _run(scan_id, "app.exemple.com")
+    ports = calls["phase1_ports"][0]
+    assert ports and "443" in ports.split(",") and "8080" in ports.split(",")
+    assert len(ports.split(",")) < 20
+    assert calls["zap"] == [["https://app.exemple.com"]]
+
+
+def test_network_scans_keep_the_full_port_sweep(db, make_scan, fakes):
+    calls, _ = fakes
+    for engine in ("NUCLEI", "NMAP"):
+        scan_id = make_scan(f"{engine.lower()}.exemple.com", engine)
+        _run(scan_id, f"{engine.lower()}.exemple.com")
+    assert calls["phase1_ports"] == [None, None]          # None: all ports (or the policy's range)
 
 
 def test_legacy_asset_with_overwritten_ip_gets_its_domain_back(db, company, make_scan, fakes):

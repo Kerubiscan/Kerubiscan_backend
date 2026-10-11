@@ -710,6 +710,46 @@ def test_engine_estimate_is_shown_and_counts_down(db, make_scan):
     assert basis == "engine" and 5935 <= eta <= 5941                             # 6000 s minus the minute gone
 
 
+def test_batch_estimate_counts_the_targets_still_waiting(db, make_scan):
+    """5 kimia sites, one at a time: 'end imminent' at 81 % with targets still queued."""
+    from src.scans.adapters.inbound.api import endpoints
+    scan_id = make_scan("a.exemple.com,b.exemple.com,c.exemple.com,d.exemple.com,e.exemple.com", "OWASP_ZAP")
+    scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).one()
+    scan.target_states = {"a.exemple.com": "COMPLETED", "b.exemple.com": "COMPLETED",
+                          "c.exemple.com": "IN_PROGRESS", "d.exemple.com": "PENDING", "e.exemple.com": "PENDING"}
+    scan.target_meta = {   # 1 h per site; the running one is at its very end
+        "a.exemple.com": {"started_at": _ago(seconds=7300), "updated_at": _ago(seconds=3700)},
+        "b.exemple.com": {"started_at": _ago(seconds=3700), "updated_at": _ago(seconds=100)},
+        "c.exemple.com": {"started_at": _ago(seconds=100), "progress": 90, "eta_s": 30, "eta_at": _ago(seconds=0)},
+    }
+    eta, basis = endpoints._estimate_remaining(db, scan, elapsed=7300)
+    assert basis == "batch" and 2 * 3600 <= eta <= 2 * 3600 + 60        # 2 sites left at 1 h each
+
+    # Two at a time: the 2 waiting sites run together
+    assert 3600 <= progress.batch_remaining(scan, concurrency=2) <= 3660
+
+
+def test_batch_estimate_ignores_targets_that_failed_at_once(db, make_scan):
+    scan_id = make_scan("a.exemple.com,b.exemple.com,c.exemple.com", "OWASP_ZAP")
+    scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).one()
+    scan.target_states = {"a.exemple.com": "HOST_UNREACHABLE", "b.exemple.com": "IN_PROGRESS",
+                          "c.exemple.com": "PENDING"}
+    scan.target_meta = {"a.exemple.com": {"started_at": _ago(seconds=1000), "updated_at": _ago(seconds=995)},
+                        "b.exemple.com": {"started_at": _ago(seconds=995), "progress": 50}}
+    # Pace from the running site (995 s at 50 %: about 2000 s each), not from the 5 s failure
+    assert 2900 <= progress.batch_remaining(scan) <= 3100
+
+
+def test_batch_estimate_waits_for_a_pace(db, make_scan):
+    scan_id = make_scan("a.exemple.com,b.exemple.com", "OWASP_ZAP")
+    scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).one()
+    scan.target_states = {"a.exemple.com": "IN_PROGRESS", "b.exemple.com": "PENDING"}
+    scan.target_meta = {"a.exemple.com": {"started_at": _ago(seconds=30), "progress": 5}}
+    assert progress.batch_remaining(scan) is None
+    single = db.query(ScanEntity).filter(ScanEntity.id == make_scan("x.exemple.com", "NMAP")).one()
+    assert progress.batch_remaining(single) is None                   # one target: engine estimate
+
+
 # ----------------------------------------------------------------------------- live progress
 
 

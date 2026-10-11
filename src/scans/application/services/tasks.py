@@ -14,9 +14,13 @@ from src.core.database import SessionLocal
 from src.scans.domain.entities import ScanEntity, ScanStatus, ScannerEngine
 from src.scans.domain.targets import (
     ScanTarget, InvalidTargetError, parse_target, split_targets, build_url,
-    web_urls_from_ports, open_ports, is_web_service,
+    web_urls_from_ports, open_ports, is_web_service, COMMON_WEB_PORTS,
 )
 from src.scans.adapters.outbound.base_adapter import ScanError, ScanTimeout
+
+# Ports probed during phase 1 of a WEB scan (ZAP) when no explicit range is set: the common web
+# ports plus a few app ports. A full all-ports sweep over the internet took hours before ZAP ran.
+WEB_SCAN_PORTS = ",".join(str(p) for p in sorted(COMMON_WEB_PORTS | {3000, 5000, 9080, 9090}))
 from src.scans.application.services import progress
 from src.scans.application.services.progress import update_scan_progress  # noqa: F401  (re-exported)
 from src.assets.domain.entities import AssetEntity
@@ -539,11 +543,14 @@ def _no_input_state(host: Optional[Dict], had_open_ports: bool) -> str:
     return progress.TIMEOUT if host.get("timed_out") else progress.NO_OPEN_PORTS
 
 
-def _phase1(ctx: ScanContext, target: ScanTarget, tolerate_failure: bool) -> List[Dict]:
-    """Ports, services and OS discovery shared by every engine except OpenVAS."""
+def _phase1(ctx: ScanContext, target: ScanTarget, tolerate_failure: bool, ports: Optional[str] = None) -> List[Dict]:
+    """Ports, services and OS discovery shared by every engine except OpenVAS.
+
+    ports overrides the scanned port range (a WEB scan passes the common web ports, to avoid a
+    65 535-port sweep over the internet)."""
     from src.scans.adapters.outbound.nmap_adapter import NmapAdapter
     try:
-        hosts = NmapAdapter.run_detailed_discovery_scan(target.host, ports=ctx.port_range,
+        hosts = NmapAdapter.run_detailed_discovery_scan(target.host, ports=ports or ctx.port_range,
                                                         credentials=ctx.credentials, profile=ctx.profile,
                                                         on_progress=_engine_progress(ctx, STEP_STARTED, STEP_DISCOVERED,
                                                                                      estimate=False))
@@ -586,14 +593,17 @@ def _run_nmap(ctx: ScanContext, target: ScanTarget) -> str:
     return _aggregate(states)
 
 
-def _web_work(ctx: ScanContext, target: ScanTarget, include_network: bool) -> List[Tuple[str, List[str], Optional[Dict], bool]]:
-    """Builds, per host, the inputs of the web engines: (asset_id, inputs, host, had_open_ports)."""
+def _web_work(ctx: ScanContext, target: ScanTarget, include_network: bool,
+              ports: Optional[str] = None) -> List[Tuple[str, List[str], Optional[Dict], bool]]:
+    """Builds, per host, the inputs of the web engines: (asset_id, inputs, host, had_open_ports).
+
+    ports limits the phase-1 port scan (web ports for a ZAP scan)."""
     if target.is_url:
         # The user pointed at a precise application: scan exactly that URL (no 65 535-port sweep).
         asset_id = _save_host(ctx, target, None, resolved_ip=_resolve_dns(target.host) if target.is_hostname else None)
         return [(asset_id, [target.url], None, True)]
 
-    hosts = _phase1(ctx, target, tolerate_failure=target.kind != "cidr")
+    hosts = _phase1(ctx, target, tolerate_failure=target.kind != "cidr", ports=ports)
     work = []
     if not hosts and target.kind != "cidr":
         hosts = [None]
@@ -638,7 +648,7 @@ def _run_nuclei(ctx: ScanContext, target: ScanTarget) -> str:
 def _run_zap(ctx: ScanContext, target: ScanTarget) -> str:
     from src.scans.adapters.outbound.zap_adapter import ZAPAdapter, normalize_zap
     states = []
-    work = _web_work(ctx, target, include_network=False)
+    work = _web_work(ctx, target, include_network=False, ports=ctx.port_range or WEB_SCAN_PORTS)
     for i, (asset_id, inputs, host, had_ports) in enumerate(work):
         if not inputs:
             states.append(_no_input_state(host, had_ports))

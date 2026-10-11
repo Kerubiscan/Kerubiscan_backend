@@ -1,5 +1,6 @@
 import io
 import logging
+import os
 from datetime import datetime, timezone
 from typing import List, Optional
 
@@ -129,14 +130,20 @@ def _median(values: List[int]) -> Optional[int]:
 
 # Beyond this multiple of a past duration, that duration is no longer used as the estimate
 OVERRUN_TOLERANCE = 1.15
+# Targets the scan worker runs at the same time (same .env as the worker's --concurrency)
+SCAN_CONCURRENCY = max(int(os.getenv("SCAN_CONCURRENCY") or 1), 1)
 
 
 def _estimate_remaining(db: Session, scan: ScanEntity, elapsed: Optional[int]):
     """(eta_seconds, basis) for a running scan, from real data only (never a made-up figure)."""
     if scan.status != ScanStatus.IN_PROGRESS or elapsed is None:
         return None, None
-    # 0. The running engine itself: from its phases (ZAP) or its own pace (Nmap, Nuclei)
-    from src.scans.application.services.progress import engine_remaining
+    from src.scans.application.services.progress import batch_remaining, engine_remaining
+    # 0. Several targets: those running and those still waiting their turn
+    left = batch_remaining(scan, SCAN_CONCURRENCY)
+    if left is not None:
+        return left, "batch"
+    # 1. The running engine itself: from its phases (ZAP) or its own pace (Nmap, Nuclei)
     left = engine_remaining(scan)
     if left is not None:
         return left, "engine"
