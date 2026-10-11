@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from src.core.database import get_db
 from src.companies.domain.entities import CompanyEntity
 from src.scans.domain.entities import ScanEntity, ScanType, ScanStatus, ScannerEngine
+from src.scans.domain.depth import depth_of, parse_depth
 from src.scans.domain.targets import InvalidTargetError, TargetNotAllowedError, validate_targets, split_targets
 from src.assets.domain.entities import AssetEntity
 from src.auth.adapters.inbound.api.dependencies import require_permissions
@@ -51,6 +52,8 @@ class ScanCreateRequest(BaseModel):
     credential_id: Optional[str] = None
     scheduled_for: Optional[str] = None
     recurrence_rule: Optional[str] = None
+    # "RAPIDE", "STANDARD" (default, as before) or "APPROFONDI": time the engines spend per target
+    scan_depth: Optional[str] = None
 
 class ScanUpdateRequest(BaseModel):
     name: Optional[str] = None
@@ -59,6 +62,7 @@ class ScanUpdateRequest(BaseModel):
     scanner_engine: Optional[str] = None
     policy_id: Optional[str] = None
     credential_id: Optional[str] = None
+    scan_depth: Optional[str] = None
 
 class ScanResponse(BaseModel):
     id: str
@@ -68,6 +72,7 @@ class ScanResponse(BaseModel):
     network_zone: Optional[str] = None
     scan_type: str
     scanner_engine: str
+    scan_depth: str = "STANDARD"
     status: str
     progress: int = 0
     target_states: Optional[dict] = None
@@ -191,6 +196,7 @@ def _to_response(scan: ScanEntity, db: Optional[Session] = None) -> ScanResponse
         network_zone=scan.network_zone,
         scan_type=scan.scan_type.name,
         scanner_engine=scan.scanner_engine.name,
+        scan_depth=depth_of(scan.scan_depth),
         status=scan.status.name,
         progress=scan.progress,
         target_states=scan.target_states,
@@ -226,6 +232,13 @@ def _parse_engine(value: str) -> ScannerEngine:
         raise HTTPException(status_code=400, detail=f"Moteur de scan inconnu : {value!r}. "
                                                     f"Valeurs possibles : {', '.join(ScannerEngine.__members__)}")
     return ScannerEngine[key]
+
+
+def _parse_depth(value: Optional[str]) -> str:
+    try:
+        return parse_depth(value)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 def _parse_scan_type(value: str) -> ScanType:
@@ -309,6 +322,7 @@ def create_scan(req: ScanCreateRequest, db: Session = Depends(get_db),
                 current_user: dict = Depends(require_permissions([Permission.SCAN_EXECUTE]))):
     s_type = _parse_scan_type(req.scan_type)
     s_engine = _parse_engine(req.scanner_engine)
+    depth = _parse_depth(req.scan_depth)
     targets = _validate_scan_targets(req.target, s_type, current_user)
 
     company = None
@@ -342,7 +356,8 @@ def create_scan(req: ScanCreateRequest, db: Session = Depends(get_db),
         credential_id=req.credential_id,
         recurrence_rule=req.recurrence_rule,
         next_run_at=req.scheduled_for,
-        notify_email=current_user.get("email")
+        notify_email=current_user.get("email"),
+        scan_depth=depth,
     )
     db.add(scan)
     db.commit()
@@ -354,7 +369,8 @@ def create_scan(req: ScanCreateRequest, db: Session = Depends(get_db),
         action="CREATE",
         resource_type="SCAN",
         resource_id=str(scan.id),
-        details={"scan_name": scan.name, "target": scan.target, "engine": s_engine.name, "type": s_type.name}
+        details={"scan_name": scan.name, "target": scan.target, "engine": s_engine.name, "type": s_type.name,
+                 "depth": depth}
     ))
     db.commit()
 
@@ -419,7 +435,8 @@ def update_scan(scan_id: str, req: ScanUpdateRequest, db: Session = Depends(get_
         raise HTTPException(status_code=404, detail="Scan not found")
 
     old_details = {"name": scan.name, "target": scan.target, "network_zone": scan.network_zone,
-                   "scanner_engine": scan.scanner_engine.name, "policy_id": scan.policy_id, "credential_id": scan.credential_id}
+                   "scanner_engine": scan.scanner_engine.name, "policy_id": scan.policy_id, "credential_id": scan.credential_id,
+                   "depth": depth_of(scan.scan_depth)}
 
     if req.name is not None:
         scan.name = req.name
@@ -434,6 +451,8 @@ def update_scan(scan_id: str, req: ScanUpdateRequest, db: Session = Depends(get_
         scan.policy_id = req.policy_id or None
     if req.credential_id is not None:
         scan.credential_id = req.credential_id or None
+    if req.scan_depth is not None:
+        scan.scan_depth = _parse_depth(req.scan_depth)
 
     db.add(AuditLog(
         user_id=_user_id(current_user),
@@ -443,7 +462,7 @@ def update_scan(scan_id: str, req: ScanUpdateRequest, db: Session = Depends(get_
         resource_id=str(scan.id),
         details={"old": old_details, "new": {"name": scan.name, "target": scan.target, "network_zone": scan.network_zone,
                                              "scanner_engine": scan.scanner_engine.name, "policy_id": scan.policy_id,
-                                             "credential_id": scan.credential_id}}
+                                             "credential_id": scan.credential_id, "depth": depth_of(scan.scan_depth)}}
     ))
     db.commit()
     db.refresh(scan)

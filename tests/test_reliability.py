@@ -1093,3 +1093,54 @@ def test_dashboard_shows_the_findings_of_one_scan_of_the_day(db, company, make_s
     assert repo.get_kpis(scan_id=scan_id) == {"critical": 1, "high": 0, "medium": 0, "low": 1, "info": 0}
     assert [v["name"] for v in repo.get_recent_vulnerabilities(scan_id=scan_id)] == ["CVE-2021-41773", "TCP timestamps"]
     assert sum(p["value"] for p in repo.get_distribution_chart(scan_id=scan_id)) == 2
+
+
+# ----------------------------------------------------------------------------- scan depth
+
+
+def test_scan_depth_values():
+    from src.scans.domain import depth
+    from src.scans.adapters.outbound import zap_adapter
+    assert depth.parse_depth(None) == depth.parse_depth("") == "STANDARD"
+    assert depth.parse_depth(" rapide ") == "RAPIDE"
+    with pytest.raises(ValueError):
+        depth.parse_depth("ULTRA")
+    assert depth.depth_of(None) == depth.depth_of("n'importe quoi") == "STANDARD"
+    # STANDARD must stay what scans did before the choice existed
+    assert depth.ZAP_BUDGETS["STANDARD"] == (zap_adapter.SPIDER_MAX_MINUTES, zap_adapter.AJAX_SPIDER_MAX_MINUTES,
+                                             zap_adapter.ASCAN_MAX_MINUTES)
+
+
+def test_nmap_quick_port_spec():
+    from src.scans.adapters.outbound.nmap_adapter import _build_port_args
+    assert _build_port_args("top:1000") == ["--top-ports", "1000"]
+    assert _build_port_args(None) == ["-p-"]
+    for bad in ("top:", "top:abc", "top:0", "top:99999"):
+        with pytest.raises(ValueError):
+            _build_port_args(bad)
+
+
+def test_api_stores_and_returns_the_scan_depth(db, company, monkeypatch):
+    from fastapi import HTTPException
+    from src.scans.adapters.inbound.api import endpoints
+    monkeypatch.setattr(endpoints, "_queue_scan", lambda scan, targets: None)
+    user = {"sub": "u1", "preferred_username": "admin", "email": "a@b.c"}
+
+    def create(**extra):
+        req = endpoints.ScanCreateRequest(company_id=company.id, target="app.exemple.com", scan_type="WEB_APP",
+                                          scanner_engine="OWASP_ZAP", **extra)
+        return endpoints.create_scan(req, db=db, current_user=user)
+
+    assert create().scan_depth == "STANDARD"
+    quick = create(scan_depth="rapide")
+    assert quick.scan_depth == "RAPIDE"
+    assert db.query(ScanEntity).filter(ScanEntity.id == quick.id).one().scan_depth == "RAPIDE"
+    with pytest.raises(HTTPException) as err:
+        create(scan_depth="ULTRA")
+    assert err.value.status_code == 400
+
+    updated = endpoints.update_scan(quick.id, endpoints.ScanUpdateRequest(scan_depth="APPROFONDI"), db=db, current_user=user)
+    assert updated.scan_depth == "APPROFONDI"
+    # Untouched when the edit does not mention it
+    assert endpoints.update_scan(quick.id, endpoints.ScanUpdateRequest(name="x"), db=db,
+                                 current_user=user).scan_depth == "APPROFONDI"

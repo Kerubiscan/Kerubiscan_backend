@@ -47,6 +47,8 @@ class ScanEntity(Base):
     credential_id = Column(String(36), ForeignKey("credentials.id"), nullable=True)
     is_deleted = Column(Boolean, default=False, nullable=False)
     notify_email = Column(String, nullable=True)
+    # RAPIDE / STANDARD / APPROFONDI (src/scans/domain/depth.py); empty = STANDARD
+    scan_depth = Column(String, nullable=True)
 
     
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)

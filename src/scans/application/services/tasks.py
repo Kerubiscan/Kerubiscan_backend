@@ -19,6 +19,7 @@ from src.scans.domain.targets import (
     web_urls_from_ports, open_ports, is_web_service, COMMON_WEB_PORTS,
 )
 from src.scans.adapters.outbound.base_adapter import ScanError, ScanTimeout
+from src.scans.domain.depth import APPROFONDI, RAPIDE, RAPID_TOP_PORTS, STANDARD, ZAP_BUDGETS, depth_of
 
 # Ports probed during phase 1 of a WEB scan (ZAP) when no explicit range is set: the common web
 # ports plus a few app ports. A full all-ports sweep over the internet took hours before ZAP ran.
@@ -328,6 +329,7 @@ class ScanContext:
     credentials: Dict = field(default_factory=dict)
     profile: str = "internet"
     target_raw: str = ""
+    depth: str = STANDARD
 
     def alive(self):
         """Records activity on the target (watched by watchdog.py)."""
@@ -461,9 +463,10 @@ def _load_context(scan_id: str, target_raw: str, target: ScanTarget,
             credentials=_load_credentials(db, scan, target),
             profile=_profile_for([target]),
             target_raw=target_raw,
+            depth=depth_of(scan.scan_depth),
         )
         db.commit()
-        logger.info(f"Scan {scan_id} on {target_raw}: engine={ctx.engine.name} profile={ctx.profile} "
+        logger.info(f"Scan {scan_id} on {target_raw}: engine={ctx.engine.name} depth={ctx.depth} profile={ctx.profile} "
                     f"ports={ctx.port_range or 'all'} authenticated={'yes (' + str(ctx.credentials.get('credential_type')) + ')' if ctx.credentials else 'no'}")
         return ctx
     finally:
@@ -615,6 +618,19 @@ def _no_input_state(host: Optional[Dict], had_open_ports: bool) -> str:
     return progress.TIMEOUT if host.get("timed_out") else progress.NO_OPEN_PORTS
 
 
+def _scan_ports(ctx: ScanContext, web: bool) -> Optional[str]:
+    """Ports of phase 1. The range of a policy always wins; otherwise, by depth:
+    - web engines (ZAP): the common web ports, every port when APPROFONDI (an application on an
+      unusual port, e.g. a console on 8006, is then found);
+    - Nmap and Nuclei: every port, Nmap's 1000 most common ones when RAPIDE.
+    None = every port."""
+    if ctx.port_range:
+        return ctx.port_range
+    if web:
+        return None if ctx.depth == APPROFONDI else WEB_SCAN_PORTS
+    return f"top:{RAPID_TOP_PORTS}" if ctx.depth == RAPIDE else None
+
+
 def _phase1(ctx: ScanContext, target: ScanTarget, tolerate_failure: bool, ports: Optional[str] = None) -> List[Dict]:
     """Ports, services and OS discovery shared by every engine except OpenVAS.
 
@@ -642,7 +658,7 @@ def _phase1(ctx: ScanContext, target: ScanTarget, tolerate_failure: bool, ports:
 
 def _run_nmap(ctx: ScanContext, target: ScanTarget) -> str:
     from src.scans.adapters.outbound.nmap_adapter import NmapAdapter
-    hosts = _phase1(ctx, target, tolerate_failure=False)
+    hosts = _phase1(ctx, target, tolerate_failure=False, ports=_scan_ports(ctx, web=False))
     if not hosts:
         return progress.HOST_UNREACHABLE
     states = []
@@ -701,7 +717,7 @@ def _web_work(ctx: ScanContext, target: ScanTarget, include_network: bool,
 def _run_nuclei(ctx: ScanContext, target: ScanTarget) -> str:
     from src.scans.adapters.outbound.nuclei_adapter import NucleiAdapter, normalize_nuclei
     states = []
-    work = _web_work(ctx, target, include_network=True)
+    work = _web_work(ctx, target, include_network=True, ports=_scan_ports(ctx, web=False))
     for i, (asset_id, inputs, host, had_ports) in enumerate(work):
         if inputs and target.kind != "cidr" and not target.is_url:
             # The bare target is also given to Nuclei, which runs its own HTTP probing on it (5bae702)
@@ -722,7 +738,8 @@ def _run_nuclei(ctx: ScanContext, target: ScanTarget) -> str:
 def _run_zap(ctx: ScanContext, target: ScanTarget) -> str:
     from src.scans.adapters.outbound.zap_adapter import ZAPAdapter, normalize_zap
     states = []
-    work = _web_work(ctx, target, include_network=False, ports=ctx.port_range or WEB_SCAN_PORTS)
+    work = _web_work(ctx, target, include_network=False, ports=_scan_ports(ctx, web=True))
+    spider_minutes, ajax_minutes, ascan_minutes = ZAP_BUDGETS[ctx.depth]
     for i, (asset_id, inputs, host, had_ports) in enumerate(work):
         if not inputs:
             states.append(_no_input_state(host, had_ports))
@@ -730,7 +747,8 @@ def _run_zap(ctx: ScanContext, target: ScanTarget) -> str:
         logger.info(f"Phase 2: OWASP ZAP on {inputs}")
         # No port discovery before ZAP: its real progress fills the host's share from the start
         low = STEP_STARTED if i == 0 else _host_step(i - 1, len(work), engine_done=False)
-        alerts = ZAPAdapter.run_scan(inputs, credentials=ctx.credentials,
+        alerts = ZAPAdapter.run_scan(inputs, credentials=ctx.credentials, spider_minutes=spider_minutes,
+                                     ajax_minutes=ajax_minutes, ascan_minutes=ascan_minutes,
                                      on_progress=_engine_progress(ctx, low, _host_step(i, len(work), engine_done=True)))
         ctx.step(_host_step(i, len(work), engine_done=True))
         _store(ctx, asset_id, "OWASP_ZAP", normalize_zap(alerts))
