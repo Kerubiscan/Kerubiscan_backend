@@ -633,6 +633,90 @@ def test_zap_scan_goes_on_when_the_ajax_spider_is_unavailable(monkeypatch):
     assert "/JSON/ascan/action/scan/" in calls                   # the active scan still ran
 
 
+# ----------------------------------------------------------------------------- memory (10 GB server)
+
+
+def test_available_memory_is_the_smaller_of_server_and_container_room(monkeypatch):
+    from src.scans.adapters.outbound import base_adapter
+    gib = 1024 ** 3
+    files = {
+        "/proc/meminfo": "MemTotal:       10000000 kB\nMemAvailable:    3145728 kB\n",   # 3 GB free
+        "/sys/fs/cgroup/memory.max": str(6 * gib),
+        "/sys/fs/cgroup/memory.current": str(5 * gib),
+        "/sys/fs/cgroup/memory.stat": f"anon 1\ninactive_file {gib}\n",      # 1 GB of reclaimable cache
+    }
+
+    def read(path):
+        if path not in files:
+            raise OSError(path)
+        return files[path]
+    monkeypatch.setattr(base_adapter, "_read", read)
+    assert base_adapter.available_memory_mb() == 2048        # container: 6 - (5 - 1) = 2 GB < 3 GB free
+    files["/sys/fs/cgroup/memory.max"] = "max"
+    assert base_adapter.available_memory_mb() == 3072        # no container limit: the server's memory
+    files.clear()
+    assert base_adapter.available_memory_mb() is None        # not Linux: unknown
+
+
+def test_ajax_spider_opens_one_browser_when_memory_is_short(monkeypatch):
+    from src.scans.adapters.outbound import zap_adapter
+    for free_mb, has_turn, expected in ((3000, True, 2), (None, True, 2), (800, True, 1), (3000, False, 1)):
+        monkeypatch.setattr(zap_adapter, "available_memory_mb", lambda: free_mb)
+        assert zap_adapter._ajax_browsers("https://a.exemple.com", has_turn) == expected
+
+
+class _FakeFcntl:
+    """flock that is busy (another scan explores) for the first `busy` attempts."""
+    LOCK_EX, LOCK_NB, LOCK_UN = 2, 4, 8
+
+    def __init__(self, busy):
+        self.busy, self.unlocked = busy, 0
+
+    def flock(self, handle, op):
+        if op == self.LOCK_UN:
+            self.unlocked += 1
+        elif self.busy > 0:
+            self.busy -= 1
+            raise BlockingIOError()
+
+
+def test_second_zap_scan_waits_for_the_first_exploration(monkeypatch, tmp_path):
+    """SCAN_CONCURRENCY=2 on a 10 GB server: both scans of a batch explored at once (4 Firefox + 2 JVMs)."""
+    from src.scans.adapters.outbound import zap_adapter
+    fake = _FakeFcntl(busy=3)
+    monkeypatch.setattr(zap_adapter, "fcntl", fake)
+    monkeypatch.setattr(zap_adapter, "AJAX_LOCK_PATH", str(tmp_path / "ajax.lock"))
+    monkeypatch.setattr(zap_adapter, "AJAX_LOCK_POLL_S", 0)
+    with zap_adapter._ajax_turn("https://b.exemple.com", wait_s=60) as has_turn:
+        assert has_turn and fake.busy == 0                   # got its turn after the other one
+    assert fake.unlocked == 1                                # and gave it back
+
+    fake = _FakeFcntl(busy=10 ** 6)                          # the other exploration never ends
+    monkeypatch.setattr(zap_adapter, "fcntl", fake)
+    with zap_adapter._ajax_turn("https://b.exemple.com", wait_s=0) as has_turn:
+        assert has_turn is False                             # goes on anyway (with 1 browser)
+    assert fake.unlocked == 0
+
+
+def test_zap_scan_explores_with_one_browser_on_a_short_server(monkeypatch):
+    browsers = []
+
+    def api(zap_url, api_key, path, **params):
+        if "version" in path:
+            return {"version": "2.17.0"}
+        if path == "/JSON/ajaxSpider/action/setOptionNumberOfBrowsers/":
+            browsers.append(params["Integer"])
+        if path == "/JSON/ajaxSpider/view/status/":
+            return {"status": "stopped"}
+        if path == "/JSON/pscan/view/recordsToScan/":
+            return {"recordsToScan": "0"}
+        return {"scan": "0", "alerts": []}
+    zap_adapter = _fake_zap(monkeypatch, api)
+    monkeypatch.setattr(zap_adapter, "available_memory_mb", lambda: 900)
+    zap_adapter.ZAPAdapter.run_scan(["http://juice-shop:3000"])
+    assert browsers == [1]
+
+
 def test_zap_reports_its_real_progress_through_every_phase(monkeypatch):
     """The scan stayed at 5 % during the whole ZAP run."""
     ascan = iter(["0", "40", "100"])
