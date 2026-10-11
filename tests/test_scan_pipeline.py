@@ -25,7 +25,7 @@ WEB_PORTS = [{"port": 443, "state": "open", "service": "http", "tunnel": "ssl", 
 
 @pytest.fixture()
 def fakes(monkeypatch):
-    calls = {"phase1": [], "phase1_ports": [], "nuclei": [], "zap": [], "nmap_vuln": []}
+    calls = {"phase1": [], "phase1_ports": [], "nuclei": [], "zap": [], "zap_budgets": [], "nmap_vuln": []}
     state = {"phase1_hosts": [_host(ports=WEB_PORTS)], "probe": [], "answering": set(), "redirecting": set()}
 
     monkeypatch.setattr(scan_tasks, "_resolve_dns", lambda host: "203.0.113.10")
@@ -55,6 +55,7 @@ def fakes(monkeypatch):
 
     def zap(targets, credentials=None, **kw):
         calls["zap"].append(list(targets))
+        calls["zap_budgets"].append((kw.get("spider_minutes"), kw.get("ajax_minutes"), kw.get("ascan_minutes")))
         return [{"pluginId": "40012", "alert": "Cross Site Scripting (Reflected)", "risk": "High",
                  "confidence": "Medium", "url": f"{targets[0]}/search?q=1", "param": "q"}]
     monkeypatch.setattr(zap_adapter.ZAPAdapter, "run_scan", staticmethod(zap))
@@ -188,6 +189,66 @@ def test_identified_web_service_is_kept_without_check(db, make_scan, fakes, monk
     scan_id = make_scan("app.exemple.com", "OWASP_ZAP")
     _run(scan_id, "app.exemple.com")
     assert calls["zap"] == [["https://app.exemple.com"]]
+
+
+# ----------------------------------------------------------------------------- scan depth
+
+
+def _with_depth(db, scan_id, depth, port_range=None):
+    scan = _scan(db, scan_id)
+    scan.scan_depth = depth
+    db.commit()
+
+
+def test_standard_depth_and_old_scans_behave_as_before(db, make_scan, fakes):
+    """No depth (scans created before the choice) and STANDARD: same ports and ZAP budgets as before."""
+    from src.scans.adapters.outbound import zap_adapter
+    calls, _ = fakes
+    for depth in (None, "STANDARD"):
+        scan_id = make_scan("app.exemple.com", "OWASP_ZAP")
+        _with_depth(db, scan_id, depth)
+        _run(scan_id, "app.exemple.com")
+    standard = (zap_adapter.SPIDER_MAX_MINUTES, zap_adapter.AJAX_SPIDER_MAX_MINUTES, zap_adapter.ASCAN_MAX_MINUTES)
+    assert calls["zap_budgets"] == [standard, standard]
+    assert calls["phase1_ports"] == [scan_tasks.WEB_SCAN_PORTS, scan_tasks.WEB_SCAN_PORTS]
+
+
+def test_quick_depth_shortens_zap_and_the_port_sweep(db, make_scan, fakes):
+    calls, _ = fakes
+    zap_id = make_scan("app.exemple.com", "OWASP_ZAP")
+    nuclei_id = make_scan("api.exemple.com", "NUCLEI")
+    nmap_id = make_scan("srv.exemple.com", "NMAP")
+    for scan_id in (zap_id, nuclei_id, nmap_id):
+        _with_depth(db, scan_id, "RAPIDE")
+    _run(zap_id, "app.exemple.com")
+    _run(nuclei_id, "api.exemple.com")
+    _run(nmap_id, "srv.exemple.com")
+    assert calls["zap_budgets"] == [(5, 3, 20)]
+    assert calls["phase1_ports"] == [scan_tasks.WEB_SCAN_PORTS, "top:1000", "top:1000"]
+
+
+def test_thorough_depth_sweeps_every_port_and_tests_longer(db, make_scan, fakes):
+    """An application on an unusual port (a console on 8006) is only found by a full sweep."""
+    calls, _ = fakes
+    scan_id = make_scan("app.exemple.com", "OWASP_ZAP")
+    _with_depth(db, scan_id, "APPROFONDI")
+    _run(scan_id, "app.exemple.com")
+    assert calls["phase1_ports"] == [None] and calls["zap_budgets"] == [(30, 20, 240)]
+
+
+def test_policy_port_range_wins_over_the_depth(db, make_scan, fakes, monkeypatch):
+    calls, _ = fakes
+    real = scan_tasks._load_context
+
+    def with_policy(*a, **kw):
+        ctx = real(*a, **kw)
+        ctx.port_range = "443,8006"
+        return ctx
+    monkeypatch.setattr(scan_tasks, "_load_context", with_policy)
+    scan_id = make_scan("app.exemple.com", "OWASP_ZAP")
+    _with_depth(db, scan_id, "RAPIDE")
+    _run(scan_id, "app.exemple.com")
+    assert calls["phase1_ports"] == ["443,8006"]
 
 
 def test_network_scans_keep_the_full_port_sweep(db, make_scan, fakes):

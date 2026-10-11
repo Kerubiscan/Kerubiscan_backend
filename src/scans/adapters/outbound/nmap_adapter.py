@@ -69,6 +69,12 @@ def _is_ipv6(targets: List[str]) -> bool:
 def _build_port_args(ports: Optional[str]) -> List[str]:
     if not ports:
         return ["-p-"]
+    # "top:1000": Nmap's most common ports (quick scan)
+    if ports.startswith("top:"):
+        count = ports[4:]
+        if not count.isdigit() or not 0 < int(count) <= 65535:
+            raise ValueError(f"Invalid port spec: {ports!r}")
+        return ["--top-ports", count]
     tokens = [t.strip() for t in ports.split(",") if t.strip()]
     inc = [t for t in tokens if not t.startswith("!")]
     exc = [t[1:] for t in tokens if t.startswith("!")]
