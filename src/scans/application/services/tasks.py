@@ -467,7 +467,7 @@ def _load_context(scan_id: str, target_raw: str, target: ScanTarget,
         )
         db.commit()
         logger.info(f"Scan {scan_id} on {target_raw}: engine={ctx.engine.name} depth={ctx.depth} profile={ctx.profile} "
-                    f"ports={ctx.port_range or 'all'} authenticated={'yes (' + str(ctx.credentials.get('credential_type')) + ')' if ctx.credentials else 'no'}")
+                    f"ports={_scan_ports(ctx, web=ctx.engine == ScannerEngine.OWASP_ZAP) or 'all'} authenticated={'yes (' + str(ctx.credentials.get('credential_type')) + ')' if ctx.credentials else 'no'}")
         return ctx
     finally:
         db.close()
