@@ -1,5 +1,6 @@
 import os
 import base64
+import contextlib
 import shutil
 import signal
 import socket
@@ -14,7 +15,12 @@ import urllib3
 from html import unescape
 from typing import Callable, List, Dict, Optional, Union
 from urllib.parse import urlsplit
-from src.scans.adapters.outbound.base_adapter import ScanError, _register, _unregister, kill_session
+from src.scans.adapters.outbound.base_adapter import ScanError, _register, _unregister, kill_session, available_memory_mb
+
+try:
+    import fcntl
+except ImportError:   # not Linux (tests on Windows): no lock between scans
+    fcntl = None
 from src.vulnerabilities.domain import severity as sev
 
 logger = logging.getLogger(__name__)
@@ -40,11 +46,60 @@ AJAX_SPIDER_BROWSER = "firefox-headless"
 # Browsers opened at once by the AJAX spider (ZAP's default: one per CPU). Each Firefox takes
 # 300 MB or more: with 5 of them and ZAP, the 6 GB test server ran out of memory.
 AJAX_SPIDER_BROWSERS = 2
+# Free memory (MB) needed to open those 2 browsers; below, the AJAX spider opens only one
+AJAX_TWO_BROWSERS_MB = 1500
+# One AJAX spider at a time in the worker. With SCAN_CONCURRENCY=2 the two ZAP scans of a batch start
+# together and explored at the same moment: 4 Firefox on top of 2 JVMs, too much for a 10 GB server.
+# The second one waits for the first one's exploration (10 min at most), then explores in turn.
+AJAX_LOCK_PATH = os.path.join(tempfile.gettempdir(), "kvs-zap-ajax.lock")
+AJAX_LOCK_POLL_S = 5
 # Active scan rules that drive their own browsers: "Cross Site Scripting (DOM Based)" kept up to
 # 8 Firefox open during the active scan, and ZAP was killed (connection reset) after 55 min.
 BROWSER_SCAN_RULES = "40026"
 # Share of each phase in the ZAP progress reported to the scan (the active scan is by far the longest)
 PHASE_SPIDER, PHASE_AJAX = 0.10, 0.15
+
+
+@contextlib.contextmanager
+def _ajax_turn(target: str, wait_s: float):
+    """Waits, at most wait_s, for the AJAX spider of the other ZAP scan to end. Yields True once this
+    scan has its turn, False when the wait ran out (it then explores anyway, with a single browser).
+    The kernel releases the lock if the scan process dies."""
+    if fcntl is None:
+        yield True
+        return
+    handle = open(AJAX_LOCK_PATH, "w")
+    got = False
+    try:
+        deadline = time.time() + wait_s
+        waited = False
+        while True:
+            try:
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                got = True
+                break
+            except BlockingIOError:
+                if time.time() >= deadline:
+                    logger.warning(f"ZAP AJAX spider on {target}: the other scan still explores, going on with 1 browser")
+                    break
+                if not waited:
+                    logger.info(f"ZAP AJAX spider on {target}: waiting for the other scan's exploration to end")
+                    waited = True
+                time.sleep(AJAX_LOCK_POLL_S)
+        yield got
+    finally:
+        if got:
+            fcntl.flock(handle, fcntl.LOCK_UN)
+        handle.close()
+
+
+def _ajax_browsers(target: str, has_turn: bool) -> int:
+    """Browsers for the AJAX spider: 2, or 1 when memory is short or another exploration is running."""
+    free_mb = available_memory_mb()
+    if has_turn and (free_mb is None or free_mb >= AJAX_TWO_BROWSERS_MB):
+        return AJAX_SPIDER_BROWSERS
+    logger.info(f"ZAP AJAX spider on {target}: {free_mb if free_mb is not None else '?'} MB free, 1 browser")
+    return 1
 
 
 class ZAPAdapter:
@@ -85,10 +140,15 @@ class ZAPAdapter:
         on a JavaScript application (Angular, React...) it finds the static files but none of the API
         calls, so the active scan had no parameter to attack (Juice Shop: CSP/CORS alerts only).
         Never fatal: without a browser the scan goes on with the classic spider's results."""
+        with _ajax_turn(target, wait_s=minutes * 60 + 120) as has_turn:
+            ZAPAdapter._explore(zap_url, api_key, target, minutes, _ajax_browsers(target, has_turn), on_fraction)
+
+    @staticmethod
+    def _explore(zap_url: str, api_key: str, target: str, minutes: int, browsers: int,
+                 on_fraction: Optional[Callable[[float], None]] = None) -> None:
         try:
             ZAPAdapter._api(zap_url, api_key, "/JSON/ajaxSpider/action/setOptionBrowserId/", String=AJAX_SPIDER_BROWSER)
-            ZAPAdapter._api(zap_url, api_key, "/JSON/ajaxSpider/action/setOptionNumberOfBrowsers/",
-                            Integer=AJAX_SPIDER_BROWSERS)
+            ZAPAdapter._api(zap_url, api_key, "/JSON/ajaxSpider/action/setOptionNumberOfBrowsers/", Integer=browsers)
             ZAPAdapter._api(zap_url, api_key, "/JSON/ajaxSpider/action/setOptionMaxDuration/", Integer=minutes)
             ZAPAdapter._api(zap_url, api_key, "/JSON/ajaxSpider/action/scan/", url=target)
         except ScanError as e:

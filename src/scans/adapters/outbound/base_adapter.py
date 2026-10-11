@@ -26,6 +26,49 @@ def _unregister(proc: subprocess.Popen) -> None:
         _RUNNING_PROCS.discard(proc)
 
 
+# Memory in use under the container limit is read like "docker stats": without the file cache the
+# kernel can drop at any time (cgroup v2, then v1)
+_CGROUPS = (
+    ("/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/memory.current", "/sys/fs/cgroup/memory.stat", "inactive_file"),
+    ("/sys/fs/cgroup/memory/memory.limit_in_bytes", "/sys/fs/cgroup/memory/memory.usage_in_bytes",
+     "/sys/fs/cgroup/memory/memory.stat", "total_inactive_file"),
+)
+
+
+def _read(path: str) -> str:
+    with open(path, encoding="ascii") as f:
+        return f.read()
+
+
+def available_memory_mb() -> Optional[int]:
+    """Memory (MB) a new scanner process can still use: the smaller of the server's available memory
+    and the room left under the worker container's limit. None when unreadable (not Linux)."""
+    values = []
+    try:
+        for line in _read("/proc/meminfo").splitlines():
+            if line.startswith("MemAvailable:"):
+                values.append(int(line.split()[1]) // 1024)
+                break
+    except (OSError, ValueError, IndexError):
+        pass
+    for limit_path, usage_path, stat_path, cache_key in _CGROUPS:
+        try:
+            limit = _read(limit_path).strip()
+            if limit == "max" or int(limit) >= 1 << 60:    # no limit on the container
+                break
+            used = int(_read(usage_path))
+            for line in _read(stat_path).splitlines():
+                name, _, value = line.partition(" ")
+                if name == cache_key:
+                    used -= int(value)
+                    break
+            values.append(max(int(limit) - used, 0) // (1024 * 1024))
+            break
+        except (OSError, ValueError):
+            continue
+    return min(values) if values else None
+
+
 def session_pids(sid: int) -> List[int]:
     """Processes of a session (Linux /proc). A scanner started with start_new_session leads its own
     session; the browsers it launches (Firefox for ZAP) create their own process groups but stay
