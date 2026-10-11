@@ -299,6 +299,44 @@ def test_stop_scan_revokes_tasks_and_stops_openvas(db, company, gvm, monkeypatch
     assert "arrêté" in scan.target_meta["10.0.0.5"]["detail"]
 
 
+def test_stop_ends_the_whole_batch_and_queued_targets_never_start(db, make_scan, fakes, monkeypatch):  # noqa: F811
+    """Multi-Target Batch, 2 at a time: Stop killed the running targets, then the queued ones started
+    in the freed slots and the scan went on."""
+    calls, _ = fakes
+    revoked = []
+    monkeypatch.setattr(scan_tasks.celery_app.control, "revoke", lambda tid, **kw: revoked.append(tid))
+    sites = ["a.exemple.com", "b.exemple.com", "c.exemple.com", "d.exemple.com", "e.exemple.com"]
+    scan_id = make_scan(",".join(sites), "OWASP_ZAP")
+    scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).one()
+    scan.target_states = {"a.exemple.com": "IN_PROGRESS", "b.exemple.com": "IN_PROGRESS",
+                          "c.exemple.com": "PENDING", "d.exemple.com": "PENDING", "e.exemple.com": "PENDING"}
+    scan.target_meta = {"a.exemple.com": {"celery_task": "t-a"}, "b.exemple.com": {"celery_task": "t-b"}}
+    db.commit()
+
+    assert scan_tasks.stop_scan_task(scan_id) == 5
+    assert sorted(revoked) == ["t-a", "t-b"]
+    scan = _reload(db, scan_id)
+    assert set(scan.target_states.values()) == {"INTERRUPTED"}
+    assert scan.status != ScanStatus.IN_PROGRESS
+
+    # A queued task reaches the freed slot: it does nothing and does not reopen the scan
+    assert scan_tasks.run_vulnerability_scan(scan_id, "c.exemple.com", "c.exemple.com", "cfg") is True
+    assert calls["zap"] == [] and calls["phase1"] == []
+    scan = _reload(db, scan_id)
+    assert scan.target_states["c.exemple.com"] == "INTERRUPTED" and scan.status != ScanStatus.IN_PROGRESS
+
+
+def test_running_task_id_is_recorded_when_the_target_starts(db, make_scan):
+    """Recorded with the IN_PROGRESS state (same lock), so Stop can revoke a task that just started."""
+    from src.scans.domain.targets import parse_target
+    scan_id = make_scan("app.exemple.com", "OWASP_ZAP")
+    assert scan_tasks._load_context(scan_id, "app.exemple.com", parse_target("app.exemple.com"),
+                                    celery_task="celery-42") is not None
+    scan = _reload(db, scan_id)
+    assert scan.target_states["app.exemple.com"] == "IN_PROGRESS"
+    assert scan.target_meta["app.exemple.com"]["celery_task"] == "celery-42"
+
+
 def test_worker_shutdown_kills_registered_scanner_processes(monkeypatch):
     from src.scans.adapters.outbound import base_adapter
 
