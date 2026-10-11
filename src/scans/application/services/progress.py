@@ -7,7 +7,7 @@ reason of a failure (scans.target_meta), and the watchdog (watchdog.py) closes f
 import heapq
 import logging
 from datetime import datetime, timezone
-from typing import Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
@@ -208,6 +208,40 @@ def interrupt_targets(scan_id: str, detail: str) -> dict:
         meta = {t: dict((scan.target_meta or {}).get(t) or {}) for t in pending}
         db.commit()
         return meta
+    finally:
+        db.close()
+
+
+def claim_shared_ports(scan_id: str, target: str, ip: str, ports: List[int]) -> Dict[int, str]:
+    """Shares out, between the targets of one scan, the extra web ports of a server they all point to.
+
+    kimia-technologies.com: 5 sub-domains on one IP, whose ports 8080/8443/9443 are services of the
+    server itself (same answer whatever the name). Each sub-domain scanned them again. Under the scan
+    lock, the first target to ask claims them; the others skip them. Claims of a target that failed
+    are ignored (it may not have scanned them). Returns {port: target scanning it} for the ports
+    already claimed by another target; this target claims all the others."""
+    db: Session = SessionLocal()
+    try:
+        scan = _locked_scan(db, scan_id)
+        if not scan:
+            return {}
+        states = scan.target_states or {}
+        meta = dict(scan.target_meta or {})
+        taken: Dict[int, str] = {}
+        for other, entry in meta.items():
+            if other == target or not isinstance(entry, dict) or states.get(other) in FAILURE_STATES:
+                continue
+            shared = entry.get("shared_ports") or {}
+            if shared.get("ip") == ip:
+                for port in shared.get("ports") or []:
+                    taken.setdefault(int(port), other)
+        entry = dict(meta.get(target) or {})
+        entry["shared_ports"] = {"ip": ip, "ports": [p for p in ports if p not in taken]}
+        meta[target] = entry
+        scan.target_meta = meta
+        flag_modified(scan, "target_meta")
+        db.commit()
+        return {p: taken[p] for p in ports if p in taken}
     finally:
         db.close()
 
