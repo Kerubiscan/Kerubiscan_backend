@@ -2,6 +2,7 @@ import os
 import logging
 import socket
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
@@ -483,6 +484,36 @@ def _probe_web(host: str, path: str = "") -> List[str]:
     return []
 
 
+def _answers_http(url: str) -> bool:
+    """True when the URL gives an HTTP answer, whatever its status."""
+    import requests
+    import urllib3
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    try:
+        requests.get(url, timeout=WEB_PROBE_TIMEOUT_S, verify=False, allow_redirects=False, stream=True).close()
+        return True
+    except Exception:
+        return False
+
+
+def _confirmed_web_urls(label: str, ports: List[Dict]) -> List[str]:
+    """Web URLs of the open ports: the services Nmap identified as web, plus the unidentified ones on a
+    common web port ("tcpwrapped": CDN, reverse proxy) that really give an HTTP answer.
+
+    A firewall answering on every port (kimia-technologies.com: 12 ports "open" out of 12) gave ZAP
+    8 URLs per site, each explored for up to 25 min before the active scan."""
+    identified = [p for p in ports if is_web_service(p.get("service"), p.get("tunnel"))]
+    urls = web_urls_from_ports(label, identified)
+    guessed = [u for u in web_urls_from_ports(label, [p for p in ports if p not in identified]) if u not in urls]
+    if guessed:
+        with ThreadPoolExecutor(max_workers=len(guessed)) as pool:
+            answers = list(pool.map(_answers_http, guessed))
+        for url, ok in zip(guessed, answers):
+            logger.info(f"Web check: {url} " + ("answers" if ok else "gives no HTTP answer, skipped"))
+        urls += [url for url, ok in zip(guessed, answers) if ok]
+    return urls
+
+
 def _identity(target: ScanTarget, host: Optional[Dict]) -> str:
     """What the asset is keyed on and what web engines must call: the domain for a domain scan."""
     if target.kind == "cidr" and host:
@@ -610,7 +641,7 @@ def _web_work(ctx: ScanContext, target: ScanTarget, include_network: bool,
     for host in hosts:
         label = _identity(target, host)
         ports = open_ports(host.get("ports")) if host else []
-        web_urls = web_urls_from_ports(label, ports)
+        web_urls = _confirmed_web_urls(label, ports)
         if not web_urls and target.kind != "cidr":
             # Port scan saw no web service (WAF/CDN dropping probes, timeout, unidentified service)
             web_urls = _probe_web(label)
