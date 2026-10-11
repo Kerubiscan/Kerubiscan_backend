@@ -26,10 +26,11 @@ WEB_PORTS = [{"port": 443, "state": "open", "service": "http", "tunnel": "ssl", 
 @pytest.fixture()
 def fakes(monkeypatch):
     calls = {"phase1": [], "phase1_ports": [], "nuclei": [], "zap": [], "nmap_vuln": []}
-    state = {"phase1_hosts": [_host(ports=WEB_PORTS)], "probe": []}
+    state = {"phase1_hosts": [_host(ports=WEB_PORTS)], "probe": [], "answering": set()}
 
     monkeypatch.setattr(scan_tasks, "_resolve_dns", lambda host: "203.0.113.10")
     monkeypatch.setattr(scan_tasks, "_probe_web", lambda host, path="": list(state["probe"]))
+    monkeypatch.setattr(scan_tasks, "_answers_http", lambda url: url in state["answering"])
 
     def phase1(target, ports=None, credentials=None, profile="lan", **kw):
         calls["phase1"].append((target, profile, credentials))
@@ -127,6 +128,25 @@ def test_zap_on_a_domain_probes_only_the_web_ports_before_zap(db, make_scan, fak
     ports = calls["phase1_ports"][0]
     assert ports and "443" in ports.split(",") and "8080" in ports.split(",")
     assert len(ports.split(",")) < 20
+    assert calls["zap"] == [["https://app.exemple.com"]]
+
+
+def test_firewall_answering_every_port_gives_zap_only_the_real_sites(db, make_scan, fakes):
+    """kimia-technologies.com: 12 ports "open" out of 12 (tcpwrapped), and ZAP got 8 URLs per site."""
+    calls, state = fakes
+    state["phase1_hosts"] = [_host(ports=[{"port": p, "state": "open", "service": "tcpwrapped", "protocol": "tcp"}
+                                          for p in (80, 443, 3000, 8000, 8008, 8080, 8443, 8888, 9443)])]
+    state["answering"] = {"http://app.exemple.com", "https://app.exemple.com"}
+    scan_id = make_scan("app.exemple.com", "OWASP_ZAP")
+    _run(scan_id, "app.exemple.com")
+    assert calls["zap"] == [["http://app.exemple.com", "https://app.exemple.com"]]
+
+
+def test_identified_web_service_is_kept_without_check(db, make_scan, fakes, monkeypatch):
+    calls, _ = fakes
+    monkeypatch.setattr(scan_tasks, "_answers_http", lambda url: pytest.fail(f"{url} needs no check"))
+    scan_id = make_scan("app.exemple.com", "OWASP_ZAP")
+    _run(scan_id, "app.exemple.com")
     assert calls["zap"] == [["https://app.exemple.com"]]
 
 
