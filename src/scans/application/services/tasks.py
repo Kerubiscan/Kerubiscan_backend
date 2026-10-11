@@ -5,6 +5,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
+from urllib.parse import urlsplit
 
 from lxml import etree
 from celery.exceptions import Retry, SoftTimeLimitExceeded
@@ -523,6 +524,37 @@ def _confirmed_web_urls(label: str, ports: List[Dict]) -> List[str]:
     return urls
 
 
+def _redirects_to_https(url: str) -> bool:
+    """True when an http:// URL only redirects to the https:// version of the same host."""
+    import requests
+    import urllib3
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    try:
+        answer = requests.get(url, timeout=WEB_PROBE_TIMEOUT_S, verify=False, allow_redirects=False, stream=True)
+        answer.close()
+    except Exception:
+        return False
+    location = answer.headers.get("Location", "")
+    host = urlsplit(url).hostname
+    return answer.is_redirect and urlsplit(location).scheme == "https" and urlsplit(location).hostname == host
+
+
+def _dedupe_web_urls(ctx: ScanContext, label: str, ip: Optional[str], urls: List[str]) -> List[str]:
+    """For a domain: no http:// when it only redirects to the https:// site (the same site explored
+    twice), and the extra web ports of a server shared by several domains of the batch are scanned
+    once, with the first domain that claims them (progress.claim_shared_ports)."""
+    if "https://" + label in urls and "http://" + label in urls and _redirects_to_https("http://" + label):
+        logger.info(f"Web check: http://{label} redirects to https://{label}, scanned once over https")
+        urls = [u for u in urls if u != "http://" + label]
+    extra = sorted({urlsplit(u).port for u in urls if urlsplit(u).port})
+    if not ip or not extra:
+        return urls
+    elsewhere = progress.claim_shared_ports(ctx.scan_id, ctx.target_raw, ip, extra)
+    for port, other in elsewhere.items():
+        logger.info(f"Web check: port {port} of {ip} is scanned with {other} in this scan, skipped for {label}")
+    return [u for u in urls if urlsplit(u).port not in elsewhere]
+
+
 def _identity(target: ScanTarget, host: Optional[Dict]) -> str:
     """What the asset is keyed on and what web engines must call: the domain for a domain scan."""
     if target.kind == "cidr" and host:
@@ -651,6 +683,8 @@ def _web_work(ctx: ScanContext, target: ScanTarget, include_network: bool,
         label = _identity(target, host)
         ports = open_ports(host.get("ports")) if host else []
         web_urls = _confirmed_web_urls(label, ports)
+        if target.is_hostname and host:
+            web_urls = _dedupe_web_urls(ctx, label, host.get("ip"), web_urls)
         if not web_urls and target.kind != "cidr":
             # Port scan saw no web service (WAF/CDN dropping probes, timeout, unidentified service)
             web_urls = _probe_web(label)

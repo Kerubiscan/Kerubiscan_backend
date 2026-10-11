@@ -26,11 +26,12 @@ WEB_PORTS = [{"port": 443, "state": "open", "service": "http", "tunnel": "ssl", 
 @pytest.fixture()
 def fakes(monkeypatch):
     calls = {"phase1": [], "phase1_ports": [], "nuclei": [], "zap": [], "nmap_vuln": []}
-    state = {"phase1_hosts": [_host(ports=WEB_PORTS)], "probe": [], "answering": set()}
+    state = {"phase1_hosts": [_host(ports=WEB_PORTS)], "probe": [], "answering": set(), "redirecting": set()}
 
     monkeypatch.setattr(scan_tasks, "_resolve_dns", lambda host: "203.0.113.10")
     monkeypatch.setattr(scan_tasks, "_probe_web", lambda host, path="": list(state["probe"]))
     monkeypatch.setattr(scan_tasks, "_answers_http", lambda url: url in state["answering"])
+    monkeypatch.setattr(scan_tasks, "_redirects_to_https", lambda url: url in state["redirecting"])
 
     def phase1(target, ports=None, credentials=None, profile="lan", **kw):
         calls["phase1"].append((target, profile, credentials))
@@ -140,6 +141,45 @@ def test_firewall_answering_every_port_gives_zap_only_the_real_sites(db, make_sc
     scan_id = make_scan("app.exemple.com", "OWASP_ZAP")
     _run(scan_id, "app.exemple.com")
     assert calls["zap"] == [["http://app.exemple.com", "https://app.exemple.com"]]
+
+
+SERVER_PORTS = [{"port": p, "state": "open", "service": "http", "tunnel": t, "protocol": "tcp"}
+                for p, t in ((80, None), (443, "ssl"), (8080, None), (8443, "ssl"))]
+
+
+def test_server_ports_shared_by_the_domains_of_a_batch_are_scanned_once(db, make_scan, fakes):
+    """kimia-technologies.com: 5 sub-domains on one IP, and its ports 8080/8443 scanned 5 times."""
+    calls, state = fakes
+    state["phase1_hosts"] = [_host(ports=SERVER_PORTS)]
+    scan_id = make_scan("support.site.com,erp.site.com", "OWASP_ZAP")
+    _run(scan_id, "support.site.com")
+    _run(scan_id, "erp.site.com")
+    assert calls["zap"] == [
+        ["http://support.site.com", "https://support.site.com", "http://support.site.com:8080", "https://support.site.com:8443"],
+        ["http://erp.site.com", "https://erp.site.com"],                 # each site, but the server ports once
+    ]
+    assert _scan(db, scan_id).status == ScanStatus.COMPLETED
+
+
+def test_server_ports_claimed_by_a_failed_domain_are_scanned_with_another(db, make_scan, fakes):
+    calls, state = fakes
+    state["phase1_hosts"] = [_host(ports=SERVER_PORTS)]
+    scan_id = make_scan("support.site.com,erp.site.com", "OWASP_ZAP")
+    scan = _scan(db, scan_id)
+    scan.target_states = {"support.site.com": "FAILED", "erp.site.com": "PENDING"}
+    scan.target_meta = {"support.site.com": {"shared_ports": {"ip": "203.0.113.10", "ports": [8080, 8443]}}}
+    db.commit()
+    _run(scan_id, "erp.site.com")
+    assert "http://erp.site.com:8080" in calls["zap"][0] and "https://erp.site.com:8443" in calls["zap"][0]
+
+
+def test_http_that_only_redirects_to_https_is_scanned_once(db, make_scan, fakes):
+    calls, state = fakes
+    state["phase1_hosts"] = [_host(ports=SERVER_PORTS[:2])]
+    state["redirecting"] = {"http://app.exemple.com"}
+    scan_id = make_scan("app.exemple.com", "OWASP_ZAP")
+    _run(scan_id, "app.exemple.com")
+    assert calls["zap"] == [["https://app.exemple.com"]]
 
 
 def test_identified_web_service_is_kept_without_check(db, make_scan, fakes, monkeypatch):
