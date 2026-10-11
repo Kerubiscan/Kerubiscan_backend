@@ -1,4 +1,5 @@
 import os
+import re
 import ipaddress
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 from datetime import datetime, timezone
@@ -92,6 +93,51 @@ def _local(dt: Optional[datetime]) -> datetime:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt.astimezone()
 
+# Locations of a finding, written by ingest._description at the end of its description
+_LOCATIONS = "Emplacements :\n"
+_MORE_LOCATIONS = re.compile(r"^- … et (\d+) autre\(s\)$")
+
+
+def _issue_key(v: VulnerabilityEntity):
+    return ((getattr(v, "rule_id", None) or "").strip(), (v.title or "").strip().lower(),
+            getattr(v.severity, "value", str(v.severity)))
+
+
+def _same_issue_groups(vulns: List[VulnerabilityEntity]) -> List[List[VulnerabilityEntity]]:
+    """The findings of one host, one group per issue (same rule, name and severity).
+
+    A finding is stored per port: the same missing header on the site (443), a console (8080) and
+    an API (8443) of kimia-technologies.com made three rows of the report. As in a Nessus report,
+    an issue is shown once per host with all its locations."""
+    groups: Dict[tuple, List[VulnerabilityEntity]] = {}
+    for v in vulns:
+        groups.setdefault(_issue_key(v), []).append(v)
+    return list(groups.values())
+
+
+def _merged_description(descriptions: List[Optional[str]]) -> Optional[str]:
+    """The description of the first finding, with the locations of all of them (without repeats)."""
+    texts = [d for d in descriptions if d]
+    if len(texts) <= 1:
+        return texts[0] if texts else None
+    head, lines, more = None, [], 0
+    for text in texts:
+        body, _, locations = text.partition(_LOCATIONS)
+        if head is None:
+            head = body.rstrip()
+        for line in locations.splitlines():
+            line = line.rstrip()
+            count = _MORE_LOCATIONS.match(line.strip())
+            if count:
+                more += int(count.group(1))
+            elif line.strip() and line not in lines:
+                lines.append(line)
+    if not lines and not more:
+        return head
+    tail = "\n".join(lines) + (f"\n- … et {more} autre(s)" if more else "")
+    return f"{head}\n\n{_LOCATIONS}{tail}".strip()
+
+
 def generate_vulnerability_html(
     assets: List[AssetEntity], 
     all_vulnerabilities: Dict[str, List[VulnerabilityEntity]],
@@ -146,8 +192,11 @@ def generate_vulnerability_html(
             cvss = float(getattr(v, "cvss_base_score", 0.0) or 0.0)
             return (-get_severity_weight(sev_str), -cvss, (v.title or "").lower())
 
-        # Same order as Nessus: severity, then CVSS score, then name
-        for v in sorted(vulns, key=sort_vulns):
+        # One row per issue (its highest score leads), in the order of Nessus: severity, then
+        # CVSS score, then name
+        groups = [sorted(g, key=sort_vulns) for g in _same_issue_groups(vulns)]
+        for group in sorted(groups, key=lambda g: sort_vulns(g[0])):
+            v = group[0]
             sev_str = getattr(v.severity, "value", str(v.severity))
             score = float(v.cvss_base_score) if v.cvss_base_score is not None else 0.0
             if score > 0:
@@ -173,11 +222,11 @@ def generate_vulnerability_html(
             vector = v.cvss_vector or None
             cia_impact = _cia_from_vector(vector)
 
-            cve = v.cve_id or "N/A"
+            cve = next((x.cve_id for x in group if x.cve_id), None) or "N/A"
             ref_url = f"https://nvd.nist.gov/vuln/detail/{cve}" if cve != "N/A" and "CVE" in cve.upper() else "https://cve.mitre.org"
 
             # Parse AI Analysis if available
-            ai_data = getattr(v, "ai_analysis", None)
+            ai_data = next((x.ai_analysis for x in group if getattr(x, "ai_analysis", None)), None)
             plugin, plugin_url = _plugin(getattr(v, "rule_id", None))
 
             vuln_obj = {
@@ -192,8 +241,10 @@ def generate_vulnerability_html(
                 "plugin": plugin,
                 "plugin_url": plugin_url,
                 "title": v.title,
-                "description": v.description or "Aucune description fournie par le scanner.",
-                "remediation": getattr(v, "remediation", None) or NO_REMEDIATION,
+                "description": _merged_description([x.description for x in group])
+                               or "Aucune description fournie par le scanner.",
+                "remediation": next((x.remediation for x in group if getattr(x, "remediation", None)), None)
+                               or NO_REMEDIATION,
                 "impact_cia": cia_impact,
                 # The evidence (URLs, extracts) is already in the description
                 "proof": None,

@@ -290,3 +290,43 @@ def test_hosts_are_listed_by_ip_under_their_address(company):
     assert "172.20.0.4" in headings[1] and "172.20.0.10" in headings[2]
     assert "web.exemple.com" in headings[3]                                        # names after the IPs
     assert "1.3.6.1.4.1.25623.1.0.​146871" in html    # the OID breaks before the NVT number
+
+
+def test_an_issue_found_on_several_ports_is_one_row_with_all_its_locations(company):
+    """support.kimia-technologies.com: the same missing header on 443, 8080 and 8443 made three rows
+    (a finding is stored per port); 35 rows for about twenty distinct issues."""
+    from src.assets.domain.entities import AssetEntity
+    from src.vulnerabilities.domain.entities import VulnerabilityEntity
+    from src.vulnerabilities.domain.models import VulnSeverity
+    from src.reporting.application.services.html_generator import generate_vulnerability_html
+    asset = AssetEntity(id="s", company_id=company.id, name="support.exemple.com", ip_address="support.exemple.com")
+
+    def finding(i, port, title="X-Content-Type-Options Header Missing", severity=VulnSeverity.LOW, rule="zap:10021",
+                locations=None):
+        lines = "\n".join(f"- {u}" for u in (locations or [f"https://support.exemple.com:{port}/page"]))
+        return VulnerabilityEntity(id=str(i), asset_id="s", title=title, severity=severity, source_engine="OWASP_ZAP",
+                                   rule_id=rule, port=port, description=f"Header missing.\nCWE-693\n\nEmplacements :\n{lines}",
+                                   remediation="Set nosniff." if i == 2 else None)
+    vulns = [finding(1, 443, locations=["https://support.exemple.com/", "https://support.exemple.com/login.php",
+                                        "- … et 4 autre(s)"[2:]]),
+             finding(2, 8080, locations=["http://support.exemple.com:8080/login.html", "https://support.exemple.com/",
+                                         "- … et 2 autre(s)"[2:]]),
+             finding(3, 8443),
+             finding(4, 443, title="Path Traversal", severity=VulnSeverity.HIGH, rule="zap:6"),
+             # Same name but another severity: another issue
+             finding(5, 443, severity=VulnSeverity.MEDIUM)]
+    html = generate_vulnerability_html(assets=[asset], all_vulnerabilities={"s": vulns},
+                                       executive_summary=None).decode("utf-8")
+
+    rows = html.count('class="plugin-row" style="cursor: pointer;"')
+    assert rows == 3                                                  # 3 issues, not 5 rows
+    # The row of the Low issue and its details (rows are sorted by severity: High, Medium, Low)
+    low = next(r for r in html.split('class="plugin-row" style="cursor: pointer;"') if '<span class="badge badge-low">' in r.split("</tr>", 1)[0])
+    merged = low.split("Solution / Remediation", 1)[0]
+    for url in ("https://support.exemple.com/", "https://support.exemple.com/login.php",
+                "http://support.exemple.com:8080/login.html", "https://support.exemple.com:8443/page"):
+        assert url in merged
+    assert merged.count("https://support.exemple.com/<") + merged.count("https://support.exemple.com/\n") == 1  # no repeat
+    assert "… et 6 autre(s)" in merged                                # the hidden locations are added up
+    assert merged.count("Header missing.") == 1 and merged.count("Emplacements") == 1
+    assert "Set nosniff." in low                                      # the remediation one of them gave
