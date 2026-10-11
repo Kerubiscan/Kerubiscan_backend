@@ -4,6 +4,7 @@ A scan used to end "COMPLETED" even when nothing had been tested, or to stay "IN
 when its follow-up was lost. Each target now ends in an explicit state, keeps timestamps and the
 reason of a failure (scans.target_meta), and the watchdog (watchdog.py) closes forgotten targets.
 """
+import heapq
 import logging
 from datetime import datetime, timezone
 from typing import Optional, Tuple
@@ -256,6 +257,53 @@ def engine_remaining(scan) -> Optional[int]:
         left = max(int(entry["eta_s"] - (now - at).total_seconds()), 0)
         best = left if best is None else max(best, left)
     return best
+
+
+def batch_remaining(scan, concurrency: int = 1) -> Optional[int]:
+    """Seconds a multi-target scan still needs, every target included: the running ones (their
+    engine's estimate, or their own pace) and the waiting ones, each at the pace of the targets
+    already done, `concurrency` at a time. None for a single target, or while no target gives a pace.
+
+    The running target's estimate alone said "end imminent" while targets were still queued."""
+    states = scan.target_states or {}
+    if len(states) < 2:
+        return None
+    meta = scan.target_meta or {}
+    now = datetime.now(timezone.utc)
+    done, running, waiting = [], [], 0
+    for target, state in states.items():
+        entry = meta.get(target) if isinstance(meta.get(target), dict) else {}
+        started = _parse_iso(entry.get("started_at"))
+        if state in TERMINAL_STATES:
+            ended = _parse_iso(entry.get("updated_at"))
+            # A failed target (unreachable in seconds) says nothing about the pace of the others
+            if state in SUCCESS_STATES and started and ended and ended > started:
+                done.append((ended - started).total_seconds())
+            continue
+        if state != IN_PROGRESS or started is None:
+            waiting += 1
+            continue
+        elapsed = (now - started).total_seconds()
+        at = _parse_iso(entry.get("eta_at"))
+        percent = entry.get("progress") or 0
+        if entry.get("eta_s") is not None and at is not None:
+            left = max(entry["eta_s"] - (now - at).total_seconds(), 0)
+        elif percent >= 10:
+            left = max(elapsed * 100 / percent - elapsed, 0)
+        else:
+            left = None
+        running.append((elapsed, left))
+    paces = sorted(done) or sorted(e + left for e, left in running if left is not None)
+    if not paces:
+        return None
+    pace = paces[len(paces) // 2]
+    # Each worker slot frees up when its target ends; a waiting target then takes it for `pace`
+    slots = [left if left is not None else max(pace - e, 0) for e, left in running]
+    slots += [0.0] * max(concurrency - len(slots), 0)
+    heapq.heapify(slots)
+    for _ in range(waiting):
+        heapq.heappush(slots, heapq.heappop(slots) + pace)
+    return int(max(slots))
 
 
 def record_openvas_progress(scan_id: str, target: str, value: int) -> float:
