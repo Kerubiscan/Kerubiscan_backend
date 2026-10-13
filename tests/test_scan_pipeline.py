@@ -376,3 +376,56 @@ def test_openvas_report_is_stored_per_host(db, make_scan):
     assert db.query(VulnerabilityEntity).filter(VulnerabilityEntity.asset_id == assets["10.0.0.5"].id).count() == 2
     scan = _scan(db, scan_id)
     assert scan.target_states["10.0.0.0/24"] == "INTERRUPTED" and scan.status == ScanStatus.FAILED
+
+
+# ----------------------------------------------------------------------------- domains sharing one server
+
+
+def test_domains_of_one_server_share_its_port_scan(db, make_scan, fakes):
+    """kimia-technologies.com: ~20 sub-domains on one IP, each sweeping its 65 535 ports again."""
+    calls, _ = fakes
+    scan_id = make_scan("support.site.com,erp.site.com,ftp.site.com", "NUCLEI")
+    for target in ("support.site.com", "erp.site.com", "ftp.site.com"):
+        assert _run(scan_id, target) is True
+    assert [c[0] for c in calls["phase1"]] == ["support.site.com"]     # one sweep for the three
+    assert _scan(db, scan_id).status == ScanStatus.COMPLETED
+    # Each domain still has its asset, with the ports of the server
+    for name in ("erp.site.com", "ftp.site.com"):
+        asset = db.query(AssetEntity).filter(AssetEntity.ip_address == name).first()
+        assert asset is not None and asset.resolved_ip == "203.0.113.10"
+        assert {p["port"] for p in asset.services} == {22, 443}
+
+
+def test_network_services_of_a_shared_server_are_tested_once(db, make_scan, fakes):
+    """SSH of the server is the same whatever the name: Nuclei tested it with every sub-domain."""
+    calls, _ = fakes
+    scan_id = make_scan("support.site.com,erp.site.com", "NUCLEI")
+    _run(scan_id, "support.site.com")
+    _run(scan_id, "erp.site.com")
+    assert "support.site.com:22" in calls["nuclei"][0]
+    assert not any(i.endswith(":22") for i in calls["nuclei"][1])     # not again with erp
+    assert "https://erp.site.com" in calls["nuclei"][1]                # but its own site, yes
+
+
+def test_port_scan_of_a_failed_domain_is_not_reused(db, make_scan, fakes):
+    calls, _ = fakes
+    scan_id = make_scan("support.site.com,erp.site.com", "NUCLEI")
+    scan = _scan(db, scan_id)
+    scan.target_states = {"support.site.com": "FAILED", "erp.site.com": "PENDING"}
+    scan.target_meta = {"support.site.com": {"phase1": {"ip": "203.0.113.10", "ports": "all",
+                                                        "host": _host(ports=WEB_PORTS)}}}
+    db.commit()
+    _run(scan_id, "erp.site.com")
+    assert [c[0] for c in calls["phase1"]] == ["erp.site.com"]
+
+
+def test_port_scan_with_another_port_range_is_not_reused(db, make_scan, fakes):
+    calls, _ = fakes
+    scan_id = make_scan("support.site.com,erp.site.com", "NUCLEI")
+    scan = _scan(db, scan_id)
+    scan.target_meta = {"support.site.com": {"phase1": {"ip": "203.0.113.10", "ports": "top:1000",
+                                                        "host": _host(ports=WEB_PORTS)}}}
+    scan.target_states = {"support.site.com": "COMPLETED", "erp.site.com": "PENDING"}
+    db.commit()
+    _run(scan_id, "erp.site.com")
+    assert [c[0] for c in calls["phase1"]] == ["erp.site.com"]
