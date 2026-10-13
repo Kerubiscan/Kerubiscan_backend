@@ -263,7 +263,7 @@ table{margin:0!important}
                             <td></td>
                             <td>Severity</td>
                             <td></td>
-                            <td>CVSS v3.0</td>
+                            <td>CVSS v3.0 / Conf.</td>
                             <td></td>
                             <td>Scanner</td>
                             <td></td>
@@ -277,7 +277,7 @@ table{margin:0!important}
                                 <td></td>
                                 <td><span class="badge badge-{{ v.severity|lower }}">{{ v.severity }}</span></td>
                                 <td></td>
-                                <td>{{ v.cvss }}</td>
+                                <td>{% if v.confidence %}<span title="Confiance du scanner (pas de score CVSS fourni)">Conf. {{ v.confidence }}</span>{% else %}{{ v.cvss }}{% endif %}</td>
                                 <td></td>
                                 <td>{{ v.engine }}</td>
                                 <td></td>
@@ -360,7 +360,7 @@ table{margin:0!important}
                         {% endif %}
                         <tr class="plugin-row">
                             <td style="border-left-style: hidden; border-bottom-style: hidden; border-right-style: hidden;"></td>
-                            <td colspan="9" style="border-left-style: hidden; border-bottom-style: hidden; border-right-style: hidden; font-size: 11px; color: #64748b;">N/A indicates that the scanner did not provide a CVSS v3.0 score</td>
+                            <td colspan="9" style="border-left-style: hidden; border-bottom-style: hidden; border-right-style: hidden; font-size: 11px; color: #64748b;">N/A : le scanner n'a pas fourni de score CVSS v3.0. OWASP ZAP ne note pas en CVSS : la colonne indique alors sa confiance dans le résultat (Confirmée, Élevée, Moyenne, Faible) ; un résultat de confiance faible est à vérifier à la main.</td>
                         </tr>
                     </tbody>
                 </table>

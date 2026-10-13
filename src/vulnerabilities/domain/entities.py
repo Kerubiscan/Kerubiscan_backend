@@ -27,6 +27,9 @@ class VulnerabilityEntity(Base):
     rule_id = Column(String, nullable=True)
 
     ai_analysis = Column(JSON, nullable=True)
+    # Confidence of the engine in the finding (ZAP: Confirmed, High, Medium, Low). ZAP gives no
+    # CVSS score: the report shows this instead, so that a likely false positive stands out
+    confidence = Column(String, nullable=True)
     
     severity = Column(SQLEnum(VulnSeverity), default=VulnSeverity.INFO, nullable=False)
     status = Column(SQLEnum(VulnStatus), default=VulnStatus.NEW, nullable=False)
