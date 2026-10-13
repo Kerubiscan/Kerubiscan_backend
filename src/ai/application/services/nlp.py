@@ -188,6 +188,8 @@ async def generate_vulnerability_remediation(vuln_name: str, vuln_desc: str, lan
     except Exception as e:
         logger.error(f"AI remediation generation failed: {str(e)}")
         return {
+            # Marks the answer as a failure: the report does not show it as an assessment
+            "failed": True,
             "severity_assessment": "Failed to generate assessment.",
             "exploitability": "Unknown.",
             "business_impact": "Unknown.",

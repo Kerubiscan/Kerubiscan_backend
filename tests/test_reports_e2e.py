@@ -330,3 +330,94 @@ def test_an_issue_found_on_several_ports_is_one_row_with_all_its_locations(compa
     assert "… et 6 autre(s)" in merged                                # the hidden locations are added up
     assert merged.count("Header missing.") == 1 and merged.count("Emplacements") == 1
     assert "Set nosniff." in low                                      # the remediation one of them gave
+
+
+def test_zap_findings_show_their_confidence_instead_of_a_missing_cvss(company):
+    """Batch of 23 domains: every ZAP row showed "N/A" in the CVSS column. ZAP gives no CVSS but a
+    confidence: it is shown there, so that a likely false positive stands out."""
+    from src.assets.domain.entities import AssetEntity
+    from src.vulnerabilities.domain.entities import VulnerabilityEntity
+    from src.vulnerabilities.domain.models import VulnSeverity
+    from src.reporting.application.services.html_generator import generate_vulnerability_html
+    asset = AssetEntity(id="s", company_id=company.id, name="shop.exemple.com", ip_address="shop.exemple.com")
+    vulns = [
+        # Same issue on two ports: the strongest confidence is shown
+        VulnerabilityEntity(id="1", asset_id="s", title="SQL Injection", severity=VulnSeverity.HIGH, port=443,
+                            source_engine="OWASP_ZAP", rule_id="zap:40018", confidence="Low"),
+        VulnerabilityEntity(id="2", asset_id="s", title="SQL Injection", severity=VulnSeverity.HIGH, port=8443,
+                            source_engine="OWASP_ZAP", rule_id="zap:40018", confidence="Medium"),
+        # A real CVSS (OpenVAS, Nuclei) is still shown as such
+        VulnerabilityEntity(id="3", asset_id="s", title="OpenSSH old", severity=VulnSeverity.MEDIUM, port=22,
+                            source_engine="OPENVAS", rule_id="openvas:1.2.3", cvss_base_score=5.3),
+        # Nothing given at all: still N/A
+        VulnerabilityEntity(id="4", asset_id="s", title="Banner", severity=VulnSeverity.LOW, port=80,
+                            source_engine="NMAP", rule_id="nmap:banner"),
+    ]
+    html = generate_vulnerability_html(assets=[asset], all_vulnerabilities={"s": vulns},
+                                       executive_summary=None).decode("utf-8")
+    rows = {r.split("</tr>", 1)[0].split("<td>", 3)[-1][:60]: r.split("</tr>", 1)[0]
+            for r in html.split('class="plugin-row" style="cursor: pointer;"')[1:]}
+    sql = next(r for r in rows.values() if "SQL Injection" in r)
+    assert "Conf. Moyenne" in sql and "N/A" not in sql
+    assert "5.3" in next(r for r in rows.values() if "OpenSSH" in r)
+    assert "<td>N/A</td>" in next(r for r in rows.values() if "Banner" in r)
+    assert "OWASP ZAP ne note pas en CVSS" in html
+
+
+def test_zap_confidence_is_stored_with_the_finding(db, company):
+    from src.assets.domain.entities import AssetEntity
+    from src.vulnerabilities.application.services.ingest import ingest_findings
+    from src.scans.adapters.outbound.zap_adapter import normalize_zap
+    asset = AssetEntity(company_id=company.id, name="shop.exemple.com", ip_address="shop.exemple.com")
+    db.add(asset)
+    db.flush()
+    alert = {"pluginId": "40018", "alert": "SQL Injection", "risk": "High", "confidence": "Low",
+             "url": "https://shop.exemple.com/api?page=1", "param": "page"}
+    vuln = ingest_findings(db, asset, "OWASP_ZAP", normalize_zap([alert])).new[0]
+    assert vuln.confidence == "Low" and vuln.cvss_base_score is None
+    db.flush()
+    # A later scan updates it
+    ingest_findings(db, asset, "OWASP_ZAP", normalize_zap([dict(alert, confidence="High")]))
+    assert vuln.confidence == "High"
+
+
+def test_a_failed_ai_analysis_is_not_printed_and_the_remediation_stays(company):
+    """ftp.kimia-technologies.com: "Failed to generate assessment." was printed as an AI assessment,
+    in place of the scanner's remediation."""
+    from src.assets.domain.entities import AssetEntity
+    from src.vulnerabilities.domain.entities import VulnerabilityEntity
+    from src.vulnerabilities.domain.models import VulnSeverity
+    from src.reporting.application.services.html_generator import generate_vulnerability_html
+    asset = AssetEntity(id="f", company_id=company.id, name="ftp.exemple.com", ip_address="ftp.exemple.com")
+    failed_old = {"severity_assessment": "Failed to generate assessment.", "exploitability": "Unknown.",
+                  "business_impact": "Unknown.", "remediation_steps": ["Refer to standard remediation practices."]}
+    vulns = [VulnerabilityEntity(id="1", asset_id="f", title="SQL Injection", severity=VulnSeverity.HIGH,
+                                 source_engine="OWASP_ZAP", rule_id="zap:40024", remediation="Use prepared statements.",
+                                 ai_analysis=failed_old),
+             VulnerabilityEntity(id="2", asset_id="f", title="CSP", severity=VulnSeverity.MEDIUM,
+                                 source_engine="OWASP_ZAP", rule_id="zap:10038", remediation="Set a CSP.",
+                                 ai_analysis=dict(failed_old, failed=True, severity_assessment="x"))]
+    html = generate_vulnerability_html(assets=[asset], all_vulnerabilities={"f": vulns},
+                                       executive_summary=None).decode("utf-8")
+    assert "AI Contextual Risk Assessment" not in html
+    assert "Use prepared statements." in html and "Set a CSP." in html
+
+
+def test_a_dns_lookup_failure_is_retried_before_giving_up(monkeypatch):
+    """erp.kimia-technologies.com: one failed lookup on a slow link marked the domain unreachable."""
+    import socket
+    calls = []
+
+    def flaky(host, port):
+        calls.append(host)
+        if len(calls) < 3:
+            raise socket.gaierror("Temporary failure in name resolution")
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("203.0.113.7", 0))]
+    monkeypatch.setattr(scan_tasks.socket, "getaddrinfo", flaky)
+    monkeypatch.setattr(scan_tasks, "DNS_RETRY_DELAY_S", 0)
+    assert scan_tasks._resolve_dns("erp.exemple.com") == "203.0.113.7" and len(calls) == 3
+
+    calls.clear()
+    monkeypatch.setattr(scan_tasks.socket, "getaddrinfo",
+                        lambda h, p: (calls.append(h), (_ for _ in ()).throw(socket.gaierror("NXDOMAIN")))[1])
+    assert scan_tasks._resolve_dns("absent.exemple.com") is None and len(calls) == scan_tasks.DNS_ATTEMPTS

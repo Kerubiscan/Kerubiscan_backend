@@ -161,6 +161,8 @@ def ingest_findings(db: Session, asset: AssetEntity, engine: str, findings: List
                 vuln.rule_id = f["rule_id"]
             if f.get("remediation"):
                 vuln.remediation = f["remediation"]
+            if f.get("confidence"):
+                vuln.confidence = str(f["confidence"])
             if vuln.status == VulnStatus.FIXED:
                 logger.warning(f"Regression detected for {title} on asset {asset.id}")
                 vuln.status = VulnStatus.NEW
@@ -180,6 +182,7 @@ def ingest_findings(db: Session, asset: AssetEntity, engine: str, findings: List
             service=f.get("service"),
             source_engine=engine,
             rule_id=f.get("rule_id"),
+            confidence=str(f["confidence"]) if f.get("confidence") else None,
             status=VulnStatus.NEW,
         )
         db.add(vuln)

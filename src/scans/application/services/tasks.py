@@ -473,12 +473,23 @@ def _load_context(scan_id: str, target_raw: str, target: ScanTarget,
         db.close()
 
 
+DNS_ATTEMPTS = 3
+DNS_RETRY_DELAY_S = 5
+
+
 def _resolve_dns(host: str) -> Optional[str]:
-    try:
-        infos = socket.getaddrinfo(host, None)
-    except socket.gaierror:
-        return None
-    return infos[0][4][0] if infos else None
+    """IP of a host name. Retried: on a slow link one failed lookup marked a valid domain
+    unreachable (erp.kimia-technologies.com in a 23-domain batch)."""
+    for attempt in range(DNS_ATTEMPTS):
+        try:
+            infos = socket.getaddrinfo(host, None)
+            if infos:
+                return infos[0][4][0]
+        except socket.gaierror as e:
+            logger.warning(f"DNS lookup {attempt + 1}/{DNS_ATTEMPTS} failed for {host}: {e}")
+        if attempt + 1 < DNS_ATTEMPTS:
+            time.sleep(DNS_RETRY_DELAY_S)
+    return None
 
 
 def _probe_web(host: str, path: str = "") -> List[str]:

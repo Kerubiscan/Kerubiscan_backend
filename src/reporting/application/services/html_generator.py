@@ -23,6 +23,28 @@ def _real_summary(summary: Optional[str]) -> Optional[str]:
 
 _CIA_LEVELS = {"H": "ÉLEVÉ", "L": "FAIBLE", "N": "AUCUN"}
 
+# Engine confidence (ZAP), strongest first, and its label in the CVSS column
+_CONFIDENCE_LABELS = {"confirmed": "Confirmée", "high": "Élevée", "medium": "Moyenne", "low": "Faible"}
+_CONFIDENCE_ORDER = list(_CONFIDENCE_LABELS)
+
+
+def _confidence(values: List[Optional[str]]) -> Optional[str]:
+    """Strongest engine confidence of a group of occurrences, as shown in the report."""
+    known = [str(v).strip().lower() for v in values if v and str(v).strip().lower() in _CONFIDENCE_LABELS]
+    if not known:
+        return None
+    return _CONFIDENCE_LABELS[min(known, key=_CONFIDENCE_ORDER.index)]
+
+
+def _real_ai(analysis) -> Optional[dict]:
+    """An AI analysis worth showing: a failed call used to be saved, then printed as an assessment
+    ("Failed to generate assessment.") in place of the scanner's remediation."""
+    if not isinstance(analysis, dict) or analysis.get("failed"):
+        return None
+    if str(analysis.get("severity_assessment") or "").startswith("Failed to generate"):
+        return None
+    return analysis
+
 
 def _cia_from_vector(vector: Optional[str]) -> Optional[str]:
     """C/I/A impact read from a real CVSS v3 vector; None when there is no vector.
@@ -226,7 +248,7 @@ def generate_vulnerability_html(
             ref_url = f"https://nvd.nist.gov/vuln/detail/{cve}" if cve != "N/A" and "CVE" in cve.upper() else "https://cve.mitre.org"
 
             # Parse AI Analysis if available
-            ai_data = next((x.ai_analysis for x in group if getattr(x, "ai_analysis", None)), None)
+            ai_data = next((a for a in (_real_ai(getattr(x, "ai_analysis", None)) for x in group) if a), None)
             plugin, plugin_url = _plugin(getattr(v, "rule_id", None))
 
             vuln_obj = {
@@ -234,6 +256,8 @@ def generate_vulnerability_html(
                 "asset_name": asset_data["ip_address"],
                 "severity": sev_str,
                 "cvss": str(v.cvss_base_score or "N/A"),
+                # ZAP gives no CVSS: its confidence is shown in that column instead
+                "confidence": None if v.cvss_base_score else _confidence([getattr(x, "confidence", None) for x in group]),
                 "cvss_vector": vector,
                 "cve": cve,
                 "ref_url": ref_url,
