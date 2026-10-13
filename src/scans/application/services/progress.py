@@ -68,13 +68,24 @@ def target_fraction(state: Optional[str], entry: Optional[dict]) -> float:
     return min(max(float(v) for v in steps), 99.0) / 100.0
 
 
-def run_duration_seconds(meta: Optional[dict]) -> Optional[int]:
-    """Duration of the current run: first target start -> now."""
-    starts = [_parse_iso(e.get("started_at")) for e in (meta or {}).values() if isinstance(e, dict)]
+def run_duration_seconds(meta: Optional[dict], paused_seconds: int = 0) -> Optional[int]:
+    """Duration of the current run: first target start -> now, pauses left out."""
+    starts = [_parse_iso(v) for e in (meta or {}).values() if isinstance(e, dict)
+              for v in (e.get("started_at"), e.get("run_started_at"))]
     starts = [t for t in starts if t]
     if not starts:
         return None
-    return max(int((datetime.now(timezone.utc) - min(starts)).total_seconds()), 0)
+    return max(int((datetime.now(timezone.utc) - min(starts)).total_seconds()) - (paused_seconds or 0), 0)
+
+
+def close_pause(scan, now: Optional[datetime] = None) -> None:
+    """Ends the current pause of a scan (resume, stop): its length joins paused_seconds."""
+    started = parse_ts(scan.paused_at)
+    if started is None:
+        return
+    now = now or datetime.now(timezone.utc)
+    scan.paused_seconds = (scan.paused_seconds or 0) + max(int((now - started).total_seconds()), 0)
+    scan.paused_at = None
 
 
 def recompute_progress(scan: ScanEntity) -> None:
@@ -161,7 +172,7 @@ def apply_target_state(db: Session, scan: ScanEntity, target: str, target_status
         from src.audit.domain.models import AuditLog
         action = "SCAN_COMPLETED" if status == ScanStatus.COMPLETED else "SCAN_FAILED"
         details = {"status": status.name, "targets": states, "engine": scan.scanner_engine.name if scan.scanner_engine else None}
-        duration = run_duration_seconds(meta)
+        duration = run_duration_seconds(meta, scan.paused_seconds or 0)
         if duration is not None:
             # History used to estimate the end of the next runs (see endpoints._estimate_remaining)
             details["duration_seconds"] = duration
@@ -203,6 +214,10 @@ def interrupt_targets(scan_id: str, detail: str) -> dict:
         if not scan:
             return {}
         pending = [t for t, s in (scan.target_states or {}).items() if s not in TERMINAL_STATES]
+        if scan.status == ScanStatus.PAUSED:
+            # A paused scan kept the PAUSED status once all its targets were interrupted
+            close_pause(scan)
+            scan.status = ScanStatus.IN_PROGRESS
         for target in pending:
             apply_target_state(db, scan, target, INTERRUPTED, detail)
         meta = {t: dict((scan.target_meta or {}).get(t) or {}) for t in pending}
@@ -246,6 +261,36 @@ def claim_shared_ports(scan_id: str, target: str, ip: str, ports: List[int]) -> 
         db.close()
 
 
+def pause_running_targets(scan_id: str) -> dict:
+    """Puts the running targets of a scan back to PENDING, in one locked transaction, and returns
+    their metadata (Celery and OpenVAS task ids) as recorded then, so the caller can stop the
+    engines. On resume these targets start over (ZAP cannot resume mid-scan)."""
+    db: Session = SessionLocal()
+    try:
+        scan = _locked_scan(db, scan_id)
+        if not scan:
+            return {}
+        running = [t for t, st in (scan.target_states or {}).items() if st == IN_PROGRESS]
+        meta = {t: dict((scan.target_meta or {}).get(t) or {}) for t in running}
+        for target in running:
+            apply_target_state(db, scan, target, PENDING)
+            # PENDING drops started_at (the target starts over on resume): the start of the run is
+            # kept apart, and the estimate of the stopped engine is dropped
+            entries = dict(scan.target_meta or {})
+            entry = dict(entries.get(target) or {})
+            if meta[target].get("started_at"):
+                entry["run_started_at"] = meta[target].get("run_started_at") or meta[target]["started_at"]
+            entry.pop("eta_s", None)
+            entry.pop("eta_at", None)
+            entries[target] = entry
+            scan.target_meta = entries
+            flag_modified(scan, "target_meta")
+        db.commit()
+        return meta
+    finally:
+        db.close()
+
+
 def heartbeat(scan_id: str, target: str, target_status: Optional[str] = None, engine_task: Optional[str] = None,
               celery_task: Optional[str] = None):
     """Records activity on a target (and optionally QUEUED/IN_PROGRESS) without ending it."""
@@ -281,7 +326,7 @@ def run_window(scan) -> Tuple[Optional[datetime], Optional[datetime]]:
     per-target timestamps fall back to created_at / updated_at."""
     meta = scan.target_meta or {}
     entries = [e for e in meta.values() if isinstance(e, dict)]
-    starts = [t for t in (parse_ts(e.get("started_at")) for e in entries) if t]
+    starts = [t for t in (parse_ts(v) for e in entries for v in (e.get("started_at"), e.get("run_started_at"))) if t]
     ends = [t for t in (parse_ts(e.get("updated_at")) for e in entries) if t]
     started = min(starts) if starts else parse_ts(scan.created_at)
     finished = None

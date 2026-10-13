@@ -111,11 +111,17 @@ def _timing(scan: ScanEntity):
     timestamps fall back to created_at / updated_at.
     """
     from src.scans.application.services.progress import run_window
+    from src.scans.application.services.progress import parse_ts
     started, finished = run_window(scan)
     if started is None:
         return None, None, None
-    end = finished or (datetime.now(timezone.utc) if scan.status == ScanStatus.IN_PROGRESS else None)
-    duration = int((end - started).total_seconds()) if end else None
+    end = finished
+    if end is None and scan.status == ScanStatus.IN_PROGRESS:
+        end = datetime.now(timezone.utc)
+    elif end is None and scan.status == ScanStatus.PAUSED:
+        # The clock stops at the pause (it used to keep running: 17 h after a night paused)
+        end = parse_ts(scan.paused_at)
+    duration = max(int((end - started).total_seconds()) - (scan.paused_seconds or 0), 0) if end else None
     return started.isoformat(), finished.isoformat() if finished else None, duration
 
 
@@ -659,7 +665,8 @@ def download_scan_report_pdf(
 @router.put("/{scan_id}/pause", response_model=ScanResponse)
 def pause_scan(scan_id: str, db: Session = Depends(get_db),
                current_user: dict = Depends(require_permissions([Permission.SCAN_EXECUTE]))):
-    """Pauses a running scan at the queue level by aborting pending target tasks."""
+    """Pauses a scan: the running targets are stopped (they start over on resume), the others wait,
+    and the elapsed time stops until the resume."""
     scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
     if not scan or scan.is_deleted:
         raise HTTPException(status_code=404, detail="Scan not found")
@@ -667,9 +674,14 @@ def pause_scan(scan_id: str, db: Session = Depends(get_db),
         raise HTTPException(status_code=400, detail=f"Cannot pause scan in state {scan.status.name}")
 
     scan.status = ScanStatus.PAUSED
+    if scan.paused_at is None:
+        scan.paused_at = datetime.now(timezone.utc)
     db.add(AuditLog(user_id=_user_id(current_user), username=_username(current_user), action="PAUSE",
                     resource_type="SCAN", resource_id=str(scan.id), details={"status": "PAUSED"}))
     db.commit()
+    # Stop the running targets too (they used to go on to their end during the pause)
+    from src.scans.application.services.tasks import pause_scan_task
+    pause_scan_task.delay(scan_id)
     db.refresh(scan)
     return _to_response(scan)
 
@@ -685,6 +697,8 @@ def resume_scan(scan_id: str, db: Session = Depends(get_db),
     # The perimeter may have changed since creation: re-check before re-queueing (R18)
     _validate_scan_targets(scan.target, scan.scan_type, current_user)
 
+    from src.scans.application.services.progress import close_pause
+    close_pause(scan)
     scan.status = ScanStatus.IN_PROGRESS
     targets_to_requeue = []
     if scan.target_states:
@@ -735,6 +749,8 @@ def rerun_scan(scan_id: str, db: Session = Depends(get_db),
     scan.progress = 0
     scan.target_states = {t: "PENDING" for t in targets}
     scan.target_meta = {}
+    scan.paused_at = None
+    scan.paused_seconds = None
     flag_modified(scan, "target_states")
     flag_modified(scan, "target_meta")
     db.add(AuditLog(user_id=_user_id(current_user), username=_username(current_user), action="RERUN",

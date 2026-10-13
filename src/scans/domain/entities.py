@@ -49,6 +49,9 @@ class ScanEntity(Base):
     notify_email = Column(String, nullable=True)
     # RAPIDE / STANDARD / APPROFONDI (src/scans/domain/depth.py); empty = STANDARD
     scan_depth = Column(String, nullable=True)
+    # Start of the current pause, and total seconds of the previous ones: left out of the elapsed time
+    paused_at = Column(DateTime(timezone=True), nullable=True)
+    paused_seconds = Column(Integer, nullable=True)
 
     
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)

@@ -1197,3 +1197,70 @@ def test_ajax_spider_retries_when_the_previous_exploration_still_runs(monkeypatc
     zap_adapter = _fake_zap(monkeypatch, api)
     zap_adapter.ZAPAdapter.run_scan(["http://erp.lab.internal:8080"])
     assert scans == ["http://erp.lab.internal:8080", "http://erp.lab.internal:8080"]   # retried once
+
+
+# ----------------------------------------------------------------------------- pause
+
+
+def _paused_batch(db, make_scan, monkeypatch):
+    """5 sites, 2 running: what the user paused (ZAP went on and the clock kept running)."""
+    from src.scans.adapters.inbound.api import endpoints
+    revoked = []
+    monkeypatch.setattr(scan_tasks.celery_app.control, "revoke", lambda tid, **kw: revoked.append(tid))
+    monkeypatch.setattr(scan_tasks.pause_scan_task, "delay", lambda scan_id: scan_tasks.pause_scan_task(scan_id))
+    scan_id = make_scan("a.exemple.com,b.exemple.com,c.exemple.com", "OWASP_ZAP")
+    scan = _reload(db, scan_id)
+    scan.target_states = {"a.exemple.com": "COMPLETED", "b.exemple.com": "IN_PROGRESS", "c.exemple.com": "PENDING"}
+    scan.target_meta = {
+        "a.exemple.com": {"started_at": _ago(seconds=1000), "updated_at": _ago(seconds=700)},
+        "b.exemple.com": {"started_at": _ago(seconds=700), "updated_at": _ago(seconds=1), "celery_task": "t-b",
+                          "progress": 40, "eta_s": 900, "eta_at": _ago(seconds=1)},
+    }
+    db.commit()
+    endpoints.pause_scan(scan_id, db=db, current_user=ANALYST)
+    return endpoints, scan_id, revoked
+
+
+def test_pause_stops_the_running_targets(db, make_scan, monkeypatch):
+    _, scan_id, revoked = _paused_batch(db, make_scan, monkeypatch)
+    scan = _reload(db, scan_id)
+    assert scan.status == ScanStatus.PAUSED and scan.paused_at is not None
+    assert revoked == ["t-b"]                                           # ZAP of b stopped
+    assert scan.target_states == {"a.exemple.com": "COMPLETED", "b.exemple.com": "PENDING", "c.exemple.com": "PENDING"}
+    b = scan.target_meta["b.exemple.com"]
+    assert "eta_s" not in b and "started_at" not in b and b["run_started_at"]   # starts over on resume
+
+
+def test_the_clock_stops_during_a_pause_and_leaves_it_out_after(db, make_scan, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+    endpoints, scan_id, _ = _paused_batch(db, make_scan, monkeypatch)
+    scan = _reload(db, scan_id)
+    scan.paused_at = datetime.now(timezone.utc) - timedelta(seconds=400)     # paused 400 s ago
+    db.commit()
+    _, _, during = endpoints._timing(_reload(db, scan_id))
+    assert 595 <= during <= 605                                          # 1000 s since start - 400 s paused
+    assert endpoints._to_response(_reload(db, scan_id), db).eta_seconds is None
+
+    monkeypatch.setattr(endpoints, "_queue_scan", lambda scan, targets: None)
+    endpoints.resume_scan(scan_id, db=db, current_user=ANALYST)
+    scan = _reload(db, scan_id)
+    assert scan.paused_at is None and 398 <= scan.paused_seconds <= 402
+    _, _, after = endpoints._timing(scan)
+    assert 595 <= after <= 606                                           # the pause is not counted
+
+
+def test_stopping_a_paused_scan_closes_it(db, make_scan, monkeypatch):
+    _, scan_id, _ = _paused_batch(db, make_scan, monkeypatch)
+    scan_tasks.stop_scan_task(scan_id)
+    scan = _reload(db, scan_id)
+    assert scan.status != ScanStatus.PAUSED and scan.paused_at is None   # it used to stay "paused" forever
+    assert set(scan.target_states.values()) == {"COMPLETED", "INTERRUPTED"}
+
+
+def test_rerun_forgets_the_pauses_of_the_previous_run(db, make_scan, monkeypatch):
+    endpoints, scan_id, _ = _paused_batch(db, make_scan, monkeypatch)
+    scan_tasks.stop_scan_task(scan_id)
+    monkeypatch.setattr(endpoints, "_queue_scan", lambda scan, targets: None)
+    endpoints.rerun_scan(scan_id, db=db, current_user=ANALYST)
+    scan = _reload(db, scan_id)
+    assert scan.paused_at is None and not scan.paused_seconds
