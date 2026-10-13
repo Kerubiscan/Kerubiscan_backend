@@ -1008,6 +1008,30 @@ def stop_scan_task(scan_id: str):
     return len(pending)
 
 
+@celery_app.task(name="pause_scan_task")
+def pause_scan_task(scan_id: str):
+    """Pause stops everything: the running targets go back to PENDING (they start over on resume)
+    and their engines are stopped, so nothing is sent to the targets while the scan is paused.
+    Pausing used to let the running targets go on to their end."""
+    adapter = None
+    paused = progress.pause_running_targets(scan_id)
+    for target, entry in paused.items():
+        if entry.get("celery_task"):
+            celery_app.control.revoke(entry["celery_task"], terminate=True, signal="SIGTERM")
+        if entry.get("engine_task"):
+            if adapter is None:
+                from src.scans.adapters.outbound.gvm_adapter import GVMAdapter
+                adapter = GVMAdapter()
+                if not adapter.connect():
+                    adapter = None
+            if adapter is not None:
+                adapter.stop_task(entry["engine_task"])
+    if adapter is not None:
+        adapter.disconnect()
+    logger.info(f"Scan {scan_id} paused: {len(paused)} running target(s) stopped, to start over on resume")
+    return len(paused)
+
+
 @celery_app.task(name="generate_ai_summary_task", bind=True, max_retries=3, ignore_result=False)
 def generate_ai_summary_task(self, vuln_data: list, language: str = "French", extra_instructions: str = "", provider: str = None):
     import asyncio
