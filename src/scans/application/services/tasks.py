@@ -553,20 +553,45 @@ def _redirects_to_https(url: str) -> bool:
     return answer.is_redirect and urlsplit(location).scheme == "https" and urlsplit(location).hostname == host
 
 
-def _dedupe_web_urls(ctx: ScanContext, label: str, ip: Optional[str], urls: List[str]) -> List[str]:
+def _dedupe_web_urls(ctx: ScanContext, label: str, ip: Optional[str], urls: List[str],
+                     network_ports: List[int] = ()) -> Tuple[List[str], List[int]]:
     """For a domain: no http:// when it only redirects to the https:// site (the same site explored
-    twice), and the extra web ports of a server shared by several domains of the batch are scanned
-    once, with the first domain that claims them (progress.claim_shared_ports)."""
+    twice), and the extra web ports and the network services (SSH, ...) of a server shared by several
+    domains of the batch are scanned once, with the first domain that claims them
+    (progress.claim_shared_ports). Returns (web URLs, network ports) left to this domain."""
     if "https://" + label in urls and "http://" + label in urls and _redirects_to_https("http://" + label):
         logger.info(f"Web check: http://{label} redirects to https://{label}, scanned once over https")
         urls = [u for u in urls if u != "http://" + label]
-    extra = sorted({urlsplit(u).port for u in urls if urlsplit(u).port})
+    extra = sorted({urlsplit(u).port for u in urls if urlsplit(u).port} | set(network_ports))
     if not ip or not extra:
-        return urls
+        return urls, list(network_ports)
     elsewhere = progress.claim_shared_ports(ctx.scan_id, ctx.target_raw, ip, extra)
     for port, other in elsewhere.items():
         logger.info(f"Web check: port {port} of {ip} is scanned with {other} in this scan, skipped for {label}")
-    return [u for u in urls if urlsplit(u).port not in elsewhere]
+    return ([u for u in urls if urlsplit(u).port not in elsewhere],
+            [p for p in network_ports if p not in elsewhere])
+
+
+def _phase1_once(ctx: ScanContext, target: ScanTarget, ports: Optional[str]) -> List[Dict]:
+    """Phase 1 of a domain, done once per IP in a batch: the domains of one server share its ports.
+
+    Each domain used to sweep the same IP again (every port, a long time over the internet)."""
+    port_range = ports or ctx.port_range or "all"
+    ip = _resolve_dns(target.host)
+    if ip:
+        reused = progress.shared_phase1(ctx.scan_id, ctx.target_raw, ip, port_range)
+        if reused:
+            other, host = reused
+            logger.info(f"Phase 1 on {target.host}: ports of {ip} already scanned with {other} in this scan, reused")
+            ctx.step(STEP_DISCOVERED)
+            return [dict(host)]
+    hosts = _phase1(ctx, target, tolerate_failure=True, ports=ports)
+    if len(hosts) == 1 and hosts[0].get("ip") and not hosts[0].get("timed_out"):
+        # Only what the next domains need: the open ports and the OS, not this name nor its scripts
+        host = {k: v for k, v in hosts[0].items() if k not in ("hostname", "vulns")}
+        host["ports"] = host["services"] = open_ports(host.get("ports"))
+        progress.record_phase1(ctx.scan_id, ctx.target_raw, hosts[0]["ip"], port_range, host)
+    return hosts
 
 
 def _identity(target: ScanTarget, host: Optional[Dict]) -> str:
@@ -702,7 +727,10 @@ def _web_work(ctx: ScanContext, target: ScanTarget, include_network: bool,
         asset_id = _save_host(ctx, target, None, resolved_ip=_resolve_dns(target.host) if target.is_hostname else None)
         return [(asset_id, [target.url], None, True)]
 
-    hosts = _phase1(ctx, target, tolerate_failure=target.kind != "cidr", ports=ports)
+    if target.is_hostname:
+        hosts = _phase1_once(ctx, target, ports)
+    else:
+        hosts = _phase1(ctx, target, tolerate_failure=target.kind != "cidr", ports=ports)
     work = []
     if not hosts and target.kind != "cidr":
         hosts = [None]
@@ -710,16 +738,17 @@ def _web_work(ctx: ScanContext, target: ScanTarget, include_network: bool,
         label = _identity(target, host)
         ports = open_ports(host.get("ports")) if host else []
         web_urls = _confirmed_web_urls(label, ports)
+        network = [p["port"] for p in ports
+                   if not is_web_service(p.get("service"), p.get("tunnel"), p.get("port"))] if include_network else []
         if target.is_hostname and host:
-            web_urls = _dedupe_web_urls(ctx, label, host.get("ip"), web_urls)
+            web_urls, network = _dedupe_web_urls(ctx, label, host.get("ip"), web_urls, network)
         if not web_urls and target.kind != "cidr":
             # Port scan saw no web service (WAF/CDN dropping probes, timeout, unidentified service)
             web_urls = _probe_web(label)
         inputs = list(web_urls)
         if include_network:
             netloc = f"[{label}]" if ":" in label else label
-            inputs += [f"{netloc}:{p['port']}" for p in ports
-                       if not is_web_service(p.get("service"), p.get("tunnel"), p.get("port"))]
+            inputs += [f"{netloc}:{p}" for p in network]
         asset_id = _save_host(ctx, target, host, resolved_ip=None if host else _resolve_dns(target.host))
         work.append((asset_id, list(dict.fromkeys(inputs)), host, bool(ports)))
     return work

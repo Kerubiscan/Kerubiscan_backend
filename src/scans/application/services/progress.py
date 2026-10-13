@@ -261,6 +261,46 @@ def claim_shared_ports(scan_id: str, target: str, ip: str, ports: List[int]) -> 
         db.close()
 
 
+def shared_phase1(scan_id: str, target: str, ip: str, port_range: str) -> Optional[tuple]:
+    """Port scan of an IP already done, with the same port range, by another target of the scan.
+
+    kimia-technologies.com: some twenty sub-domains on one IP, and the 65 535 ports of that IP swept
+    again for each of them. Returns (other target, host) or None. A failed target's scan is ignored."""
+    db: Session = SessionLocal()
+    try:
+        scan = db.query(ScanEntity).filter(ScanEntity.id == scan_id).first()
+        if not scan:
+            return None
+        states = scan.target_states or {}
+        for other, entry in (scan.target_meta or {}).items():
+            if other == target or not isinstance(entry, dict) or states.get(other) in FAILURE_STATES:
+                continue
+            done = entry.get("phase1") or {}
+            if done.get("ip") == ip and done.get("ports") == port_range and done.get("host"):
+                return other, done["host"]
+        return None
+    finally:
+        db.close()
+
+
+def record_phase1(scan_id: str, target: str, ip: str, port_range: str, host: dict) -> None:
+    """Keeps the port scan of a target for the other targets of the scan on the same IP."""
+    db: Session = SessionLocal()
+    try:
+        scan = _locked_scan(db, scan_id)
+        if not scan:
+            return
+        meta = dict(scan.target_meta or {})
+        entry = dict(meta.get(target) or {})
+        entry["phase1"] = {"ip": ip, "ports": port_range, "host": host}
+        meta[target] = entry
+        scan.target_meta = meta
+        flag_modified(scan, "target_meta")
+        db.commit()
+    finally:
+        db.close()
+
+
 def pause_running_targets(scan_id: str) -> dict:
     """Puts the running targets of a scan back to PENDING, in one locked transaction, and returns
     their metadata (Celery and OpenVAS task ids) as recorded then, so the caller can stop the
