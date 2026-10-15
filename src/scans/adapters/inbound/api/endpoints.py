@@ -703,13 +703,20 @@ def resume_scan(scan_id: str, db: Session = Depends(get_db),
     targets_to_requeue = []
     if scan.target_states:
         new_states = dict(scan.target_states)
+        meta = dict(scan.target_meta or {})
+        stamp = datetime.now(timezone.utc).isoformat()
         for t_ip, t_state in new_states.items():
             if t_state in ["PENDING", "IN_PROGRESS"]:
                 new_states[t_ip] = "PENDING"
                 targets_to_requeue.append(t_ip)
+                # Queued again now: the watchdog closed the targets still waiting 6 min after a
+                # resume as "never started (no activity for 32 h)", counting the pause
+                meta[t_ip] = dict(meta.get(t_ip) or {}, updated_at=stamp)
         scan.target_states = new_states
+        scan.target_meta = meta
         from sqlalchemy.orm.attributes import flag_modified
         flag_modified(scan, "target_states")
+        flag_modified(scan, "target_meta")
     if not targets_to_requeue:
         # Every target finished while the scan was paused: it used to stay IN_PROGRESS forever
         from src.scans.application.services.progress import recompute_status

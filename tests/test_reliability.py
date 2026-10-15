@@ -1264,3 +1264,60 @@ def test_rerun_forgets_the_pauses_of_the_previous_run(db, make_scan, monkeypatch
     endpoints.rerun_scan(scan_id, db=db, current_user=ANALYST)
     scan = _reload(db, scan_id)
     assert scan.paused_at is None and not scan.paused_seconds
+
+
+# ----------------------------------------------------------------------------- resume after a long pause
+
+
+def test_watchdog_lets_the_queued_targets_of_a_running_batch_wait(db, company, gvm):
+    """21-domain Nuclei batch: targets waiting their turn (2 at a time) were closed as "never
+    started" although the batch was running."""
+    scan_id = _scan(db, company, "NUCLEI", {"a.exemple.com": "IN_PROGRESS", "b.exemple.com": "PENDING"},
+                    meta={"a.exemple.com": {"updated_at": _ago(minutes=2)}, "b.exemple.com": {"updated_at": _ago(hours=32)}})
+    assert watchdog.scan_watchdog() == 0
+    assert _reload(db, scan_id).target_states["b.exemple.com"] == "PENDING"
+
+
+def test_resuming_after_a_long_pause_does_not_close_the_waiting_targets(db, company, gvm, monkeypatch):
+    """Paused for 32 h, resumed: 6 min later the watchdog closed the targets still waiting."""
+    pytest.importorskip("fastapi")
+    from src.scans.adapters.inbound.api import endpoints
+    monkeypatch.setattr(endpoints, "_queue_scan", lambda scan, targets: None)
+    states = {f"d{i}.exemple.com": "PENDING" for i in range(4)}
+    scan_id = _scan(db, company, "NUCLEI", states, meta={t: {"updated_at": _ago(hours=32)} for t in states},
+                    status=ScanStatus.PAUSED)
+    scan = _reload(db, scan_id)
+    scan.paused_at = datetime.now(timezone.utc) - timedelta(hours=32)
+    db.commit()
+    endpoints.resume_scan(scan_id, db=db, current_user=ANALYST)
+    assert watchdog.scan_watchdog() == 0
+    assert set(_reload(db, scan_id).target_states.values()) == {"PENDING"}
+
+
+def test_a_pause_before_any_target_started_is_not_taken_off_the_run(db, company, monkeypatch):
+    """The same batch showed "00:00 écoulé": 32 h of pause taken off a run that began at the resume."""
+    pytest.importorskip("fastapi")
+    from src.scans.adapters.inbound.api import endpoints
+    monkeypatch.setattr(endpoints, "_queue_scan", lambda scan, targets: None)
+    scan_id = _scan(db, company, "NUCLEI", {"a.exemple.com": "PENDING", "b.exemple.com": "PENDING"},
+                    status=ScanStatus.PAUSED)
+    scan = _reload(db, scan_id)
+    scan.paused_at = datetime.now(timezone.utc) - timedelta(hours=32)
+    db.commit()
+    endpoints.resume_scan(scan_id, db=db, current_user=ANALYST)
+    scan = _reload(db, scan_id)
+    assert not scan.paused_seconds
+    scan.target_meta = dict(scan.target_meta, **{"a.exemple.com": {"started_at": _ago(minutes=10), "updated_at": _ago(seconds=5)}})
+    scan.target_states = dict(scan.target_states, **{"a.exemple.com": "IN_PROGRESS"})
+    db.commit()
+    _, _, elapsed = endpoints._timing(_reload(db, scan_id))
+    assert 595 <= elapsed <= 610
+
+
+def test_only_the_pause_after_the_run_start_is_left_out(db, company):
+    scan_id = _scan(db, company, "NUCLEI", {"a.exemple.com": "PENDING"},
+                    meta={"a.exemple.com": {"run_started_at": _ago(hours=1)}}, status=ScanStatus.PAUSED)
+    scan = _reload(db, scan_id)
+    scan.paused_at = datetime.now(timezone.utc) - timedelta(hours=3)     # paused before that run started
+    progress.close_pause(scan)
+    assert 3590 <= scan.paused_seconds <= 3610                            # 1 h, not 3 h
