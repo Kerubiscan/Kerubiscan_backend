@@ -51,6 +51,17 @@ def _silence_s(scan: ScanEntity, target: str, now: datetime) -> float:
     return (now - last).total_seconds()
 
 
+def _scan_silence_s(scan: ScanEntity, now: datetime) -> float:
+    """Silence of the whole scan: since the last activity of any of its targets.
+
+    A target waiting its turn in a batch (2 targets at a time) is not lost while the others run:
+    only a scan where nothing moved for that long has lost its queued messages."""
+    stamps = [_parse((e or {}).get("updated_at")) for e in (scan.target_meta or {}).values() if isinstance(e, dict)]
+    stamps = [t for t in stamps if t]
+    last = max(stamps) if stamps else (_as_utc(scan.updated_at) or _as_utc(scan.created_at) or now)
+    return (now - last).total_seconds()
+
+
 def _find_openvas_task(adapter, scan: ScanEntity, target: str) -> Optional[dict]:
     entry = (scan.target_meta or {}).get(target) or {}
     tasks = adapter.find_tasks(scan.id)
@@ -149,7 +160,8 @@ def scan_watchdog():
                 silence = _silence_s(scan, target, now)
                 decision = None
                 if state == progress.PENDING:
-                    if silence > NEVER_STARTED_S:
+                    # Measured on the whole scan: a queued target of a busy batch is only waiting
+                    if min(silence, _scan_silence_s(scan, now)) > NEVER_STARTED_S:
                         decision = (progress.FAILED, f"Le scan de cette cible n'a jamais démarré (aucune activité depuis {int(silence // 3600)} h)")
                 elif scan.scanner_engine == ScannerEngine.OPENVAS:
                     if silence > OPENVAS_SILENCE_S:

@@ -79,12 +79,20 @@ def run_duration_seconds(meta: Optional[dict], paused_seconds: int = 0) -> Optio
 
 
 def close_pause(scan, now: Optional[datetime] = None) -> None:
-    """Ends the current pause of a scan (resume, stop): its length joins paused_seconds."""
-    started = parse_ts(scan.paused_at)
-    if started is None:
+    """Ends the current pause of a scan (resume, stop): its length joins paused_seconds.
+
+    Only the part of the pause after the start of the run counts, as the elapsed time is measured
+    from the first target start. A batch paused before any of its targets started, then resumed
+    32 h later, had those 32 h taken off a run that only began at the resume: it showed 00:00."""
+    paused = parse_ts(scan.paused_at)
+    if paused is None:
         return
     now = now or datetime.now(timezone.utc)
-    scan.paused_seconds = (scan.paused_seconds or 0) + max(int((now - started).total_seconds()), 0)
+    entries = [e for e in (scan.target_meta or {}).values() if isinstance(e, dict)]
+    starts = [t for t in (parse_ts(v) for e in entries for v in (e.get("started_at"), e.get("run_started_at"))) if t]
+    if starts:
+        counted_from = max(paused, min(starts))
+        scan.paused_seconds = (scan.paused_seconds or 0) + max(int((now - counted_from).total_seconds()), 0)
     scan.paused_at = None
 
 
