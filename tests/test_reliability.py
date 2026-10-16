@@ -1471,3 +1471,17 @@ def test_only_the_pause_after_the_run_start_is_left_out(db, company):
     scan.paused_at = datetime.now(timezone.utc) - timedelta(hours=3)     # paused before that run started
     progress.close_pause(scan)
     assert 3590 <= scan.paused_seconds <= 3610                            # 1 h, not 3 h
+
+
+def test_scanner_status_counts_completed_scans_and_ignores_deleted_ones(db, company):
+    from src.scans.adapters.inbound.api import endpoints
+    _scan(db, company, states={"a": "COMPLETED"}, status=ScanStatus.COMPLETED)
+    _scan(db, company, states={"b": "COMPLETED"}, status=ScanStatus.COMPLETED)
+    _scan(db, company, states={"c": "FAILED"}, status=ScanStatus.FAILED)
+    _scan(db, company, states={"d": "IN_PROGRESS"})
+    deleted = _scan(db, company, states={"e": "IN_PROGRESS"})
+    _reload(db, deleted).is_deleted = True
+    db.commit()
+    status = endpoints.get_scanner_status(db=db, current_user={"sub": "u"})
+    assert status.scans_completed == 2
+    assert status.scans_in_progress == 1                           # the deleted running scan is not counted
