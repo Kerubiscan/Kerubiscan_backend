@@ -124,6 +124,30 @@ def test_openvas_scan_is_shown_queued_and_keeps_its_task_id(db, company, gvm):
     assert len(polls) == 1
 
 
+def test_openvas_batch_waits_for_a_free_slot_instead_of_starting_every_task(db, company, gvm, monkeypatch):
+    # 21 domains used to start 21 OpenVAS tasks at once: ospd-openvas was killed (OOM)
+    polls, _ = gvm
+    requeued = []
+    monkeypatch.setattr(scan_tasks.run_vulnerability_scan, "apply_async", lambda *a, **kw: requeued.append((a, kw)))
+    for i in range(scan_tasks.OPENVAS_MAX_PARALLEL):
+        FakeGVM.tasks[f"busy-{i}"] = {"id": f"busy-{i}", "name": f"Task_d{i}_x", "status": "Running" if i else "Queued", "progress": "5"}
+    scan_id = _scan(db, company, "OPENVAS", {"ksa.example.com": "PENDING"})
+    assert scan_tasks.run_vulnerability_scan(scan_id, "ksa.example.com", "ksa.example.com", "cfg") is True
+    scan = _reload(db, scan_id)
+    assert FakeGVM.created == 0 and polls == []
+    assert scan.target_states["ksa.example.com"] == "PENDING"     # waits, not failed nor running
+    assert scan.target_meta["ksa.example.com"]["updated_at"]     # the watchdog sees it alive
+    (args, kw), = requeued
+    assert kw["args"] == [scan_id, "ksa.example.com", "ksa.example.com", "cfg"]
+    assert kw["countdown"] == scan_tasks.OPENVAS_SLOT_WAIT_S and kw["queue"] == "scans"
+
+    # A slot frees up (finished tasks no longer count): the target starts
+    FakeGVM.tasks["busy-0"]["status"] = "Done"
+    scan_tasks.run_vulnerability_scan(scan_id, "ksa.example.com", "ksa.example.com", "cfg")
+    assert FakeGVM.created == 1 and len(polls) == 1
+    assert _reload(db, scan_id).target_states["ksa.example.com"] == "QUEUED"
+
+
 def test_openvas_follow_up_reports_queue_then_running(db, company, gvm):
     scan_id = _scan(db, company, "OPENVAS", {"192.168.3.179": "QUEUED"})
     FakeGVM.tasks["task-1"] = {"id": "task-1", "name": f"Task_192.168.3.179_{scan_id}", "status": "Queued", "progress": "0"}
