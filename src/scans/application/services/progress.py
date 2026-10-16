@@ -311,6 +311,35 @@ def record_phase1(scan_id: str, target: str, ip: str, port_range: str, host: dic
         db.close()
 
 
+def claim_openvas_host(scan_id: str, target: str, ip: str) -> Tuple[Optional[str], Optional[str]]:
+    """One OpenVAS scan per machine in a scan: (other target, its state) when another target of the
+    scan already scans this IP with OpenVAS, else (None, None) and this target takes the IP.
+
+    OpenVAS tests a machine, not a site: 19 kimia-technologies.com domains on one IP made it scan
+    that machine 19 times (1-2 days, and ospd-openvas killed by lack of memory). A failed target's
+    claim is ignored: another target of the IP then scans it."""
+    db: Session = SessionLocal()
+    try:
+        scan = _locked_scan(db, scan_id)
+        if not scan:
+            return None, None
+        states = scan.target_states or {}
+        meta = dict(scan.target_meta or {})
+        for other, entry in meta.items():
+            if other != target and isinstance(entry, dict) and entry.get("openvas_ip") == ip \
+                    and states.get(other) not in FAILURE_STATES:
+                return other, states.get(other)
+        entry = dict(meta.get(target) or {})
+        entry["openvas_ip"] = ip
+        meta[target] = entry
+        scan.target_meta = meta
+        flag_modified(scan, "target_meta")
+        db.commit()
+        return None, None
+    finally:
+        db.close()
+
+
 def pause_running_targets(scan_id: str) -> dict:
     """Puts the running targets of a scan back to PENDING, in one locked transaction, and returns
     their metadata (Celery and OpenVAS task ids) as recorded then, so the caller can stop the
