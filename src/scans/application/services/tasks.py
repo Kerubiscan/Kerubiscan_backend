@@ -39,7 +39,10 @@ DISCOVERY_CONFIG_ID = "2d3f051c-55ba-11e3-bf43-406186ea4fc5"
 DEFAULT_GVM_PORT_RANGE = "T:1-65535,U:53,67-69,123,137-138,161-162,500,514,520,623,1900,4500,5353"
 OPENVAS_MAX_DURATION_S = 72 * 3600
 # A running task stuck at the same progress for this long is stopped (configurable)
-OPENVAS_STALL_S = int(os.getenv("OPENVAS_STALL_HOURS", "4")) * 3600
+# A running task whose progress AND results did not move for this long is stopped (configurable).
+# 4 h stopped a working scan of an Internet host: OpenVAS stayed at 18 % for 4 h while it was still
+# testing its services (its percentage moves by whole groups of tests).
+OPENVAS_STALL_S = int(os.getenv("OPENVAS_STALL_HOURS", "12")) * 3600
 # Bounds the follow-up when GVM is unreachable (30 min at 60 s/retry), so it does not loop forever
 POLL_MAX_CONNECT_RETRIES = 30
 OPENVAS_WAITING_STATUSES = {"New", "Requested", "Queued"}
@@ -1053,12 +1056,14 @@ def poll_scan_status(self, scan_id: str, task_id: str, report_id: str, asset_ip:
                          detail=f"OpenVAS : durée maximale de {OPENVAS_MAX_DURATION_S // 3600} h dépassée (résultats partiels)")
             return False
 
-        # Stall detection: a task stuck at the same progress for too long is stopped
+        # Stall detection: a task whose progress and results did not move for too long is stopped
         is_waiting = status in OPENVAS_WAITING_STATUSES
         if not is_waiting:
-            stalled = progress.record_openvas_progress(scan_id, asset_ip, progress_value)
+            results = adapter.get_report_result_count(report_id)
+            stalled = progress.record_openvas_progress(scan_id, asset_ip, progress_value, results)
             if stalled > OPENVAS_STALL_S:
-                logger.error(f"OpenVAS task {task_id} stuck at {progress_value}% for {int(stalled // 60)} min, stopping it")
+                logger.error(f"OpenVAS task {task_id} stuck at {progress_value}% ({results} results) "
+                             f"for {int(stalled // 60)} min, stopping it")
                 adapter.stop_task(task_id)
                 parse_report(adapter, report_id, asset_ip, scan_id, progress.TIMEOUT,
                              detail=f"OpenVAS : tâche figée à {progress_value}% pendant plus de {OPENVAS_STALL_S // 3600} h")

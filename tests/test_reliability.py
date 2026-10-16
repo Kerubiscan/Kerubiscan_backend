@@ -92,6 +92,11 @@ class FakeGVM:
     def get_report(self, report_id):
         return "<report/>"
 
+    results = None
+
+    def get_report_result_count(self, report_id):
+        return FakeGVM.results
+
     def find_tasks(self, name_part):
         return [dict(t) for t in FakeGVM.tasks.values() if name_part in t["name"]]
 
@@ -106,6 +111,7 @@ class FakeGVM:
 def gvm(monkeypatch):
     FakeGVM.tasks, FakeGVM.stopped, FakeGVM.reachable, FakeGVM.created = {}, [], True, 0
     FakeGVM.target_names = set()
+    FakeGVM.results = None
     module = types.ModuleType("src.scans.adapters.outbound.gvm_adapter")
     module.GVMAdapter = FakeGVM
     monkeypatch.setitem(sys.modules, "src.scans.adapters.outbound.gvm_adapter", module)
@@ -1108,6 +1114,39 @@ def test_openvas_gives_its_end_estimate_from_its_own_pace(db, company):
     assert 2390 <= scan.target_meta["10.0.0.5"]["eta_s"] <= 2400
     eta, basis = endpoints._estimate_remaining(db, scan, elapsed=600)
     assert basis == "engine" and 2380 <= eta <= 2400
+
+
+def _running_openvas_scan(db, company, still_for_h, results):
+    scan_id = _scan(db, company, "OPENVAS", {"144.91.96.171": "IN_PROGRESS"},
+                    meta={"144.91.96.171": {"ov_progress": 18, "ov_results": results,
+                                            "ov_progress_at": _ago(hours=still_for_h), "ov_started_at": _ago(hours=5)}})
+    FakeGVM.tasks["t"] = {"id": "t", "name": f"Task_144.91.96.171_{scan_id}", "status": "Running", "progress": "18"}
+    return scan_id
+
+
+def test_openvas_scan_still_finding_results_is_not_taken_for_stuck(db, company, gvm):
+    # 144.91.96.171: 18 % for 4 h while OpenVAS was still testing its services, stopped as "figée"
+    _, parsed = gvm
+    scan_id = _running_openvas_scan(db, company, still_for_h=13, results=40)
+    FakeGVM.results = 47                                            # new results: the task is working
+    with pytest.raises(Retry):
+        scan_tasks.poll_scan_status(scan_id, "t", "report-1", "144.91.96.171")
+    assert FakeGVM.stopped == [] and parsed == []
+    assert _reload(db, scan_id).target_states["144.91.96.171"] == "IN_PROGRESS"
+
+
+def test_openvas_scan_without_any_activity_is_still_stopped(db, company, gvm):
+    _, parsed = gvm
+    scan_id = _running_openvas_scan(db, company, still_for_h=5, results=40)
+    FakeGVM.results = 40
+    with pytest.raises(Retry):                                      # 5 h: no longer taken for stuck
+        scan_tasks.poll_scan_status(scan_id, "t", "report-1", "144.91.96.171")
+    assert FakeGVM.stopped == []
+    scan_id = _running_openvas_scan(db, company, still_for_h=13, results=40)
+    FakeGVM.tasks["t"]["name"] = f"Task_144.91.96.171_{scan_id}"
+    assert scan_tasks.poll_scan_status(scan_id, "t", "report-1", "144.91.96.171") is False
+    assert FakeGVM.stopped == ["t"] and len(parsed) == 1
+    assert "figée" in parsed[0][1]["detail"]
 
 
 def test_stop_button_kills_the_running_scanner(tmp_path):

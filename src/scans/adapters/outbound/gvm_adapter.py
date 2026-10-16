@@ -194,6 +194,17 @@ class GVMAdapter(ScanEnginePort):
         status, _ = self.get_task_status_and_progress(task_id)
         return status
 
+    def get_report_result_count(self, report_id: str) -> Optional[int]:
+        """Results found so far by a running task (stall detection), None when unknown."""
+        try:
+            response = self.gmp.get_report(report_id=report_id, details=False,
+                                           filter_string="apply_overrides=0 min_qod=0 rows=1")
+            nodes = response.xpath("//report/report/result_count/full/text()") or response.xpath("//result_count/full/text()")
+            return int(nodes[0]) if nodes else None
+        except Exception as e:
+            logger.warning(f"OpenVAS result count of report {report_id} unavailable: {e}")
+            return None
+
     def get_report(self, report_id: str) -> str:
         if not self.gmp:
             raise Exception("Not connected to GVM")
