@@ -43,6 +43,12 @@ OPENVAS_STALL_S = int(os.getenv("OPENVAS_STALL_HOURS", "4")) * 3600
 # Bounds the follow-up when GVM is unreachable (30 min at 60 s/retry), so it does not loop forever
 POLL_MAX_CONNECT_RETRIES = 30
 OPENVAS_WAITING_STATUSES = {"New", "Requested", "Queued"}
+OPENVAS_ACTIVE_STATUSES = OPENVAS_WAITING_STATUSES | {"Running"}
+# OpenVAS tasks run at the same time (configurable). A batch of 21 domains used to start 21 tasks
+# at once: ospd-openvas went past the 4 GB of its container, was killed (OOM) and every task of
+# the batch ended "Interrupted"; the next ones stayed "Queued" forever.
+OPENVAS_MAX_PARALLEL = max(int(os.getenv("OPENVAS_MAX_PARALLEL") or 3), 1)
+OPENVAS_SLOT_WAIT_S = 120
 # Below the Celery hard limit (24 h): the target is closed with a reason instead of the worker being killed
 SCAN_SOFT_TIME_LIMIT_S = 23 * 3600
 WEB_PROBE_TIMEOUT_S = 15
@@ -898,6 +904,15 @@ def _start_openvas(task, ctx: ScanContext, target: ScanTarget, target_raw: str, 
             update_scan_progress(ctx.scan_id, target_raw, progress.FAILED, detail=f"OpenVAS : {feed_detail}")
             return False
         logger.info(f"OpenVAS feed ready ({feed_detail}) for {target_raw}")
+        active = sum(1 for t in adapter.find_tasks("Task_") if t["status"] in OPENVAS_ACTIVE_STATUSES)
+        if active >= OPENVAS_MAX_PARALLEL:
+            # Waits its turn without holding a worker slot (re-queued, not retried: the retries are
+            # bounded); its new activity date keeps the watchdog away. Pause and Stop drop the re-queued task.
+            logger.info(f"OpenVAS busy ({active}/{OPENVAS_MAX_PARALLEL} tasks): {target_raw} waits for a free slot")
+            update_scan_progress(ctx.scan_id, target_raw, progress.PENDING)
+            run_vulnerability_scan.apply_async(args=[ctx.scan_id, target_raw, asset_name, config_id],
+                                               queue="scans", countdown=OPENVAS_SLOT_WAIT_S)
+            return True
         if ctx.credentials:
             logger.warning(f"OpenVAS: credentials are not passed to GVM yet, {target_raw} is scanned unauthenticated")
         target_id = adapter.create_target(f"Target_{asset_name}_{ctx.scan_id}", [target.host],
