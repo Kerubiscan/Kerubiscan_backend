@@ -472,16 +472,48 @@ def test_cleanup_task_exists_and_startup_no_longer_purges():
     assert hasattr(watchdog, "cleanup_old_data")
 
 
-def test_openvas_refuses_scan_when_feed_not_ready(db, company, gvm):
+def test_openvas_waits_while_feed_not_ready_then_gives_up(db, company, gvm, monkeypatch):
+    requeued = []
+    monkeypatch.setattr(scan_tasks.run_vulnerability_scan, "apply_async", lambda *a, **kw: requeued.append(kw))
     FakeGVM.feed_ok = (False, "Feed NVT OpenVAS absent : la synchronisation n'est pas terminée")
     try:
         scan_id = _scan(db, company, "OPENVAS", {"10.0.0.5": "PENDING"})
-        assert scan_tasks.run_vulnerability_scan(scan_id, "10.0.0.5", "10.0.0.5", "cfg") is False
+        assert scan_tasks.run_vulnerability_scan(scan_id, "10.0.0.5", "10.0.0.5", "cfg") is True
+        scan = _reload(db, scan_id)
+        assert scan.target_states["10.0.0.5"] == "PENDING" and FakeGVM.created == 0
+        assert "En attente d'OpenVAS" in scan.target_meta["10.0.0.5"]["detail"]
+        since = requeued[0]["kwargs"]["waiting_since"]
+        # Still not ready once the wait is over: the target fails with the reason
+        too_long = since - scan_tasks.OPENVAS_STARTUP_WAIT_S
+        assert scan_tasks.run_vulnerability_scan(scan_id, "10.0.0.5", "10.0.0.5", "cfg", waiting_since=too_long) is False
         scan = _reload(db, scan_id)
         assert scan.target_states["10.0.0.5"] == "FAILED"
         assert "Feed NVT" in scan.target_meta["10.0.0.5"]["detail"]
     finally:
         FakeGVM.feed_ok = (True, "Feed NVT 20261001")
+
+
+def test_openvas_restarting_does_not_fail_the_batch(db, company, gvm, monkeypatch):
+    # OpenVAS restarted and downloaded its feeds for 1-2 h: every target failed after 10 min
+    polls, _ = gvm
+    requeued = []
+    monkeypatch.setattr(scan_tasks.run_vulnerability_scan, "apply_async", lambda *a, **kw: requeued.append(kw))
+    FakeGVM.reachable = False
+    scan_id = _scan(db, company, "OPENVAS", {"pam.example.com": "PENDING"})
+    assert scan_tasks.run_vulnerability_scan(scan_id, "pam.example.com", "pam.example.com", "cfg") is True
+    scan = _reload(db, scan_id)
+    assert scan.target_states["pam.example.com"] == "PENDING"
+    assert "connexion GVM impossible" in scan.target_meta["pam.example.com"]["detail"]
+    (kw,) = requeued
+    assert kw["queue"] == "scans" and kw["countdown"] == scan_tasks.OPENVAS_SLOT_WAIT_S
+    # One hour later OpenVAS is up: the target starts
+    FakeGVM.reachable = True
+    scan_tasks.run_vulnerability_scan(scan_id, "pam.example.com", "pam.example.com", "cfg",
+                                      waiting_since=kw["kwargs"]["waiting_since"] - 3600)
+    assert FakeGVM.created == 1 and len(polls) == 1
+    scan = _reload(db, scan_id)
+    assert scan.target_states["pam.example.com"] == "QUEUED"
+    assert "detail" not in scan.target_meta["pam.example.com"]
 
 
 def test_feed_check_is_fail_open_on_read_error():

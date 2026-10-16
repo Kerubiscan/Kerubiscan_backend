@@ -49,6 +49,9 @@ OPENVAS_ACTIVE_STATUSES = OPENVAS_WAITING_STATUSES | {"Running"}
 # the batch ended "Interrupted"; the next ones stayed "Queued" forever.
 OPENVAS_MAX_PARALLEL = max(int(os.getenv("OPENVAS_MAX_PARALLEL") or 3), 1)
 OPENVAS_SLOT_WAIT_S = 120
+# OpenVAS restarting (after a crash, an update or a server reboot) first downloads its feeds, which
+# takes 1-2 h. The targets used to fail after 10 min of "connexion GVM impossible": they now wait.
+OPENVAS_STARTUP_WAIT_S = int(os.getenv("OPENVAS_STARTUP_WAIT_HOURS") or 3) * 3600
 # Below the Celery hard limit (24 h): the target is closed with a reason instead of the worker being killed
 SCAN_SOFT_TIME_LIMIT_S = 23 * 3600
 WEB_PROBE_TIMEOUT_S = 15
@@ -816,8 +819,10 @@ def _reason(e: BaseException) -> str:
 
 
 @celery_app.task(bind=True, max_retries=1, name="run_vulnerability_scan", soft_time_limit=SCAN_SOFT_TIME_LIMIT_S)
-def run_vulnerability_scan(self, scan_id: str, asset_ip: str, asset_name: str, config_id: str):
-    """Scans one target of a scan. `asset_ip` is the target as typed by the user (IP, CIDR, domain or URL)."""
+def run_vulnerability_scan(self, scan_id: str, asset_ip: str, asset_name: str, config_id: str,
+                           waiting_since: Optional[float] = None):
+    """Scans one target of a scan. `asset_ip` is the target as typed by the user (IP, CIDR, domain or URL).
+    `waiting_since`: when the target started waiting for OpenVAS to be ready (re-queued task)."""
     target_raw = asset_ip
     # A scan task must run on the dedicated 'scans' worker. If Redis redelivered it to the default
     # worker (short tasks), re-dispatch it instead of blocking that worker for hours.
@@ -845,7 +850,7 @@ def run_vulnerability_scan(self, scan_id: str, asset_ip: str, asset_name: str, c
         return False
 
     if ctx.engine == ScannerEngine.OPENVAS:
-        return _start_openvas(self, ctx, target, target_raw, asset_name, config_id)
+        return _start_openvas(self, ctx, target, target_raw, asset_name, config_id, waiting_since)
 
     runner = ENGINE_RUNNERS.get(ctx.engine)
     if runner is None:
@@ -888,21 +893,39 @@ def _gvm_port_range(port_range: Optional[str]) -> str:
     return f"T:{','.join(included)}" if included else DEFAULT_GVM_PORT_RANGE
 
 
-def _start_openvas(task, ctx: ScanContext, target: ScanTarget, target_raw: str, asset_name: str, config_id: str):
+def _wait_for_openvas(ctx: ScanContext, target_raw: str, asset_name: str, config_id: str,
+                      waiting_since: Optional[float], reason: str) -> bool:
+    """OpenVAS not ready (starting, downloading its feeds): the target waits, re-queued, up to
+    OPENVAS_STARTUP_WAIT_S; then it fails with the reason. Pause and Stop drop the re-queued task."""
+    waiting_since = waiting_since or time.time()
+    waited = time.time() - waiting_since
+    if waited >= OPENVAS_STARTUP_WAIT_S:
+        logger.error(f"OpenVAS still not ready after {int(waited // 60)} min for {target_raw}: {reason}")
+        update_scan_progress(ctx.scan_id, target_raw, progress.FAILED,
+                             detail=f"{reason} pendant {int(waited // 3600)} h : cible non scannée")
+        return False
+    logger.warning(f"OpenVAS not ready for {target_raw} ({reason}), waiting for {int(waited // 60)} min")
+    update_scan_progress(ctx.scan_id, target_raw, progress.PENDING,
+                         detail=f"En attente d'OpenVAS (démarrage ou mise à jour des tests) : {reason}")
+    run_vulnerability_scan.apply_async(args=[ctx.scan_id, target_raw, asset_name, config_id],
+                                       kwargs={"waiting_since": waiting_since},
+                                       queue="scans", countdown=OPENVAS_SLOT_WAIT_S)
+    return True
+
+
+def _start_openvas(task, ctx: ScanContext, target: ScanTarget, target_raw: str, asset_name: str, config_id: str,
+                   waiting_since: Optional[float] = None):
     from src.scans.adapters.outbound.gvm_adapter import GVMAdapter
     adapter = GVMAdapter()
     if not adapter.connect():
         logger.error("Failed to connect to GVM")
-        if task.request.retries < 10:
-            raise task.retry(countdown=60, max_retries=10)
-        update_scan_progress(ctx.scan_id, target_raw, progress.FAILED, detail="OpenVAS injoignable (connexion GVM impossible)")
-        return False
+        return _wait_for_openvas(ctx, target_raw, asset_name, config_id, waiting_since,
+                                 "OpenVAS injoignable (connexion GVM impossible)")
     try:
         feed_ok, feed_detail = adapter.check_feeds()
         if not feed_ok:
             logger.error(f"OpenVAS feed not ready for {target_raw}: {feed_detail}")
-            update_scan_progress(ctx.scan_id, target_raw, progress.FAILED, detail=f"OpenVAS : {feed_detail}")
-            return False
+            return _wait_for_openvas(ctx, target_raw, asset_name, config_id, waiting_since, f"OpenVAS : {feed_detail}")
         logger.info(f"OpenVAS feed ready ({feed_detail}) for {target_raw}")
         active = sum(1 for t in adapter.find_tasks("Task_") if t["status"] in OPENVAS_ACTIVE_STATUSES)
         if active >= OPENVAS_MAX_PARALLEL:
