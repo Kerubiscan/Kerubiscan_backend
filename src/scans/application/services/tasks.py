@@ -49,6 +49,8 @@ OPENVAS_ACTIVE_STATUSES = OPENVAS_WAITING_STATUSES | {"Running"}
 # the batch ended "Interrupted"; the next ones stayed "Queued" forever.
 OPENVAS_MAX_PARALLEL = max(int(os.getenv("OPENVAS_MAX_PARALLEL") or 3), 1)
 OPENVAS_SLOT_WAIT_S = 120
+# A target sharing the OpenVAS scan of its machine with another target checks its result this often
+OPENVAS_SHARED_WAIT_S = 600
 # OpenVAS restarting (after a crash, an update or a server reboot) first downloads its feeds, which
 # takes 1-2 h. The targets used to fail after 10 min of "connexion GVM impossible": they now wait.
 OPENVAS_STARTUP_WAIT_S = int(os.getenv("OPENVAS_STARTUP_WAIT_HOURS") or 3) * 3600
@@ -919,6 +921,34 @@ def _wait_for_openvas(ctx: ScanContext, target_raw: str, asset_name: str, config
     return True
 
 
+def _openvas_host_scanned_by_another(ctx: ScanContext, target: ScanTarget, target_raw: str, asset_name: str,
+                                     config_id: str) -> bool:
+    """True when another target of the scan scans (or scanned) the same machine with OpenVAS: this
+    target then shares its result instead of scanning the machine again. While the other one runs,
+    it waits (re-queued); when the other one fails, this target scans the machine itself."""
+    if target.kind == "cidr":
+        return False
+    ip = _resolve_dns(target.host) if target.is_hostname else target.host
+    if not ip:
+        return False
+    owner, owner_state = progress.claim_openvas_host(ctx.scan_id, target_raw, ip)
+    if owner is None:
+        return False
+    if owner_state in progress.SUCCESS_STATES:
+        logger.info(f"OpenVAS: {target_raw} is the machine {ip} already scanned via {owner}, result shared")
+        update_scan_progress(ctx.scan_id, target_raw, progress.COMPLETED,
+                             detail=f"Même machine ({ip}) que {owner} : OpenVAS l'a scannée une seule fois, "
+                                    f"ses résultats sont ceux de {owner}")
+        return True
+    logger.info(f"OpenVAS: {target_raw} is the machine {ip} scanned via {owner}, waits for its result")
+    update_scan_progress(ctx.scan_id, target_raw, progress.PENDING,
+                         detail=f"Même machine ({ip}) que {owner} : OpenVAS ne la scanne qu'une fois, "
+                                f"en attente de son résultat")
+    run_vulnerability_scan.apply_async(args=[ctx.scan_id, target_raw, asset_name, config_id],
+                                       queue="scans", countdown=OPENVAS_SHARED_WAIT_S)
+    return True
+
+
 def _start_openvas(task, ctx: ScanContext, target: ScanTarget, target_raw: str, asset_name: str, config_id: str,
                    waiting_since: Optional[float] = None):
     from src.scans.adapters.outbound.gvm_adapter import GVMAdapter
@@ -933,6 +963,8 @@ def _start_openvas(task, ctx: ScanContext, target: ScanTarget, target_raw: str, 
             logger.error(f"OpenVAS feed not ready for {target_raw}: {feed_detail}")
             return _wait_for_openvas(ctx, target_raw, asset_name, config_id, waiting_since, f"OpenVAS : {feed_detail}")
         logger.info(f"OpenVAS feed ready ({feed_detail}) for {target_raw}")
+        if _openvas_host_scanned_by_another(ctx, target, target_raw, asset_name, config_id):
+            return True
         active = sum(1 for t in adapter.find_tasks("Task_") if t["status"] in OPENVAS_ACTIVE_STATUSES)
         if active >= OPENVAS_MAX_PARALLEL:
             # Waits its turn without holding a worker slot (re-queued, not retried: the retries are

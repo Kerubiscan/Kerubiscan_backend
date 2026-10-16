@@ -154,6 +154,42 @@ def test_openvas_batch_waits_for_a_free_slot_instead_of_starting_every_task(db, 
     assert _reload(db, scan_id).target_states["ksa.example.com"] == "QUEUED"
 
 
+def test_openvas_scans_a_machine_once_for_all_its_domains(db, company, gvm, monkeypatch):
+    # 19 domains on one IP: OpenVAS scanned the same machine 19 times (the fixture resolves all to 10.0.0.5)
+    polls, _ = gvm
+    requeued = []
+    monkeypatch.setattr(scan_tasks.run_vulnerability_scan, "apply_async", lambda *a, **kw: requeued.append(kw))
+    scan_id = _scan(db, company, "OPENVAS", {"av.example.com": "PENDING", "vpn.example.com": "PENDING"})
+    scan_tasks.run_vulnerability_scan(scan_id, "av.example.com", "av.example.com", "cfg")
+    assert scan_tasks.run_vulnerability_scan(scan_id, "vpn.example.com", "vpn.example.com", "cfg") is True
+    assert FakeGVM.created == 1 and len(polls) == 1                # one OpenVAS task for the machine
+    scan = _reload(db, scan_id)
+    assert scan.target_states["vpn.example.com"] == "PENDING"
+    assert "av.example.com" in scan.target_meta["vpn.example.com"]["detail"]
+    (kw,) = requeued
+    assert kw["countdown"] == scan_tasks.OPENVAS_SHARED_WAIT_S
+
+    # The machine scan ends: the other domain shares its result, without a second scan
+    progress.update_scan_progress(scan_id, "av.example.com", progress.COMPLETED)
+    scan_tasks.run_vulnerability_scan(scan_id, "vpn.example.com", "vpn.example.com", "cfg")
+    scan = _reload(db, scan_id)
+    assert FakeGVM.created == 1
+    assert scan.target_states["vpn.example.com"] == "COMPLETED"
+    assert "une seule fois" in scan.target_meta["vpn.example.com"]["detail"]
+    assert scan.status == ScanStatus.COMPLETED
+
+
+def test_openvas_scans_the_machine_itself_when_the_shared_scan_failed(db, company, gvm, monkeypatch):
+    monkeypatch.setattr(scan_tasks.run_vulnerability_scan, "apply_async", lambda *a, **kw: None)
+    scan_id = _scan(db, company, "OPENVAS", {"av.example.com": "PENDING", "vpn.example.com": "PENDING"})
+    scan_tasks.run_vulnerability_scan(scan_id, "av.example.com", "av.example.com", "cfg")
+    progress.update_scan_progress(scan_id, "av.example.com", progress.INTERRUPTED, detail="Tâche OpenVAS Interrupted")
+    FakeGVM.tasks["task-1"]["status"] = "Interrupted"
+    scan_tasks.run_vulnerability_scan(scan_id, "vpn.example.com", "vpn.example.com", "cfg")
+    assert FakeGVM.created == 2
+    assert _reload(db, scan_id).target_states["vpn.example.com"] == "QUEUED"
+
+
 def test_openvas_rerun_of_the_same_scan_creates_its_own_target(db, company, gvm):
     # A rerun keeps the scan id: every target failed with "Target exists already"
     scan_id = _scan(db, company, "OPENVAS", {"av.example.com": "PENDING"})
