@@ -63,7 +63,12 @@ class FakeGVM:
     def check_feeds(self):
         return FakeGVM.feed_ok
 
+    target_names = set()
+
     def create_target(self, name, hosts, port_range=None, **kw):
+        if name in FakeGVM.target_names:                         # as GVM does
+            raise RuntimeError("Response Error 400. Target exists already")
+        FakeGVM.target_names.add(name)
         FakeGVM.last_port_range = port_range
         return "target-1"
 
@@ -100,6 +105,7 @@ class FakeGVM:
 @pytest.fixture()
 def gvm(monkeypatch):
     FakeGVM.tasks, FakeGVM.stopped, FakeGVM.reachable, FakeGVM.created = {}, [], True, 0
+    FakeGVM.target_names = set()
     module = types.ModuleType("src.scans.adapters.outbound.gvm_adapter")
     module.GVMAdapter = FakeGVM
     monkeypatch.setitem(sys.modules, "src.scans.adapters.outbound.gvm_adapter", module)
@@ -146,6 +152,19 @@ def test_openvas_batch_waits_for_a_free_slot_instead_of_starting_every_task(db, 
     scan_tasks.run_vulnerability_scan(scan_id, "ksa.example.com", "ksa.example.com", "cfg")
     assert FakeGVM.created == 1 and len(polls) == 1
     assert _reload(db, scan_id).target_states["ksa.example.com"] == "QUEUED"
+
+
+def test_openvas_rerun_of_the_same_scan_creates_its_own_target(db, company, gvm):
+    # A rerun keeps the scan id: every target failed with "Target exists already"
+    scan_id = _scan(db, company, "OPENVAS", {"av.example.com": "PENDING"})
+    scan_tasks.run_vulnerability_scan(scan_id, "av.example.com", "av.example.com", "cfg")
+    FakeGVM.tasks["task-1"]["status"] = "Interrupted"
+    scan = _reload(db, scan_id)
+    scan.target_states = {"av.example.com": "PENDING"}
+    db.commit()
+    scan_tasks.run_vulnerability_scan(scan_id, "av.example.com", "av.example.com", "cfg")
+    assert FakeGVM.created == 2
+    assert _reload(db, scan_id).target_states["av.example.com"] == "QUEUED"
 
 
 def test_openvas_follow_up_reports_queue_then_running(db, company, gvm):
