@@ -148,6 +148,8 @@ def apply_target_state(db: Session, scan: ScanEntity, target: str, target_status
     stamp = now_iso()
 
     if target_status:
+        if target_status in ACTIVE_STATES and states.get(target) == PENDING:
+            entry.pop("detail", None)  # a waiting reason ("En attente d'OpenVAS…") ends when the target starts
         states[target] = target_status
         if target_status in ACTIVE_STATES and not entry.get("started_at"):
             entry["started_at"] = stamp
