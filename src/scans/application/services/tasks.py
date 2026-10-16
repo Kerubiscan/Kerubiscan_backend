@@ -160,7 +160,7 @@ def run_discovery_scan(self, scan_id: str, target: str, network_zone: str, compa
         return False
 
     try:
-        target_id = adapter.create_target(f"Discovery_Target_{scan_id}", [t.host for t in parsed])
+        target_id = adapter.create_target(_gvm_target_name(f"Discovery_Target_{scan_id}"), [t.host for t in parsed])
         task_id = adapter.create_task(name=f"Discovery_Task_{scan_id}", target_id=target_id,
                                       scanner_id=DEFAULT_SCANNER_ID, config_id=DISCOVERY_CONFIG_ID)
         report_id = adapter.start_task(task_id)
@@ -886,6 +886,12 @@ def run_vulnerability_scan(self, scan_id: str, asset_ip: str, asset_name: str, c
     return state in progress.SUCCESS_STATES
 
 
+def _gvm_target_name(base: str) -> str:
+    """GVM target names must be unique: a rerun (same scan id) failed on every target with
+    "Response Error 400. Target exists already". Each run gets its own target."""
+    return f"{base}_{int(time.time() * 1000)}"
+
+
 def _gvm_port_range(port_range: Optional[str]) -> str:
     if not port_range:
         return DEFAULT_GVM_PORT_RANGE
@@ -938,7 +944,7 @@ def _start_openvas(task, ctx: ScanContext, target: ScanTarget, target_raw: str, 
             return True
         if ctx.credentials:
             logger.warning(f"OpenVAS: credentials are not passed to GVM yet, {target_raw} is scanned unauthenticated")
-        target_id = adapter.create_target(f"Target_{asset_name}_{ctx.scan_id}", [target.host],
+        target_id = adapter.create_target(_gvm_target_name(f"Target_{asset_name}_{ctx.scan_id}"), [target.host],
                                           port_range=_gvm_port_range(ctx.port_range))
         task_id = adapter.create_task(f"Task_{asset_name}_{ctx.scan_id}", target_id, DEFAULT_SCANNER_ID, config_id)
         report_id = adapter.start_task(task_id)
