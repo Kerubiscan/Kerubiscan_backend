@@ -485,8 +485,9 @@ def batch_remaining(scan, concurrency: int = 1) -> Optional[int]:
     return int(max(slots))
 
 
-def record_openvas_progress(scan_id: str, target: str, value: int) -> float:
-    """Stores the OpenVAS progress and returns the seconds since it last changed (stall detection)."""
+def record_openvas_progress(scan_id: str, target: str, value: int, results: Optional[int] = None) -> float:
+    """Stores the OpenVAS progress and returns the seconds since the task last showed activity
+    (stall detection): its percentage, or its number of results (None: unknown) changed."""
     db: Session = SessionLocal()
     try:
         scan = _locked_scan(db, scan_id)
@@ -496,7 +497,10 @@ def record_openvas_progress(scan_id: str, target: str, value: int) -> float:
         entry = dict(meta.get(target) or {})
         now = datetime.now(timezone.utc)
         changed_at = _parse_iso(entry.get("ov_progress_at"))
-        if entry.get("ov_progress") != value or changed_at is None:
+        new_results = results is not None and entry.get("ov_results") != results
+        if results is not None:
+            entry["ov_results"] = results
+        if entry.get("ov_progress") != value or new_results or changed_at is None:
             entry["ov_progress"] = value
             entry["ov_progress_at"] = now.isoformat()
             stalled = 0.0
