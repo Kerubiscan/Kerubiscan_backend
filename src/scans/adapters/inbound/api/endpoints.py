@@ -32,6 +32,7 @@ OPENVAS_FULL_AND_FAST = "daba56c8-73ec-11df-a475-002264764cea"
 class ScannerStatus(BaseModel):
     status: str
     scans_in_progress: int
+    scans_completed: int = 0
     scheduled_scans: int
     last_scan_time: str
 
@@ -281,8 +282,14 @@ def _queue_scan(scan: ScanEntity, targets: List[str]):
 
 @router.get("/status", response_model=ScannerStatus)
 def get_scanner_status(db: Session = Depends(get_db), current_user: dict = Depends(require_permissions([Permission.SCAN_READ]))):
+    # Deleted scans are left out (a deleted running scan used to stay counted "en cours")
     in_progress = db.query(ScanEntity).filter(
-        ScanEntity.status.in_([ScanStatus.IN_PROGRESS, ScanStatus.PENDING])
+        ScanEntity.status.in_([ScanStatus.IN_PROGRESS, ScanStatus.PENDING]),
+        ScanEntity.is_deleted.is_not(True),
+    ).count()
+    completed = db.query(ScanEntity).filter(
+        ScanEntity.status == ScanStatus.COMPLETED,
+        ScanEntity.is_deleted.is_not(True),
     ).count()
     scheduled = db.query(ScheduleEntity).count()
 
@@ -298,6 +305,7 @@ def get_scanner_status(db: Session = Depends(get_db), current_user: dict = Depen
     return ScannerStatus(
         status="Opérationnel",
         scans_in_progress=in_progress,
+        scans_completed=completed,
         scheduled_scans=scheduled,
         last_scan_time=last_scan_time
     )
